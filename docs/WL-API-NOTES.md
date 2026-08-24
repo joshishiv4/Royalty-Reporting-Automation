@@ -201,6 +201,27 @@ every dev sample so far is a self-purchase.
 Trap: **`a_purchase_item[].k_purchase_item` comes back as a NUMBER here**, though the
 list endpoint sends the same key as a string. Coerce to text or the item is lost.
 
+### `/v1/user` — the profile, and the only place the PRIMARY email is (probed live 24 Aug 2026)
+
+One call per `uid`. The body IS the record (not keyed). It is the enrichment the
+staff list defers — staff arrive with names but no contact detail. Fields that map
+to `person` columns:
+
+| Field | → person | Notes |
+|---|---|---|
+| `s_mail` | `email` | **The primary email.** The client report exposes only a *secondary* email, so GHL matching waits for this. |
+| `s_first_name` / `s_last_name` | `first_name` / `last_name` | |
+| `s_phone` / `s_phone_home` / `s_phone_work` | `phone` / `phone_home` / `phone_work` | Already `+`-prefixed; `""` when unset. |
+| `dt_birth` | `date_of_birth` | Bare date (`"1989-11-14"`) or `""` — never a datetime. |
+| `k_login_type` / `text_login_type` | same | Label only — never used to decide who teaches. |
+
+Trap: WL returns `""` (not null/absent) for an unset phone or `dt_birth`. Read `""`
+as null and OMIT it from the upsert, or a refresh blanks a value another source set.
+Also carried but **not stored** (no person column, out of 6.1 scope): `id_gender`
+(a number), `text_address` / `text_city` / `text_postal`. `/v1/member/info` gives a
+login-mail *URL*, not the address; `/v1/profile/email` is an email→uid lookup
+(needs `text_mail`); `/v1/profile/setting` is notification flags only.
+
 ### Services and locations (probed live 21 Aug 2026)
 
 - **`/v1/location/list`** carries the detail: `s_title` (name) and an `a_timezone`
