@@ -113,6 +113,26 @@ One purchase carries several items. Keying on `k_purchase` would collapse them a
 lose the per-item price a royalty is calculated from. Verified: `k_purchase`
 143051749 holds `k_purchase_item` 147785701, and one client had 27 purchases.
 
+### Membership state lives on the item, not on the purchase
+
+A membership, a lesson package and a one-off appointment are all `purchase_item`
+rows; what separates them is `sid_value` (`service-membership`, `service-limit`,
+`class-period`, `appointment`). Hold, cancellation and renewal are therefore
+per-ITEM columns, not per-purchase: one purchase can hold a membership that is on
+hold beside a package that is not.
+
+`m_refund` is stored **negative**, as WL sends it (`-280.00` live), and is null
+when WL sent its no-refund marker — the string `"0"`. Null therefore means "never
+refunded", which a stored `0.00` could not distinguish from "refunded nothing".
+
+The three flags — `is_hold`, `is_cancel_pending`, `is_renew` — are `not null
+default false`. WL always sends a real boolean, so `false` is an answer, and a
+nullable boolean would force a three-way check on every read.
+
+None of this is on `/v1/profile/purchase/list`, which carries eighteen identity
+fields only. It comes from the element endpoint — see
+[WL-API-NOTES.md](WL-API-NOTES.md).
+
 ### Money is `numeric(12,2)`
 
 Observed verbatim from `/v1/purchase/receipt`:

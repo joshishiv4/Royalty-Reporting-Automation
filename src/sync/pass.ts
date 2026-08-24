@@ -5,6 +5,7 @@ import { WL_PATHS } from '../wl/endpoint.js';
 import { WlTokenClient } from '../wl/token.js';
 import { closeJobState, openJobState } from './job-state.js';
 import { writeLocationList } from './locations.js';
+import { writeMembership } from './memberships.js';
 import { writePromotionList } from './promotions.js';
 import { writePurchaseList } from './purchases.js';
 import { enqueue, outcomeFromWlError, type QueueHandler, runQueue } from './queue.js';
@@ -240,28 +241,35 @@ export function runReceiptSyncPass(
 }
 
 /**
- * Runs the recipient sync: one job PER purchase item of a purchase that does not
- * yet know who it was FOR, each fetching /v1/profile/purchase/list/element.
+ * Runs the purchase-element sync: one job PER purchase item, each fetching
+ * /v1/profile/purchase/list/element and taking TWO things from the one payload -
+ * the recipient (task 021) and the membership/refund detail (PRD 6.2, task 023).
  *
  * Payer lands with the purchase list; the recipient (a parent buys for a child)
- * only exists on the element endpoint. Seeded from items whose purchase has a
- * null uid_recipient, so a re-run enriches only what is unattributed - once a
- * purchase knows its recipient, its items are never re-fetched. Disagreement
- * between two items of one purchase parks a sync_conflict (see recipients.ts).
+ * only exists on the element endpoint. Disagreement between two items of one
+ * purchase parks a sync_conflict (see recipients.ts).
+ *
+ * SEEDS EVERY ITEM, not just unattributed ones. Until 6.2 this pass seeded only
+ * items whose purchase had a null uid_recipient, because a recipient never
+ * changes. Membership state does - a hold starts, a cancellation goes pending, a
+ * renewal counter ticks - so the detail needs refresh semantics or it is captured
+ * once and silently rots. Re-fetching an attributed item is safe: the recipient
+ * write is fill-only and treats an agreeing item as a no-op.
+ *
+ * ONE PAYLOAD, ONE RAW ROW. writeRecipient stores it and returns the raw_wl id;
+ * writeMembership is handed that id rather than storing the same body twice.
  */
-export function runRecipientSyncPass(
+export function runPurchaseElementSyncPass(
   config: AppConfig,
   deps: SyncPassDeps = {},
 ): Promise<SyncPassSummary> {
   return runPass(config, deps, {
-    jobName: 'recipient_sync',
+    jobName: 'purchase_element_sync',
     workType: 'purchase_item_element',
     seed: async ({ db, kBusiness, nowIso }) => {
-      // !inner makes the purchase filter drop items, not just null the embed.
       const items = await db.select<{ k_purchase_item: string }>(
         'purchase_item',
-        `k_business=eq.${kBusiness}&select=k_purchase_item,purchase!inner(uid_recipient)` +
-          `&purchase.uid_recipient=is.null`,
+        `k_business=eq.${kBusiness}&select=k_purchase_item`,
       );
       await enqueue(
         db,
@@ -281,11 +289,18 @@ export function runRecipientSyncPass(
             query: { k_purchase_item: item.target_key },
             priorAttempt: item.attempt_count,
           });
-          await writeRecipient(db, {
+          const { rawWlId } = await writeRecipient(db, {
             kBusiness,
             kPurchaseItem: item.target_key,
             response,
             runId,
+          });
+          // Same payload, second typed write - see the header.
+          await writeMembership(db, {
+            kBusiness,
+            kPurchaseItem: item.target_key,
+            response,
+            rawWlId,
           });
           return { kind: 'done' };
         } catch (error) {
@@ -591,8 +606,8 @@ const FULL_SYNC_ORDER: ReadonlyArray<{
   { job: 'purchase_sync', run: runPurchaseSyncPass },
   // per-purchase money: needs the purchase rows above.
   { job: 'receipt_sync', run: runReceiptSyncPass },
-  // per-item recipient: needs the purchase_item rows above.
-  { job: 'recipient_sync', run: runRecipientSyncPass },
+  // per-item recipient + membership detail: needs the purchase_item rows above.
+  { job: 'purchase_element_sync', run: runPurchaseElementSyncPass },
   // per-person profile enrichment (primary email for GHL): after every pass that
   // creates a person row, so it enriches payers and recipients too, not just staff.
   { job: 'profile_sync', run: runProfileSyncPass },
