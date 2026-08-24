@@ -73,6 +73,7 @@ correctly does not start.
 | Writing purchases (list → purchase + purchase_item, stub FKs) | [`src/sync/purchases.ts`](../src/sync/purchases.ts) |
 | Enriching purchases with money (receipt → totals, payments, credit) | [`src/sync/receipts.ts`](../src/sync/receipts.ts) |
 | Enriching purchases with the recipient (purchase/list/element → uid_recipient, person stub, conflict on disagreement) | [`src/sync/recipients.ts`](../src/sync/recipients.ts) |
+| Enriching people with their profile (user → primary email, phones, DOB; merge, never clobber) | [`src/sync/profiles.ts`](../src/sync/profiles.ts) |
 | Location detail (location/list → title, timezone) | [`src/sync/locations.ts`](../src/sync/locations.ts) |
 | Promotions (classes/promotion → promotion, per-location) | [`src/sync/promotions.ts`](../src/sync/promotions.ts) |
 | Shop categories (shop/category → shop_category, business-wide) | [`src/sync/shop-categories.ts`](../src/sync/shop-categories.ts) |

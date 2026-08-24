@@ -25,4 +25,5 @@ Sorted by status (done last), then priority, then ID.
 | 014 | M03a-purchases — purchase + purchase_item writer (money null) | done | high | 010 | `done/014-m03a-purchases-writer/` |
 | 015 | Purchase receipt enrichment — money and the payment breakdown | done | high | 014 | `done/015-purchase-receipt-money/` |
 | 021 | Purchase recipient — uid_recipient from the element endpoint | done | high | 014, 015 | `done/021-purchase-recipient/` |
+| 022 | P6.1 — pull each client's profile details | done | high | 010 | `done/022-client-profile-enrichment/` |
 | 009 | M03 sync engine — writer + durable queue (umbrella) | done | high | — | `done/009-m03-sync-engine-writer/` |

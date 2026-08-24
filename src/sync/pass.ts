@@ -8,8 +8,9 @@ import { writeLocationList } from './locations.js';
 import { writePromotionList } from './promotions.js';
 import { writePurchaseList } from './purchases.js';
 import { enqueue, outcomeFromWlError, type QueueHandler, runQueue } from './queue.js';
-import { writeReceipt } from './receipts.js';
+import { writeProfile } from './profiles.js';
 import { writeRecipient } from './recipients.js';
+import { writeReceipt } from './receipts.js';
 import { writeServiceCategoryList, writeServiceList } from './services.js';
 import { writeShopCategoryList } from './shop-categories.js';
 import { writeStaffList } from './writer.js';
@@ -296,6 +297,59 @@ export function runRecipientSyncPass(
 }
 
 /**
+ * Runs the profile sync: one job PER person, each fetching /v1/user to merge the
+ * client's contact detail - crucially the PRIMARY email - onto their person row
+ * (PRD 6.1). /v1/user is the only place the primary email appears, so this is the
+ * enrichment GoHighLevel matching waits for.
+ *
+ * Seeded from `person.uid`, so coverage is exactly the people already synced. That
+ * is bounded today by who we can enumerate (staff, plus purchase payers/recipients)
+ * - the wider client base needs the client-list unblock (STATUS blocker 1). The
+ * pull, merge, park-on-failure and idempotent re-run all work now over whatever
+ * person rows exist. A failed profile call parks in the queue (dead-letter) without
+ * stopping the others, like every pass. Merge never clobbers (see profiles.ts).
+ */
+export function runProfileSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'profile_sync',
+    workType: 'user_profile',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      const people = await db.select<{ uid: string }>(
+        'person',
+        `k_business=eq.${kBusiness}&select=uid`,
+      );
+      await enqueue(
+        db,
+        people.map((p) => ({
+          work_type: 'user_profile',
+          target_key: p.uid,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId }) =>
+      async (item) => {
+        try {
+          const response = await wl.request(WL_PATHS.user, {
+            query: { uid: item.target_key },
+            priorAttempt: item.attempt_count,
+          });
+          await writeProfile(db, { kBusiness, uid: item.target_key, response, runId });
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
+}
+
+/**
  * Runs the shop-category sync: one job that lists storefront categories.
  *
  * Genuinely business-wide - the endpoint answers with no k_location - so it is
@@ -539,6 +593,9 @@ const FULL_SYNC_ORDER: ReadonlyArray<{
   { job: 'receipt_sync', run: runReceiptSyncPass },
   // per-item recipient: needs the purchase_item rows above.
   { job: 'recipient_sync', run: runRecipientSyncPass },
+  // per-person profile enrichment (primary email for GHL): after every pass that
+  // creates a person row, so it enriches payers and recipients too, not just staff.
+  { job: 'profile_sync', run: runProfileSyncPass },
   // per-location catalogue LAST: it upserts the authoritative title over any
   // purchase-derived stub and marks resolved services, so it must run after the
   // purchase pass that creates those stubs.

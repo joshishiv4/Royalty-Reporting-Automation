@@ -32,7 +32,16 @@ now lands too** (24 Aug 2026): a `recipient_sync` pass fetches
 write (never overwrites), and a `sync_conflict` parked when two items of one
 purchase disagree (the first real use of that table). Proven live: 109/109
 purchases attributed across three bounded passes, 0 conflicts, 0 dead, and a
-re-run seeded nothing. Still to come: the `sync_job_state` **page cursor**
+re-run seeded nothing. **Profile enrichment (P6.1) now lands too** (24 Aug 2026): a
+`profile_sync` pass fetches `/v1/user` per person and merges the client's contact
+detail onto `person` — crucially the **primary email**, which appears nowhere else
+(the client report exposes only a secondary email), so this is the enrichment GHL
+matching waits for. Merge never clobbers (WL's `""` is read as null and omitted), a
+failed profile parks without stopping the others, and upsert-on-uid keeps a re-run a
+refresh not a duplicate. Proven live: 20/20 people enriched with email/phone/DOB.
+Coverage is bounded by who we can enumerate (staff + purchase payers/recipients) —
+the wider client base still needs the client-list unblock (blocker 1). Still to come:
+the `sync_job_state` **page cursor**
 (`page_number`/`report_handle`, unused until a paginated endpoint like
 `/v1/report/data`); `sync_conflict` creation; and the full client base (blocked
 upstream — no client-list endpoint). **Location and service detail (P5.6) now land**:
