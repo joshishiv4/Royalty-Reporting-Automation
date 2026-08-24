@@ -73,6 +73,7 @@ correctly does not start.
 | Writing purchases (list → purchase + purchase_item, stub FKs) | [`src/sync/purchases.ts`](../src/sync/purchases.ts) |
 | Enriching purchases with money (receipt → totals, payments, credit) | [`src/sync/receipts.ts`](../src/sync/receipts.ts) |
 | Enriching purchases with the recipient (purchase/list/element → uid_recipient, person stub, conflict on disagreement) | [`src/sync/recipients.ts`](../src/sync/recipients.ts) |
+| Membership state and refund on the purchase item (purchase/list/element → hold, cancellation, renewal, refund) | [`src/sync/memberships.ts`](../src/sync/memberships.ts) |
 | Enriching people with their profile (user → primary email, phones, DOB; merge, never clobber) | [`src/sync/profiles.ts`](../src/sync/profiles.ts) |
 | Location detail (location/list → title, timezone) | [`src/sync/locations.ts`](../src/sync/locations.ts) |
 | Promotions (classes/promotion → promotion, per-location) | [`src/sync/promotions.ts`](../src/sync/promotions.ts) |
@@ -168,6 +169,7 @@ to re-run.
 | `0010` | Health views, supporting views, RLS policies |
 | `0011` | `promotion`, `shop_category` (reference lookups) |
 | `0012` | `service_category`; `service` enrichment + `is_resolved`; `unresolved_service` view |
+| `0013` | `purchase_item` membership state (`sid_value`, payment period, hold, cancellation, renewal) + `m_refund` |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs. They are not migrations and change nothing.

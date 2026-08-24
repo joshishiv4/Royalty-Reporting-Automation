@@ -6,6 +6,7 @@ Sorted by status (done last), then priority, then ID.
 | ID  | Title | Status | Priority | Depends on | Path |
 |-----|-------|--------|----------|------------|------|
 | 008 | Live-verification checklist for behaviour only mocks can prove today | backlog | high | — | `backlog/008-live-verification-checklist/` |
+| 023 | P6.2 — membership and refund detail on the purchase item | active | high | 014, 021 | `active/023-purchase-membership-detail/` |
 | 017 | P5.1 — request the client report and wait for it to finish | backlog | high | — | `backlog/017-client-report-request/` |
 | 018 | P5.2 — read the client report page by page | backlog | high | 017 | `backlog/018-client-report-paged-read/` |
 | 019 | P5.3 — save clients into person without duplicates | backlog | high | 018 | `backlog/019-save-clients-dedup/` |

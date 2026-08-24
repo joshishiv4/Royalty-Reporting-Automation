@@ -26,7 +26,7 @@ records a `sync_job_state` row — `running` → `idle`/`paused`/`failed`, with
 incremental sync will trust). The receipt pass also fills the **payer as printed**
 (`purchase.payer_name/email/phone` from `a_customer`, added 24 Aug 2026 — shape per
 the WL Postman collection, live confirmation tracked in task 008). **The recipient
-now lands too** (24 Aug 2026): a `recipient_sync` pass fetches
+now lands too** (24 Aug 2026): a `purchase_element_sync` pass fetches
 `/v1/profile/purchase/list/element` per purchase item and fills
 `purchase.uid_recipient` — with a person stub first so the FK holds, a fill-only
 write (never overwrites), and a `sync_conflict` parked when two items of one
@@ -40,7 +40,16 @@ matching waits for. Merge never clobbers (WL's `""` is read as null and omitted)
 failed profile parks without stopping the others, and upsert-on-uid keeps a re-run a
 refresh not a duplicate. Proven live: 20/20 people enriched with email/phone/DOB.
 Coverage is bounded by who we can enumerate (staff + purchase payers/recipients) —
-the wider client base still needs the client-list unblock (blocker 1). Still to come:
+the wider client base still needs the client-list unblock (blocker 1).
+**Membership and refund detail (P6.2) now lands too** (24 Aug 2026): the element
+pass — renamed `purchase_element_sync`, because it now takes two things from one
+payload — also fills `purchase_item` with `sid_value`, payment period, period
+price, hold state and dates, pending cancellation, renewal and `m_refund`
+(migration `0013`). The board said these come from the purchase list; a live probe
+over 109 items proved they do not — that endpoint returns eighteen identity fields
+— so they are read from the element payload already being fetched, at no extra
+API call. The pass now seeds EVERY item rather than only unattributed ones,
+because membership state changes where a recipient does not. Still to come:
 the `sync_job_state` **page cursor**
 (`page_number`/`report_handle`, unused until a paginated endpoint like
 `/v1/report/data`); `sync_conflict` creation; and the full client base (blocked
@@ -162,7 +171,7 @@ Every date format tried fails, including the one other endpoints require.
 Recorded as a blocker earlier the same day, then unblocked: the WL Postman
 collection pointed at `/v1/profile/purchase/list/element`, which a live probe
 confirmed carries `uid_recipient` per purchase item (see WL-API-NOTES). The
-`recipient_sync` pass now fills `purchase.uid_recipient`. Still genuinely open
+`purchase_element_sync` pass now fills `purchase.uid_recipient`. Still genuinely open
 within it: a parent-child purchase (recipient ≠ payer) has never been observed on
 dev — every sample is a self-purchase — so that path is mock-verified only
 (task 008).

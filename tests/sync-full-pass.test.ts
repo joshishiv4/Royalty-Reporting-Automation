@@ -44,7 +44,7 @@ describe('runFullSyncPass', () => {
       'service_category_sync',
       'purchase_sync',
       'receipt_sync',
-      'recipient_sync',
+      'purchase_element_sync',
       'profile_sync',
       'service_sync',
     ]);

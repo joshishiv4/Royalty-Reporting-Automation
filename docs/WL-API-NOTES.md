@@ -201,6 +201,48 @@ every dev sample so far is a self-purchase.
 Trap: **`a_purchase_item[].k_purchase_item` comes back as a NUMBER here**, though the
 list endpoint sends the same key as a string. Coerce to text or the item is lost.
 
+### `/v1/profile/purchase/list` does NOT carry membership or refund detail (probed live 24 Aug 2026)
+
+Board item 6.2 says the membership fields come from the purchase list. They do
+not. Over 109 items the list returns EIGHTEEN fields, all of them identity:
+
+```
+a_active  a_sale  dt_add  id_purchase_item  id_sale  is_active  is_package
+k_appointment  k_business  k_code  k_id  k_location  k_login_promotion
+k_purchase  k_purchase_item  s_title  uid
+```
+
+No payment period, no period price, no hold, no cancellation, no renewal, no
+refund. All of those are on the ELEMENT endpoint below — which is already fetched
+once per purchase item, so the detail costs no extra call.
+
+### `/v1/profile/purchase/list/element` also carries the MEMBERSHIP state (probed live 24 Aug 2026)
+
+The same call that answers "who was this for" (above) returns 87 fields. Beyond
+the recipient, these map to `purchase_item` (task 023, migration `0013`), with
+live population over 109 dev items:
+
+| Field | → purchase_item | Live | Notes |
+|---|---|---|---|
+| `sid_value` | same | 109 | `appointment` ×91, `service-membership` ×11, `service-limit` ×6, `class-period` ×1. The only field that says whether a row is a membership. |
+| `i_payment_period` | same | 11 | Always `1` so far. |
+| `m_period_price` | same | 11 | `96.00`, `230.00`, `329.00`, and `0.00` on eight. |
+| `is_hold` / `dt_hold_start` / `dt_hold_end` | same | **0** | Never observed — task 008. |
+| `is_cancel_pending` | same | **0** | Never observed — task 008. |
+| `dt_cancel` | same | 10 | Real timestamps. `dl_cancel`, the local twin, was 0/109 and is not stored. |
+| `is_renew` / `i_renew` | same | 9 / 3 | `can_renew` was 0/109 and is not stored. |
+| `m_refund` | same | 5 | **Negative**: `-280.00`, `-230.00`, `-70.00`, `-42.50`. |
+
+**Trap: `m_refund` is the string `"0"` when nothing was refunded** — not `"0.00"`,
+not `""`. A truthiness check stores a zero refund against every unrefunded item in
+the business. Read `"0"` as absent.
+
+**Trap: the empty marker is `""` and `0`, not null.** Same rule as `/v1/user` —
+read them as null and OMIT the column, or a refresh blanks a stored value.
+
+The body does not echo `k_purchase`, so the caller must already know which
+purchase the item belongs to (our `purchase_item` row carries it).
+
 ### `/v1/user` — the profile, and the only place the PRIMARY email is (probed live 24 Aug 2026)
 
 One call per `uid`. The body IS the record (not keyed). It is the enrichment the
