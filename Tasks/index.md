@@ -24,4 +24,5 @@ Sorted by status (done last), then priority, then ID.
 | 012 | M03c — resume cursor, sync_run accounting, and route wiring | done | high | 011 | `done/012-m03c-resume-and-route/` |
 | 014 | M03a-purchases — purchase + purchase_item writer (money null) | done | high | 010 | `done/014-m03a-purchases-writer/` |
 | 015 | Purchase receipt enrichment — money and the payment breakdown | done | high | 014 | `done/015-purchase-receipt-money/` |
+| 021 | Purchase recipient — uid_recipient from the element endpoint | done | high | 014, 015 | `done/021-purchase-recipient/` |
 | 009 | M03 sync engine — writer + durable queue (umbrella) | done | high | — | `done/009-m03-sync-engine-writer/` |

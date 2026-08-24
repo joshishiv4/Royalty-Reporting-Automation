@@ -9,6 +9,7 @@ import { writePromotionList } from './promotions.js';
 import { writePurchaseList } from './purchases.js';
 import { enqueue, outcomeFromWlError, type QueueHandler, runQueue } from './queue.js';
 import { writeReceipt } from './receipts.js';
+import { writeRecipient } from './recipients.js';
 import { writeServiceCategoryList, writeServiceList } from './services.js';
 import { writeShopCategoryList } from './shop-categories.js';
 import { writeStaffList } from './writer.js';
@@ -228,6 +229,63 @@ export function runReceiptSyncPass(
             priorAttempt: item.attempt_count,
           });
           await writeReceipt(db, { kBusiness, kPurchase: item.target_key, response, runId });
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
+}
+
+/**
+ * Runs the recipient sync: one job PER purchase item of a purchase that does not
+ * yet know who it was FOR, each fetching /v1/profile/purchase/list/element.
+ *
+ * Payer lands with the purchase list; the recipient (a parent buys for a child)
+ * only exists on the element endpoint. Seeded from items whose purchase has a
+ * null uid_recipient, so a re-run enriches only what is unattributed - once a
+ * purchase knows its recipient, its items are never re-fetched. Disagreement
+ * between two items of one purchase parks a sync_conflict (see recipients.ts).
+ */
+export function runRecipientSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'recipient_sync',
+    workType: 'purchase_item_element',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      // !inner makes the purchase filter drop items, not just null the embed.
+      const items = await db.select<{ k_purchase_item: string }>(
+        'purchase_item',
+        `k_business=eq.${kBusiness}&select=k_purchase_item,purchase!inner(uid_recipient)` +
+          `&purchase.uid_recipient=is.null`,
+      );
+      await enqueue(
+        db,
+        items.map((i) => ({
+          work_type: 'purchase_item_element',
+          target_key: i.k_purchase_item,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId }) =>
+      async (item) => {
+        try {
+          const response = await wl.request(WL_PATHS.profilePurchaseListElement, {
+            query: { k_purchase_item: item.target_key },
+            priorAttempt: item.attempt_count,
+          });
+          await writeRecipient(db, {
+            kBusiness,
+            kPurchaseItem: item.target_key,
+            response,
+            runId,
+          });
           return { kind: 'done' };
         } catch (error) {
           if (error instanceof WlRequestError) return outcomeFromWlError(error);
@@ -479,6 +537,8 @@ const FULL_SYNC_ORDER: ReadonlyArray<{
   { job: 'purchase_sync', run: runPurchaseSyncPass },
   // per-purchase money: needs the purchase rows above.
   { job: 'receipt_sync', run: runReceiptSyncPass },
+  // per-item recipient: needs the purchase_item rows above.
+  { job: 'recipient_sync', run: runRecipientSyncPass },
   // per-location catalogue LAST: it upserts the authoritative title over any
   // purchase-derived stub and marks resolved services, so it must run after the
   // purchase pass that creates those stubs.

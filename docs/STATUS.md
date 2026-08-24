@@ -23,7 +23,16 @@ receipt pass fills `purchase` totals, `purchase_item.m_price_total`,
 live (totals like 840/299/280, payment + account-credit rows). Each pass also now
 records a `sync_job_state` row — `running` → `idle`/`paused`/`failed`, with
 `last_clean_completion_at` moved only on a clean drain (the watermark a future
-incremental sync will trust). Still to come: the `sync_job_state` **page cursor**
+incremental sync will trust). The receipt pass also fills the **payer as printed**
+(`purchase.payer_name/email/phone` from `a_customer`, added 24 Aug 2026 — shape per
+the WL Postman collection, live confirmation tracked in task 008). **The recipient
+now lands too** (24 Aug 2026): a `recipient_sync` pass fetches
+`/v1/profile/purchase/list/element` per purchase item and fills
+`purchase.uid_recipient` — with a person stub first so the FK holds, a fill-only
+write (never overwrites), and a `sync_conflict` parked when two items of one
+purchase disagree (the first real use of that table). Proven live: 109/109
+purchases attributed across three bounded passes, 0 conflicts, 0 dead, and a
+re-run seeded nothing. Still to come: the `sync_job_state` **page cursor**
 (`page_number`/`report_handle`, unused until a paginated endpoint like
 `/v1/report/data`); `sync_conflict` creation; and the full client base (blocked
 upstream — no client-list endpoint). **Location and service detail (P5.6) now land**:
@@ -138,6 +147,16 @@ Every date format tried fails, including the one other endpoints require.
 `attendance` is modelled but cannot be populated.
 
 **Needs:** correct parameters from WL.
+
+### ~~4. Nothing identifies a purchase's recipient~~ — RESOLVED 24 Aug 2026
+
+Recorded as a blocker earlier the same day, then unblocked: the WL Postman
+collection pointed at `/v1/profile/purchase/list/element`, which a live probe
+confirmed carries `uid_recipient` per purchase item (see WL-API-NOTES). The
+`recipient_sync` pass now fills `purchase.uid_recipient`. Still genuinely open
+within it: a parent-child purchase (recipient ≠ payer) has never been observed on
+dev — every sample is a self-purchase — so that path is mock-verified only
+(task 008).
 
 ## Decisions waiting on someone
 

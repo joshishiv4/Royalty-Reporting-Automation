@@ -100,6 +100,23 @@ unchecked with a note pointing at the contradiction.
       body — exercise the route against UAT with a deliberately wrong host and
       read the actual JSON returned.
 
+### From task 015 follow-up — receipt payer details
+- [ ] `/v1/purchase/receipt` really carries an `a_customer` block shaped
+      `text_name` / `text_mail` / `text_phone` (assumed from the WL Postman
+      collection, bid-334942 v1.2026-07-22 — the 21 Aug live probe recorded only
+      the money blocks). Confirm one live receipt fills
+      `purchase.payer_name/email/phone`; the parser leaves them null if the block
+      is absent, so a mismatch is silent until checked.
+
+### From task 021 — recipient from the element endpoint
+- [ ] A purchase whose recipient is a DIFFERENT person from the payer (parent pays
+      for child) actually presents that way on
+      `/v1/profile/purchase/list/element` — every dev sample so far is a
+      self-purchase, so the distinct-recipient path (person stub for a uid not in
+      `person`, and the conflict-on-disagreement path) is mock-verified only.
+- [ ] `uid_recipient`/`uid_payer` of `"0"` really means "nobody" (assumed from the
+      `k_location "0"` convention; never observed on this endpoint).
+
 ### Standing assumptions worth a live look (not tied to one fix)
 - [x] `k_log` presence per endpoint matches what trace.ts documents (present on
       `/v1/lead/info`, absent on the sync endpoints). **Confirmed live 2026-08-21:**

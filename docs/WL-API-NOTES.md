@@ -171,6 +171,32 @@ one call per `k_purchase`:
 | `a_purchase_item[]` | per item `m_price_total`, `text_currency` | `purchase_item` money |
 | `a_pay_method[]` | `text_pay_method`, `m_amount`, `text_currency` | `purchase_payment` |
 | `a_account_rest[]` | `text_method`, `m_amount` (can be **negative** — a balance, not a payment), `text_currency` | `purchase_account_credit` |
+| `a_customer` | `text_name`, `text_mail`, `text_phone` — the payer as printed, **without a uid** | `purchase.payer_name/email/phone` |
+
+`a_customer`'s shape comes from the WL Postman collection (bid-334942 v1.2026-07-22),
+not a live probe — the 21 Aug probe recorded only the money blocks. Task 008 carries
+the row to confirm it live. The receipt names only the **buyer**; the **recipient**
+comes from the element endpoint below.
+
+### `/v1/profile/purchase/list/element` — where the recipient is (probed live 24 Aug 2026)
+
+One call per `k_purchase_item`; needs only `k_purchase_item` (no `uid`). It is the
+ONLY endpoint found that says who a purchase was **for** — the purchase list is
+per-payer by construction and the receipt's `a_customer` names only the buyer,
+without a uid. Observed live at 244238 across five items:
+
+- `uid_recipient` (string) + `s_recipient` (printed name) — present on **every**
+  record sampled.
+- `uid_payer` + `s_payer` — present on some, **null/`""` on others**, even where
+  `uid_recipient` is set. Do not treat payer-absence as recipient-absence.
+- The body does **NOT echo `k_purchase`** — the caller must already know which
+  purchase the item belongs to (our `purchase_item` row carries it).
+- Also carries per-item money (`m_cost_total`, `m_price`, discounts) and usage
+  counters — not consumed; the receipt remains the money source.
+
+Assumed but not yet seen live (task 008): a `uid` of `"0"` read as "nobody" (the
+`k_location "0"` convention), and a parent-child purchase where recipient ≠ payer —
+every dev sample so far is a self-purchase.
 
 Trap: **`a_purchase_item[].k_purchase_item` comes back as a NUMBER here**, though the
 list endpoint sends the same key as a string. Coerce to text or the item is lost.

@@ -147,6 +147,18 @@ payer, so one `uid` would lose whichever question is asked second.
 because WL returns them **without** a uid — the only record of who was billed when
 the payer is not in our own table.
 
+How each side is populated (as of 24 Aug 2026): `uid_payer` comes with the purchase
+list (fetched per person, so the queried uid IS the payer); `uid_recipient` comes
+from `/v1/profile/purchase/list/element`, one call per purchase **item** — the only
+endpoint that says who a purchase was for (see WL-API-NOTES). Because WL's recipient
+is per item and our column is per purchase, the first item fills it, an agreeing
+item is a no-op, and a **disagreeing** item is parked in `sync_conflict`
+(`recipient-differs-by-item`) rather than overwritten — per-purchase was chosen in
+0002 and a silent overwrite would misattribute a royalty. The recipient may not be
+enumerable as a client yet (no client-list endpoint), so a `person` stub
+(uid + k_business only) is upserted first and the FK holds — the same
+stub-don't-fail pattern locations and services use.
+
 ## Schedule
 
 ```

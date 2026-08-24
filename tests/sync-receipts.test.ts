@@ -17,6 +17,12 @@ function receiptBody(): unknown {
       m_total: '280.00',
       text_currency: 'usd',
     },
+    a_customer: {
+      text_name: 'Pat Parent',
+      text_mail: 'pat@example.com',
+      text_phone: '+1 555 0100',
+      text_address: '1 Main St', // printed on the receipt, not a stored column
+    },
     a_purchase_item: {
       '0': { k_purchase_item: 'item-1', m_price_total: '280.00', text_currency: 'usd' },
     },
@@ -45,6 +51,23 @@ describe('parseReceipt', () => {
       m_total: '280.00',
       text_currency: 'usd',
       text_purchase_id: '000000143051',
+      payer_name: 'Pat Parent',
+      payer_email: 'pat@example.com',
+      payer_phone: '+1 555 0100',
+    });
+  });
+
+  it('leaves payer fields null when the receipt carries no a_customer', () => {
+    const { purchaseMoney } = parseReceipt(
+      { a_price: { m_total: '10.00' } },
+      K_PURCHASE,
+      K_BUSINESS,
+    );
+    expect(purchaseMoney).toMatchObject({
+      m_total: '10.00',
+      payer_name: null,
+      payer_email: null,
+      payer_phone: null,
     });
   });
 
@@ -73,6 +96,34 @@ describe('parseReceipt', () => {
     const { itemMoney } = parseReceipt(body, K_PURCHASE, K_BUSINESS);
     expect(itemMoney).toHaveLength(1);
     expect(itemMoney[0]!.k_purchase_item).toBe('142604'); // string, matches the list key
+  });
+
+  it('sums a mixed payment breakdown to the total, exact to the cent', () => {
+    // These amounts are a float trap: 120.10 + 39.20 + 120.70 in IEEE doubles is
+    // 279.99999999999994, not 280. Summing in integer cents (never parseFloat
+    // addition) must land on the total EXACTLY - the guarantee royalty maths
+    // relies on.
+    const body = {
+      a_price: { m_total: '280.00', text_currency: 'usd' },
+      a_pay_method: {
+        '0': { text_pay_method: 'Visa', m_amount: '120.10', text_currency: 'usd' },
+        '1': { text_pay_method: 'Cash', m_amount: '39.20', text_currency: 'usd' },
+        '2': { text_pay_method: 'Account', m_amount: '120.70', text_currency: 'usd' },
+      },
+    };
+    const { purchaseMoney, payments } = parseReceipt(body, K_PURCHASE, K_BUSINESS);
+
+    // Exact decimal cents from the stored string - no floating point anywhere.
+    const cents = (s: string): number => {
+      const m = /^(-?)(\d+)\.(\d{2})$/.exec(s);
+      if (m === null) throw new Error(`not a money string: ${s}`);
+      return (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 100 + Number(m[3]));
+    };
+
+    const paid = payments.reduce((sum, p) => sum + cents(p.m_amount), 0);
+    expect(paid).toBe(cents(purchaseMoney!.m_total!)); // 28000 === 28000
+    // And the parser passed every amount through untouched - no reformatting.
+    expect(payments.map((p) => p.m_amount)).toEqual(['120.10', '39.20', '120.70']);
   });
 
   it('returns null purchase money and empty lists for a bare body', () => {

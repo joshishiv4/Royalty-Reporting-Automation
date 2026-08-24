@@ -58,6 +58,10 @@ export const WL_PATHS = {
   staffList: '/v1/staff/list',
   user: '/v1/user',
   profilePurchaseList: '/v1/profile/purchase/list',
+  // Per purchase ITEM: carries uid_recipient / uid_payer, which neither the
+  // purchase list (per-payer by construction) nor the receipt (buyer only,
+  // no uid) does. Needs only k_purchase_item - no uid.
+  profilePurchaseListElement: '/v1/profile/purchase/list/element',
   purchaseReceipt: '/v1/purchase/receipt',
   scheduleClassList: '/v1/schedule/class/list',
   schedulePageList: '/v1/schedule/page/list',

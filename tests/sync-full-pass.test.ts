@@ -44,6 +44,7 @@ describe('runFullSyncPass', () => {
       'service_category_sync',
       'purchase_sync',
       'receipt_sync',
+      'recipient_sync',
       'service_sync',
     ]);
     expect(summary.passes.every((p) => p.ran)).toBe(true);
