@@ -58,10 +58,23 @@ export const WL_PATHS = {
   staffList: '/v1/staff/list',
   user: '/v1/user',
   profilePurchaseList: '/v1/profile/purchase/list',
+  // Per purchase ITEM: carries uid_recipient / uid_payer, which neither the
+  // purchase list (per-payer by construction) nor the receipt (buyer only,
+  // no uid) does. Needs only k_purchase_item - no uid.
+  profilePurchaseListElement: '/v1/profile/purchase/list/element',
   purchaseReceipt: '/v1/purchase/receipt',
   scheduleClassList: '/v1/schedule/class/list',
   schedulePageList: '/v1/schedule/page/list',
   schedulePageElement: '/v1/schedule/page/element',
+  // Per-location: needs a k_location. Business-wide only by iterating locations.
+  classesPromotion: '/v1/classes/promotion',
+  // Business-wide: answers with no k_location.
+  shopCategory: '/v1/shop/category',
+  // Per-location: the bookable-service catalogue and its categories. Both need a
+  // k_location; a k_service / k_service_category is unique business-wide, so
+  // iterating locations and upserting on the key dedupes across them.
+  appointmentServiceList: '/v1/appointment/book/service/list',
+  appointmentServiceCategory: '/v1/appointment/book/service/category',
 } as const;
 
 export type WlPathName = keyof typeof WL_PATHS;

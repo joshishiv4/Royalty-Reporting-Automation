@@ -1,6 +1,6 @@
 # Status and plan
 
-Last updated **21 Aug 2026**. Keep the date honest — a stale status file is worse
+Last updated **24 Aug 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed.
 
 ## The plan
@@ -23,12 +23,35 @@ receipt pass fills `purchase` totals, `purchase_item.m_price_total`,
 live (totals like 840/299/280, payment + account-credit rows). Each pass also now
 records a `sync_job_state` row — `running` → `idle`/`paused`/`failed`, with
 `last_clean_completion_at` moved only on a clean drain (the watermark a future
-incremental sync will trust). Still to come: the `sync_job_state` **page cursor**
+incremental sync will trust). The receipt pass also fills the **payer as printed**
+(`purchase.payer_name/email/phone` from `a_customer`, added 24 Aug 2026 — shape per
+the WL Postman collection, live confirmation tracked in task 008). **The recipient
+now lands too** (24 Aug 2026): a `recipient_sync` pass fetches
+`/v1/profile/purchase/list/element` per purchase item and fills
+`purchase.uid_recipient` — with a person stub first so the FK holds, a fill-only
+write (never overwrites), and a `sync_conflict` parked when two items of one
+purchase disagree (the first real use of that table). Proven live: 109/109
+purchases attributed across three bounded passes, 0 conflicts, 0 dead, and a
+re-run seeded nothing. Still to come: the `sync_job_state` **page cursor**
 (`page_number`/`report_handle`, unused until a paginated endpoint like
 `/v1/report/data`); `sync_conflict` creation; and the full client base (blocked
 upstream — no client-list endpoint). **Location and service detail (P5.6) now land**:
 `location/list` fills `location.title` + timezone, and `service.title`/`is_package`
 are derived from purchase items (WL exposes no service-detail endpoint).
+**Reference lookups (rest of P5.6) now land too**: `promotion` (per-location,
+`/v1/classes/promotion`) and `shop_category` (business-wide, `/v1/shop/category`)
+have migration `0011`, writers, queue passes and tests — both endpoints probed live
+24 Aug 2026 and both return JSON arrays, not keyed objects. Proven live: the passes
+wrote 5 `shop_category` and 12 `promotion` rows, and a promotion re-run stayed at 12
+(upsert, no duplicates). **Service catalogue (last of P5.6) now lands too**: the real
+catalogue was found live under `/v1/appointment/book/service/{list,category}` (task
+020's "no service endpoint" was only true for the `/v1/service*` family), so migration
+`0012` adds `service_category`, enriches `service` with title/category/duration, and
+introduces `service.is_resolved` + the `unresolved_service` view. A service in the
+bookable list is `is_resolved = true`; a service only ever referenced by a transaction
+stays `false` and is countable as the Q19 gap (9 bookable vs ~200 referenced). The
+"unresolved service" behaviour is live for **purchases**; the same stub-don't-fail
+pattern will cover **sessions** once attendance is unblocked (see below).
 
 ## Done
 
@@ -124,6 +147,16 @@ Every date format tried fails, including the one other endpoints require.
 `attendance` is modelled but cannot be populated.
 
 **Needs:** correct parameters from WL.
+
+### ~~4. Nothing identifies a purchase's recipient~~ — RESOLVED 24 Aug 2026
+
+Recorded as a blocker earlier the same day, then unblocked: the WL Postman
+collection pointed at `/v1/profile/purchase/list/element`, which a live probe
+confirmed carries `uid_recipient` per purchase item (see WL-API-NOTES). The
+`recipient_sync` pass now fills `purchase.uid_recipient`. Still genuinely open
+within it: a parent-child purchase (recipient ≠ payer) has never been observed on
+dev — every sample is a self-purchase — so that path is mock-verified only
+(task 008).
 
 ## Decisions waiting on someone
 

@@ -2,11 +2,16 @@ import type { AppConfig } from '../config/schema.js';
 import { SupabaseClient } from '../supabase/client.js';
 import { WlClient, WlRequestError } from '../wl/client.js';
 import { WL_PATHS } from '../wl/endpoint.js';
+import { WlTokenClient } from '../wl/token.js';
 import { closeJobState, openJobState } from './job-state.js';
 import { writeLocationList } from './locations.js';
+import { writePromotionList } from './promotions.js';
 import { writePurchaseList } from './purchases.js';
 import { enqueue, outcomeFromWlError, type QueueHandler, runQueue } from './queue.js';
 import { writeReceipt } from './receipts.js';
+import { writeRecipient } from './recipients.js';
+import { writeServiceCategoryList, writeServiceList } from './services.js';
+import { writeShopCategoryList } from './shop-categories.js';
 import { writeStaffList } from './writer.js';
 
 /**
@@ -231,6 +236,384 @@ export function runReceiptSyncPass(
         }
       },
   });
+}
+
+/**
+ * Runs the recipient sync: one job PER purchase item of a purchase that does not
+ * yet know who it was FOR, each fetching /v1/profile/purchase/list/element.
+ *
+ * Payer lands with the purchase list; the recipient (a parent buys for a child)
+ * only exists on the element endpoint. Seeded from items whose purchase has a
+ * null uid_recipient, so a re-run enriches only what is unattributed - once a
+ * purchase knows its recipient, its items are never re-fetched. Disagreement
+ * between two items of one purchase parks a sync_conflict (see recipients.ts).
+ */
+export function runRecipientSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'recipient_sync',
+    workType: 'purchase_item_element',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      // !inner makes the purchase filter drop items, not just null the embed.
+      const items = await db.select<{ k_purchase_item: string }>(
+        'purchase_item',
+        `k_business=eq.${kBusiness}&select=k_purchase_item,purchase!inner(uid_recipient)` +
+          `&purchase.uid_recipient=is.null`,
+      );
+      await enqueue(
+        db,
+        items.map((i) => ({
+          work_type: 'purchase_item_element',
+          target_key: i.k_purchase_item,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId }) =>
+      async (item) => {
+        try {
+          const response = await wl.request(WL_PATHS.profilePurchaseListElement, {
+            query: { k_purchase_item: item.target_key },
+            priorAttempt: item.attempt_count,
+          });
+          await writeRecipient(db, {
+            kBusiness,
+            kPurchaseItem: item.target_key,
+            response,
+            runId,
+          });
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
+}
+
+/**
+ * Runs the shop-category sync: one job that lists storefront categories.
+ *
+ * Genuinely business-wide - the endpoint answers with no k_location - so it is
+ * seeded as a single 'all' item, like staff and locations. Upsert on
+ * k_shop_category means a re-run produces no duplicates.
+ */
+export function runShopCategorySyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'shop_category_sync',
+    workType: 'shop_category_list',
+    seed: ({ db, kBusiness, nowIso }) =>
+      enqueue(
+        db,
+        [{ work_type: 'shop_category_list', target_key: 'all', k_business: kBusiness }],
+        nowIso(),
+      ).then(() => undefined),
+    makeHandler:
+      ({ wl, db, kBusiness, runId }) =>
+      async (item) => {
+        try {
+          const response = await wl.request(WL_PATHS.shopCategory, {
+            priorAttempt: item.attempt_count,
+          });
+          await writeShopCategoryList(db, { kBusiness, response, runId });
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
+}
+
+/**
+ * Runs the promotion sync: one job PER location, each listing that location's
+ * promotions.
+ *
+ * Promotions are per-location (the endpoint needs a k_location), so this seeds
+ * from the `location` table - coverage is exactly the locations already synced.
+ * A k_promotion is unique across the business, so the same promotion under a
+ * second location updates in place; upsert on k_promotion means neither a second
+ * location nor a re-run duplicates it.
+ */
+export function runPromotionSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'promotion_sync',
+    workType: 'promotion_list',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      const locations = await db.select<{ k_location: string }>(
+        'location',
+        `k_business=eq.${kBusiness}&select=k_location`,
+      );
+      await enqueue(
+        db,
+        locations.map((l) => ({
+          work_type: 'promotion_list',
+          target_key: l.k_location,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId }) =>
+      async (item) => {
+        try {
+          const response = await wl.request(WL_PATHS.classesPromotion, {
+            query: { k_location: item.target_key },
+            priorAttempt: item.attempt_count,
+          });
+          await writePromotionList(db, {
+            kBusiness,
+            kLocation: item.target_key,
+            response,
+            runId,
+          });
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
+}
+
+/**
+ * Runs the service-category sync: one job PER location, each listing that
+ * location's bookable-service categories.
+ *
+ * Per-location (the endpoint needs a k_location), so this seeds from the
+ * `location` table - coverage is exactly the locations already synced. A
+ * k_service_category is unique business-wide, so upsert on it dedupes a category
+ * that repeats across locations, and a re-run changes nothing new.
+ */
+export function runServiceCategorySyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'service_category_sync',
+    workType: 'service_category_list',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      const locations = await db.select<{ k_location: string }>(
+        'location',
+        `k_business=eq.${kBusiness}&select=k_location`,
+      );
+      await enqueue(
+        db,
+        locations.map((l) => ({
+          work_type: 'service_category_list',
+          target_key: l.k_location,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId }) =>
+      async (item) => {
+        try {
+          const response = await wl.request(WL_PATHS.appointmentServiceCategory, {
+            query: { k_location: item.target_key },
+            priorAttempt: item.attempt_count,
+          });
+          await writeServiceCategoryList(db, {
+            kBusiness,
+            kLocation: item.target_key,
+            response,
+            runId,
+          });
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
+}
+
+/**
+ * Runs the service-catalogue sync: one job PER location, each listing that
+ * location's bookable services and marking them resolved.
+ *
+ * Per-location and seeded from the `location` table, like the category pass. A
+ * k_service is unique business-wide, so upsert on it enriches the FK stub the
+ * purchase writer left (flipping is_resolved to true) and dedupes across
+ * locations. Runs AFTER purchases in a full pass so the authoritative catalogue
+ * title wins for resolved services, while services only ever seen in a purchase
+ * keep their derived title and stay unresolved (a countable gap - see 0012).
+ */
+export function runServiceSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'service_sync',
+    workType: 'service_list',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      const locations = await db.select<{ k_location: string }>(
+        'location',
+        `k_business=eq.${kBusiness}&select=k_location`,
+      );
+      await enqueue(
+        db,
+        locations.map((l) => ({
+          work_type: 'service_list',
+          target_key: l.k_location,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId }) =>
+      async (item) => {
+        try {
+          const response = await wl.request(WL_PATHS.appointmentServiceList, {
+            query: { k_location: item.target_key },
+            priorAttempt: item.attempt_count,
+          });
+          await writeServiceList(db, {
+            kBusiness,
+            kLocation: item.target_key,
+            response,
+            runId,
+          });
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
+}
+
+/**
+ * One entry for each pass a full sync runs, in the order it ran.
+ *
+ * `ran: false` means the global budget was spent before this pass started - its
+ * work was never seeded, and the next invocation resumes from here. It is NOT a
+ * failure: the earlier passes drain fast on a later call (their queues already
+ * empty), so the budget flows down the list over repeated crons.
+ */
+export interface FullSyncPassResult {
+  readonly job: string;
+  readonly ran: boolean;
+  readonly summary: SyncPassSummary | null;
+}
+
+export interface FullSyncSummary {
+  readonly runId: string;
+  readonly state: 'ok' | 'partial' | 'failed';
+  readonly durationMs: number;
+  readonly passes: readonly FullSyncPassResult[];
+}
+
+/** The order the passes run in, respecting the FK dependencies between them. */
+const FULL_SYNC_ORDER: ReadonlyArray<{
+  readonly job: string;
+  readonly run: (config: AppConfig, deps: SyncPassDeps) => Promise<SyncPassSummary>;
+}> = [
+  // person rows first: purchases are seeded from person.uid.
+  { job: 'staff_sync', run: runStaffSyncPass },
+  // location rows next: promotions and the service catalogue seed from locations.
+  { job: 'location_sync', run: runLocationSyncPass },
+  // business-wide reference, no dependency.
+  { job: 'shop_category_sync', run: runShopCategorySyncPass },
+  // per-location: needs the location rows above.
+  { job: 'promotion_sync', run: runPromotionSyncPass },
+  // per-location: bookable-service categories.
+  { job: 'service_category_sync', run: runServiceCategorySyncPass },
+  // per-person: needs the person rows above.
+  { job: 'purchase_sync', run: runPurchaseSyncPass },
+  // per-purchase money: needs the purchase rows above.
+  { job: 'receipt_sync', run: runReceiptSyncPass },
+  // per-item recipient: needs the purchase_item rows above.
+  { job: 'recipient_sync', run: runRecipientSyncPass },
+  // per-location catalogue LAST: it upserts the authoritative title over any
+  // purchase-derived stub and marks resolved services, so it must run after the
+  // purchase pass that creates those stubs.
+  { job: 'service_sync', run: runServiceSyncPass },
+];
+
+const DEFAULT_FULL_BUDGET_MS = 50_000;
+/** Below this, a pass would only seed and immediately stop; skip it instead. */
+const MIN_PASS_BUDGET_MS = 3_000;
+
+/**
+ * Runs every sync pass in dependency order within ONE global time budget, the
+ * shape the daily cron calls for a full WL -> Supabase pull.
+ *
+ * ONE token, ONE database. A shared WlTokenClient means the whole run
+ * authenticates once (the first request fetches it, the rest read the cache);
+ * each pass still gets its OWN WlClient so its `runId` is distinct and its
+ * `sync_run` row does not collide with another pass's.
+ *
+ * BOUNDED, like a single pass. A Vercel function is capped at 60s while a full
+ * sync is budgeted in hours, so the global budget is split across the passes:
+ * each gets whatever time is left, and once it is spent the remaining passes are
+ * reported `ran: false` and picked up by the next invocation. The queue is the
+ * durable cursor; the cron calling this repeatedly is what drains it.
+ */
+export async function runFullSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<FullSyncSummary> {
+  const now = deps.now ?? (() => Date.now());
+  const totalBudgetMs = deps.budgetMs ?? DEFAULT_FULL_BUDGET_MS;
+  const startedAt = now();
+
+  // One database and one token client for the whole run. The token client is
+  // shared so authentication happens once; the DB client carries no per-run
+  // state, so sharing it just avoids rebuilding it six times.
+  const db = deps.db ?? new SupabaseClient(config.supabase);
+  const tokens = new WlTokenClient(config.wl, { env: config.env });
+
+  const passes: FullSyncPassResult[] = [];
+  for (const { job, run } of FULL_SYNC_ORDER) {
+    const remaining = totalBudgetMs - (now() - startedAt);
+    if (remaining < MIN_PASS_BUDGET_MS) {
+      passes.push({ job, ran: false, summary: null });
+      continue;
+    }
+    // A fresh WlClient per pass: distinct runId (no sync_run collision), shared
+    // token cache (one auth for the whole run). An injected client (tests) is
+    // reused across passes instead - there is no real sync_run constraint to
+    // collide with behind a fake db.
+    const wl =
+      deps.wl ??
+      new WlClient(config.wl, {
+        tokens,
+        env: config.env,
+        timeoutMs: config.runtime.httpTimeoutMs,
+        now,
+      });
+    const summary = await run(config, { ...deps, wl, db, budgetMs: remaining, now });
+    passes.push({ job, ran: true, summary });
+  }
+
+  const ran = passes.filter((p) => p.summary !== null).map((p) => p.summary as SyncPassSummary);
+  const anyFailed = ran.some((s) => s.state === 'failed');
+  const anyIncomplete =
+    passes.some((p) => !p.ran) || ran.some((s) => s.state === 'partial' || s.itemsRemaining > 0);
+  const state: FullSyncSummary['state'] = anyFailed ? 'failed' : anyIncomplete ? 'partial' : 'ok';
+
+  return {
+    // The first pass that ran names the run; every pass's own runId is in its summary.
+    runId: ran[0]?.runId ?? 'none',
+    state,
+    durationMs: now() - startedAt,
+    passes,
+  };
 }
 
 /** The shared shell: open a run, seed, drain within budget, close with a verdict. */

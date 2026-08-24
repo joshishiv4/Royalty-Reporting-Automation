@@ -11,6 +11,11 @@ import { linkRows, storeRawWl } from './writer.js';
  *
  *   - a_price      -> the purchase totals, a keyed object: m_sum, m_discount,
  *                     m_tax, m_tip, m_total, text_currency.
+ *   - a_customer   -> the payer as printed on the receipt: text_name, text_mail,
+ *                     text_phone - WITHOUT a uid (see DATA-MODEL), so these columns
+ *                     are the only record of who was billed when the payer is not
+ *                     in person. (Shape per the WL Postman collection; a live
+ *                     confirmation row is in task 008.)
  *   - a_purchase_item[] -> each item's m_price_total + text_currency (the royalty
  *                     figure - the item is what a teacher is paid on).
  *   - a_pay_method[]    -> the payment breakdown (purchase_payment).
@@ -33,6 +38,9 @@ export type PurchaseMoney = {
   readonly m_total: string | null;
   readonly text_currency: string | null;
   readonly text_purchase_id: string | null;
+  readonly payer_name: string | null;
+  readonly payer_email: string | null;
+  readonly payer_phone: string | null;
 };
 
 export type ItemMoney = {
@@ -70,6 +78,7 @@ export interface ParsedReceipt {
 export function parseReceipt(body: unknown, kPurchase: string, kBusiness: string): ParsedReceipt {
   const b = asRecord(body);
   const price = asRecord(b?.a_price);
+  const customer = asRecord(b?.a_customer);
   const purchaseMoney: PurchaseMoney | null =
     price === null
       ? null
@@ -81,6 +90,9 @@ export function parseReceipt(body: unknown, kPurchase: string, kBusiness: string
           m_total: readString(price, 'm_total'),
           text_currency: readString(price, 'text_currency'),
           text_purchase_id: readString(b, 'text_purchase_id'),
+          payer_name: readString(customer, 'text_name'),
+          payer_email: readString(customer, 'text_mail'),
+          payer_phone: readString(customer, 'text_phone'),
         };
 
   const itemMoney: ItemMoney[] = [];
