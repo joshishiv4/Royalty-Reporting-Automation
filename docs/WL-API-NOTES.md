@@ -117,6 +117,9 @@ removed. The backoff and requeue machinery remains for when WL does push back.
 | Client visits | `/v1/schedule/page/list` | `uid` |
 | Calendar days | `/v1/schedule/class/list` | `k_location`, `dt_date` |
 | Promotions | `/v1/classes/promotion` | `k_location` |
+| Shop categories | `/v1/shop/category` | — |
+| Service catalogue | `/v1/appointment/book/service/list` | `k_location` |
+| Service categories | `/v1/appointment/book/service/category` | `k_location` |
 | Lead form definition | `/v1/lead/info` | — |
 
 All GET unless noted. `id_region` and `k_business` are added by the client.
@@ -185,6 +188,45 @@ list endpoint sends the same key as a string. Coerce to text or the item is lost
   enough.
 - **`k_location "0"` means "no location"** — a placeholder, stored as null rather
   than a stub row (like the `"0"` placeholders WL uses elsewhere).
+
+### Promotions and shop categories (probed live 24 Aug 2026)
+
+Reference lookups, both confirmed working against dev — unlike the client report
+(still blocked, Q4) and the guessed service endpoints (all 404).
+
+- **`/v1/classes/promotion`** is **per-location** — it needs a `k_location`. At
+  244238 `a_promotion` held 12 records: `k_promotion` (text key), `text_title`,
+  `id_program` (a **number**, e.g. `1`), and `is_active` / `is_class` /
+  `is_enrollment` / `is_select` as `"0"`/`"1"` string flags. A `k_promotion` is
+  unique business-wide, so it repeats across locations and is deduped by upsert.
+- **`/v1/shop/category`** is genuinely **business-wide** — it answers with no
+  `k_location`. `a_shop_category` held 5 records: `k_shop_category` (text key),
+  `text_title`, `text_description` (often `""`), `i_order` (numeric **string**,
+  `"0"`), and `is_default` / `is_system` as real JSON booleans.
+- **Both come back as JSON ARRAYS, not keyed objects** — the inverse of the usual
+  WL list rule. Guessed neighbours `/v1/shop/product/list`, `/v1/store/category`
+  and `/v1/classes/category` all fail, so these two paths are exact, not a family.
+
+### The service catalogue DOES exist — under a different path (probed live 24 Aug 2026)
+
+Task 020 concluded "WL exposes no service-detail endpoint (all `/v1/service*` paths
+404), so service title/is_package are derived from purchase items." That was true for
+the `/v1/service*` family. The real catalogue lives under `/v1/appointment/book/`:
+
+- **`/v1/appointment/book/service/list`** — **per-location** (`k_location`). `a_service`
+  is a **keyed object** (the usual rule, unlike promotions/shop above). Per record:
+  `k_service` (text key), `s_service` (title, e.g. "Music Private | Virtual | 45
+  Minutes"), `k_service_category`, `i_duration_real` (minutes; `i_duration` is 0),
+  `is_bookable` (real bool), plus prices as **strings** (`f_offline_min`/`max`,
+  `f_online`, `f_deposit`) and `html_description`. At 244238: **9 services**.
+- **`/v1/appointment/book/service/category`** — **per-location** (`k_location`).
+  `a_category` is an **array** of `{ k_service_category, s_title, i_sort (numeric
+  string), hide_application }`. At 244238: 3 categories.
+- **The gap (Q19):** this list is the *bookable* subset only — 9 services, while staff
+  records reference ~200 and appointments name services absent here. So a referenced
+  service that is not in the list is stored `is_resolved = false` (see DATA-MODEL),
+  not failed. `/v1/catalog/list` and `/v1/catalog/staff/catalog/list` return shop
+  **products** (48 at staff scope), a separate catalogue not modelled yet.
 
 ### Field notes worth remembering
 

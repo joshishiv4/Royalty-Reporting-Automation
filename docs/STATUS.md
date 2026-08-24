@@ -1,6 +1,6 @@
 # Status and plan
 
-Last updated **21 Aug 2026**. Keep the date honest — a stale status file is worse
+Last updated **24 Aug 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed.
 
 ## The plan
@@ -29,6 +29,20 @@ incremental sync will trust). Still to come: the `sync_job_state` **page cursor*
 upstream — no client-list endpoint). **Location and service detail (P5.6) now land**:
 `location/list` fills `location.title` + timezone, and `service.title`/`is_package`
 are derived from purchase items (WL exposes no service-detail endpoint).
+**Reference lookups (rest of P5.6) now land too**: `promotion` (per-location,
+`/v1/classes/promotion`) and `shop_category` (business-wide, `/v1/shop/category`)
+have migration `0011`, writers, queue passes and tests — both endpoints probed live
+24 Aug 2026 and both return JSON arrays, not keyed objects. Proven live: the passes
+wrote 5 `shop_category` and 12 `promotion` rows, and a promotion re-run stayed at 12
+(upsert, no duplicates). **Service catalogue (last of P5.6) now lands too**: the real
+catalogue was found live under `/v1/appointment/book/service/{list,category}` (task
+020's "no service endpoint" was only true for the `/v1/service*` family), so migration
+`0012` adds `service_category`, enriches `service` with title/category/duration, and
+introduces `service.is_resolved` + the `unresolved_service` view. A service in the
+bookable list is `is_resolved = true`; a service only ever referenced by a transaction
+stays `false` and is countable as the Q19 gap (9 bookable vs ~200 referenced). The
+"unresolved service" behaviour is live for **purchases**; the same stub-don't-fail
+pattern will cover **sessions** once attendance is unblocked (see below).
 
 ## Done
 

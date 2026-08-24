@@ -73,8 +73,11 @@ correctly does not start.
 | Writing purchases (list → purchase + purchase_item, stub FKs) | [`src/sync/purchases.ts`](../src/sync/purchases.ts) |
 | Enriching purchases with money (receipt → totals, payments, credit) | [`src/sync/receipts.ts`](../src/sync/receipts.ts) |
 | Location detail (location/list → title, timezone) | [`src/sync/locations.ts`](../src/sync/locations.ts) |
+| Promotions (classes/promotion → promotion, per-location) | [`src/sync/promotions.ts`](../src/sync/promotions.ts) |
+| Shop categories (shop/category → shop_category, business-wide) | [`src/sync/shop-categories.ts`](../src/sync/shop-categories.ts) |
+| Service catalogue + categories (appointment/book/service/{list,category} → service, service_category; marks is_resolved) | [`src/sync/services.ts`](../src/sync/services.ts) |
 | The durable sync_queue loop (claim, settle, requeue, dead-letter) | [`src/sync/queue.ts`](../src/sync/queue.ts) |
-| One bounded sync pass (sync_run accounting + queue drain) | [`src/sync/pass.ts`](../src/sync/pass.ts) |
+| One bounded sync pass per job, and `runFullSyncPass` (every pass in FK order, one token, one budget) | [`src/sync/pass.ts`](../src/sync/pass.ts) |
 | Per-job lifecycle + clean-completion watermark (sync_job_state) | [`src/sync/job-state.ts`](../src/sync/job-state.ts) |
 
 Four things about this client are worth knowing before changing it:
@@ -106,7 +109,8 @@ not most endpoints — see [WL-API-NOTES.md](WL-API-NOTES.md).
 | CLI commands — `healthcheck`, `sync:wellness`, `config:check`, `config:show` | [`src/cli/main.ts`](../src/cli/main.ts) |
 | Everything the package exports | [`src/index.ts`](../src/index.ts) |
 | Vercel health route | [`api/health.ts`](../api/health.ts) |
-| Vercel sync route | [`api/wellness-sync.ts`](../api/wellness-sync.ts) |
+| Vercel sync route — staff only, targeted | [`api/wellness-sync.ts`](../api/wellness-sync.ts) |
+| Vercel FULL sync route — every pass, the daily cron | [`api/wellness-sync-all.ts`](../api/wellness-sync-all.ts) |
 
 The CLI and the routes are thin: both resolve config, build a client, and call the
 same functions. Nothing lives only in an entry point.
@@ -160,6 +164,8 @@ to re-run.
 | `0008` | `raw_wl`, `raw_ghl` |
 | `0009` | `raw_link` |
 | `0010` | Health views, supporting views, RLS policies |
+| `0011` | `promotion`, `shop_category` (reference lookups) |
+| `0012` | `service_category`; `service` enrichment + `is_resolved`; `unresolved_service` view |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs. They are not migrations and change nothing.

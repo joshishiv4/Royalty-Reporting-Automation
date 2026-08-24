@@ -15,6 +15,8 @@ money       location, service, purchase, purchase_item,
             purchase_payment, purchase_account_credit
 schedule    session, session_staff, attendance
 staff pay   staff_pay_rate, staff_service
+reference   promotion, shop_category, service_category
+                   view: unresolved_service
 control     sync_queue, sync_job_state, sync_run, sync_conflict
 raw         raw_wl, raw_ghl, raw_link
 health      views: data_health, data_health_issue,
@@ -221,6 +223,72 @@ None of the 75 endpoints in WL's own Postman collection resolves a `k_staff_pay`
 to a rate. So `enrollment_margin` reports revenue truthfully and leaves
 `teacher_cost` and `margin` null — not zero, which would read as "this session cost
 nothing". `cost_is_known` says whether a margin means anything.
+
+## Reference lookups
+
+`promotion` and `shop_category` are the business-wide lookups other rows join to —
+what an offering or a storefront category is *called*. Both are keyed on the WL key
+(`k_promotion`, `k_shop_category`, kept as `text`), so a re-sync upserts in place and
+never duplicates.
+
+### Promotions are per-location; shop categories are not
+
+`/v1/shop/category` answers for the whole business with no `k_location`. But
+`/v1/classes/promotion` **needs** a `k_location` (probed live 24 Aug 2026) — so the
+promotion pass is seeded one job per `location` row. A `k_promotion` is unique across
+the business, so the same promotion surfaces under several locations; the upsert on
+`k_promotion` collapses those to one row. This is why the P5.6 note calling
+promotions "business-wide, cheap" was half right: cheap, but per-location.
+
+### These two lists arrive as arrays, not keyed objects
+
+The house rule (CLAUDE.md) is that WL list endpoints return keyed objects. These two
+are the measured exception: `a_promotion` and `a_shop_category` came back as JSON
+**arrays**. The parsers accept either shape, so a keying change on WL's side cannot
+silently drop every row. See [WL-API-NOTES.md](WL-API-NOTES.md).
+
+## The service catalogue, and what "unresolved" means
+
+`service` began (0002) as an FK stub the purchase writer left — key plus a title
+*derived* from the purchase items that referenced it, because task 020 found no
+service endpoint (all `/v1/service*` paths 404). Probed live 24 Aug 2026 the real
+catalogue turned up under a different path family, `/v1/appointment/book/service/*`:
+
+- **`/v1/appointment/book/service/list`** → `service` detail. Per-location, `a_service`
+  a **keyed object** (the usual rule). Title is `s_service`, category is
+  `k_service_category`, duration is `i_duration_real` (minutes). Every row from here
+  is marked `is_resolved = true`.
+- **`/v1/appointment/book/service/category`** → `service_category`. Per-location,
+  `a_category` an **array**. `k_service_category` (text key), `s_title`, `i_sort`.
+
+Both are per-location and seeded from `location`; the keys are unique business-wide,
+so upsert dedupes across locations.
+
+### `is_resolved` — the countable gap (Q19)
+
+The bookable list is **not** the full catalogue: it returned 9 services at the one
+live location while staff records reference ~200, and appointments point at services
+the list omits. So a service that a transaction references but the catalogue never
+lists must still store — it just cannot be *resolved*. `service.is_resolved` records
+that difference:
+
+- The catalogue writer sends `is_resolved = true`.
+- The purchase writer **never sends the column**; a new stub therefore defaults to
+  `false`, and — because a PostgREST upsert writes only the columns in its body — a
+  later stub re-write can never flip a resolved service back to `false`.
+
+`unresolved_service` (a view: `service` where `is_resolved = false`) makes the gap
+countable — `select count(*)` is its size, the rows are which services to chase. This
+is the "store cleanly as unresolved rather than fail the row" behaviour the board
+asked for, applied to purchases today; the same stub-don't-fail pattern will cover
+sessions once attendance is unblocked (see [STATUS.md](STATUS.md)).
+
+### No FK on `service.k_service_category`
+
+Kept as plain `text`, deliberately without a foreign key — the same reasoning as
+`raw_link.table_name` and unresolved services: a service may name a category the
+`/category` list does not return, and a hard FK would fail the whole row for a
+missing lookup, which is the failure this design exists to avoid.
 
 ## Control plane
 

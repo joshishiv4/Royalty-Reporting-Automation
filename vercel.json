@@ -10,11 +10,14 @@
     },
     "api/wellness-sync.ts": {
       "maxDuration": 60
+    },
+    "api/wellness-sync-all.ts": {
+      "maxDuration": 60
     }
   },
   "crons": [
     {
-      "path": "/api/wellness-sync",
+      "path": "/api/wellness-sync-all",
       "schedule": "0 3 * * *"
     }
   ],

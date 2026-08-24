@@ -62,6 +62,15 @@ export const WL_PATHS = {
   scheduleClassList: '/v1/schedule/class/list',
   schedulePageList: '/v1/schedule/page/list',
   schedulePageElement: '/v1/schedule/page/element',
+  // Per-location: needs a k_location. Business-wide only by iterating locations.
+  classesPromotion: '/v1/classes/promotion',
+  // Business-wide: answers with no k_location.
+  shopCategory: '/v1/shop/category',
+  // Per-location: the bookable-service catalogue and its categories. Both need a
+  // k_location; a k_service / k_service_category is unique business-wide, so
+  // iterating locations and upserting on the key dedupes across them.
+  appointmentServiceList: '/v1/appointment/book/service/list',
+  appointmentServiceCategory: '/v1/appointment/book/service/category',
 } as const;
 
 export type WlPathName = keyof typeof WL_PATHS;
