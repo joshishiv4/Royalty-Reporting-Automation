@@ -178,10 +178,25 @@ dev — every sample is a self-purchase — so that path is mock-verified only
 
 ## Decisions waiting on someone
 
-**Raw payload retention.** `raw_wl` and `raw_ghl` will outgrow every other table and
-hold the most personal data in the database. A policy is needed **before the first
-full backfill**, not after. The schema already supports one — `fetched_at` to age
-on, `processed_at` to know what is safe to drop.
+**Raw payload retention — now measured (24 Aug 2026, task 024).** `raw_wl` and
+`raw_ghl` will outgrow every other table and hold the most personal data in the
+database. A policy is needed **before the first full backfill**, not after. The
+schema already supports one — `fetched_at` to age on, `processed_at` to know what
+is safe to drop.
+
+The size is no longer a guess: **~58 KB per client per full sync** (receipts are
+42 KB of it), so **57 MB** per pass at 1,000 clients and **~20.3 GB** for a year
+of daily syncs. Per-endpoint figures are in
+[DATA-MODEL.md](DATA-MODEL.md). Task 023 sharpened this by re-fetching every
+purchase item on every run instead of once.
+
+**A re-parse path over stored payloads.** 6.3 justifies `raw_wl` on "revisit
+decisions without re-pulling every client", and that half does not exist. On
+24 Aug 2026, 73 receipts stored on 21 Aug — complete, `status: ok`, `a_price`
+intact — could not be re-read to fill in money the writer had not yet been able
+to parse, so all 73 were re-fetched from WL. `processed_at` /
+`processed_by_run_id` / `process_error` / `parser_version` exist for this and are
+unused. Worth its own task.
 
 **Portal identity mapping.** `person.auth_user_id` links a Supabase auth user to a
 WL uid, but nothing populates it. How does a student's signup find their `uid`?

@@ -27,4 +27,5 @@ Sorted by status (done last), then priority, then ID.
 | 021 | Purchase recipient — uid_recipient from the element endpoint | done | high | 014, 015 | `done/021-purchase-recipient/` |
 | 022 | P6.1 — pull each client's profile details | done | high | 010 | `done/022-client-profile-enrichment/` |
 | 023 | P6.2 — membership and refund detail on the purchase item | done | high | 014, 021 | `done/023-purchase-membership-detail/` |
+| 024 | P6.3 — keep the original response, and measure what it costs | done | medium | 010, 015, 022, 023 | `done/024-raw-payload-retention/` |
 | 009 | M03 sync engine — writer + durable queue (umbrella) | done | high | — | `done/009-m03-sync-engine-writer/` |

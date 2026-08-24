@@ -368,6 +368,42 @@ own call, so the money for 47 clients is roughly **1,270 requests**. GHL holds
 **22,865 contacts**. A re-pull is hours against an API we do not control; a
 re-parse is a query.
 
+### What it costs — measured 24 Aug 2026
+
+"Keep everything" is only a decision once the price is known. Measured against
+live dev data, average payload per call:
+
+| Call | Average |
+|---|---|
+| `/v1/user` (profile) | 2.4 KB |
+| `/v1/profile/purchase/list` | 3.2 KB |
+| `/v1/profile/purchase/list/element` | 2.2 KB |
+| `/v1/purchase/receipt` | **7.7 KB** |
+
+At dev's shape — 5.5 purchases and 5.5 items per client — that is **~58 KB per
+client per full sync**. Receipts are 42 KB of the 58: the largest response, and
+one per purchase.
+
+Scaled: **57 MB** for 1,000 clients in one pass, **~20.3 GB** for a year of daily
+syncs. Not alarming, not free. The retention question in
+[STATUS.md](STATUS.md) is the decision this number exists to inform — and it got
+sharper with task 023, which re-fetches every purchase item on every run rather
+than once.
+
+### Storable is not re-readable — and that gap is real
+
+The justification above is "a re-parse is a query". It is not, yet.
+
+On 24 Aug 2026 the money for 73 purchases was missing. Their receipts had been
+fetched on 21 Aug — before the money writer (task 015) existed — and were sitting
+in `raw_wl`, complete, `status: ok`, `a_price` block intact. Filling the money in
+should have cost zero API calls. All 73 were re-fetched from WL instead, because
+nothing can re-process a stored payload.
+
+`processed_at`, `processed_by_run_id`, `process_error` and `parser_version` were
+put on `raw_wl` for exactly this and are unused. Until something reads them, this
+table buys evidence and audit, not the re-parse it was justified on.
+
 ### Two tables, not one
 
 WL answers HTTP 200 for errors and puts its status in the body, and sends `k_log`
