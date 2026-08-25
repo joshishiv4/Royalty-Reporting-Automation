@@ -9,11 +9,19 @@ import { writeLoginTypeList } from './login-types.js';
 import { writeMembership } from './memberships.js';
 import { writePromotionList } from './promotions.js';
 import { writePurchaseList } from './purchases.js';
-import { enqueue, outcomeFromWlError, type QueueHandler, runQueue } from './queue.js';
+import {
+  enqueue,
+  type FailureInfo,
+  outcomeFromWlError,
+  type QueueHandler,
+  runQueue,
+} from './queue.js';
 import { writeProfile } from './profiles.js';
 import { writeRecipient } from './recipients.js';
 import { writeReceipt } from './receipts.js';
 import { writeServiceCategoryList, writeServiceList } from './services.js';
+import { writeAttendanceList } from './attendance.js';
+import { writeSessionList } from './sessions.js';
 import { writeShopCategoryList } from './shop-categories.js';
 import { writeStaffList } from './writer.js';
 
@@ -410,6 +418,197 @@ export function runLoginTypeSyncPass(
 }
 
 /**
+ * A failure that is ours, not WL's - the request never went out. Shaped like a
+ * WL failure so sync_queue records it the same way; the WL-specific fields are
+ * null precisely because there was no response.
+ */
+function internalFailure(runId: string, message: string): FailureInfo {
+  return { message, sid: null, httpStatus: null, traceId: runId, kLog: null };
+}
+
+/** The rolling schedule window: seven days back, thirty forward. */
+const SCHEDULE_LOOKBACK_DAYS = 7;
+const SCHEDULE_LOOKAHEAD_DAYS = 30;
+
+/** WL wants BARE dates here - "YYYY-MM-DD 00:00:00" is rejected. See sessions.ts. */
+function scheduleDay(now: number, offsetDays: number): string {
+  return new Date(now + offsetDays * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * Runs the schedule sync: one job that pulls the class schedule for a rolling
+ * window of -7 to +30 days.
+ *
+ * Seven days back catches sessions that have just finished (a royalty is owed on
+ * those); thirty forward is what the portal shows a student.
+ *
+ * ONE CALL FOR THE WHOLE STUDIO. The endpoint demands a `uid`, but the schedule
+ * it returns is the business's, not that person's - four uids were probed live
+ * and all four returned identical sessions. So this is seeded as a single 'all'
+ * item and its cost does not grow with the client base. Any person will do; the
+ * first uid we hold is used.
+ *
+ * RE-RUNNING CHANGES NOTHING. Occurrences upsert on (k_period, dt_start_utc), so
+ * the same window fetched twice refreshes booking counts in place. That key is
+ * the whole point: a class id repeats weekly (see sessions.ts).
+ */
+export function runScheduleSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'schedule_sync',
+    workType: 'schedule_window',
+    // The uid the call needs is decided HERE, not in the handler: with no person
+    // row there is nothing to hang the call on, and the honest response is to
+    // enqueue nothing rather than claim work and quietly mark it done. The staff
+    // pass runs first, so by the next pass there will be one.
+    seed: async ({ db, kBusiness, nowIso }) => {
+      const people = await db.select<{ uid: string }>(
+        'person',
+        `k_business=eq.${kBusiness}&select=uid&limit=1`,
+      );
+      const uid = people[0]?.uid;
+      if (uid === undefined) return;
+      await enqueue(
+        db,
+        [{ work_type: 'schedule_window', target_key: uid, k_business: kBusiness }],
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId, nowIso }) =>
+      async (item) => {
+        try {
+          // The uid rides on the queue item - see the seed.
+          const uid = item.target_key;
+
+          // The pass clock, not Date.now(): tests inject it, and every claim
+          // in this run filters on the same one.
+          const at = Date.parse(nowIso());
+          const from = scheduleDay(at, -SCHEDULE_LOOKBACK_DAYS);
+          const to = scheduleDay(at, SCHEDULE_LOOKAHEAD_DAYS);
+          const response = await wl.request(WL_PATHS.scheduleClassList, {
+            query: { uid, dt_date: from, dt_end: to, is_tab_all: 'true' },
+            priorAttempt: item.attempt_count,
+          });
+          await writeSessionList(db, {
+            kBusiness,
+            response,
+            runId,
+            windowKey: `${from}|${to}`,
+          });
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
+}
+
+/**
+ * Runs the attendance sync: one job PER stored session occurrence, each fetching
+ * /v1/login/attendance/list for who booked and who turned up.
+ *
+ * Seeded from `session`, so it can only ever cover occurrences the schedule pass
+ * already brought in - which is why it runs after it. Sessions with no attendees
+ * simply return an empty list; that is a real answer, not a failure.
+ *
+ * The endpoint wants the occurrence's LOCAL start time under `dt_date_local`
+ * (the parameter name that had this recorded as blocked - see attendance.ts), so
+ * the seed carries the composite key and the handler reads the local time back
+ * off the session row.
+ *
+ * Attendees are ordinary clients we usually do not otherwise hold, so this pass
+ * is currently the ONLY route to people outside the staff list. It does not
+ * enumerate them - it finds the ones who booked a class we can see.
+ */
+export function runAttendanceSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'attendance_sync',
+    workType: 'session_attendance',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      const sessions = await db.select<{ k_period: string; dt_start_utc: string }>(
+        'session',
+        `k_business=eq.${kBusiness}&select=k_period,dt_start_utc`,
+      );
+      await enqueue(
+        db,
+        sessions.map((s) => ({
+          work_type: 'session_attendance',
+          target_key: `${s.k_period}|${s.dt_start_utc}`,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId }) =>
+      async (item) => {
+        try {
+          // A target key this pass wrote itself, so a malformed one means the
+          // queue row was tampered with or seeded by something else. Dead-letter
+          // it rather than guess at a period.
+          const [kPeriod, dtStartUtc] = item.target_key.split('|');
+          if (kPeriod === undefined || dtStartUtc === undefined || dtStartUtc === '') {
+            return {
+              kind: 'dead',
+              failure: internalFailure(
+                runId,
+                `attendance key is not period|start: ${item.target_key}`,
+              ),
+            };
+          }
+
+          // The endpoint needs LOCAL time; the session row is where it lives,
+          // stored exactly as WL sent it rather than converted from the UTC one.
+          const rows = await db.select<{ dtl_start_local: string }>(
+            'session',
+            `k_period=eq.${kPeriod}&dt_start_utc=eq.${encodeURIComponent(dtStartUtc)}` +
+              `&select=dtl_start_local`,
+          );
+          const local = rows[0]?.dtl_start_local;
+          if (local === undefined) {
+            // The session was deleted between seeding and claiming. Retrying
+            // cannot help, and the local start time is the one thing this call
+            // cannot be made without.
+            return {
+              kind: 'dead',
+              failure: internalFailure(
+                runId,
+                `session ${item.target_key} gone before attendance ran`,
+              ),
+            };
+          }
+
+          const response = await wl.request(WL_PATHS.loginAttendanceList, {
+            query: {
+              dt_date_local: local.replace('T', ' ').slice(0, 19),
+              k_class_period: kPeriod,
+            },
+            priorAttempt: item.attempt_count,
+          });
+          await writeAttendanceList(db, {
+            kBusiness,
+            kPeriod,
+            dtStartUtc,
+            response,
+            runId,
+          });
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
+}
+
+/**
  * Runs the shop-category sync: one job that lists storefront categories.
  *
  * Genuinely business-wide - the endpoint answers with no k_location - so it is
@@ -659,6 +858,10 @@ const FULL_SYNC_ORDER: ReadonlyArray<{
   // per-person profile enrichment (primary email for GHL): after every pass that
   // creates a person row, so it enriches payers and recipients too, not just staff.
   { job: 'profile_sync', run: runProfileSyncPass },
+  // the schedule: business-wide, needs a person row to exist (any one will do).
+  { job: 'schedule_sync', run: runScheduleSyncPass },
+  // per-occurrence attendance: needs the session rows the schedule pass wrote.
+  { job: 'attendance_sync', run: runAttendanceSyncPass },
   // per-location catalogue LAST: it upserts the authoritative title over any
   // purchase-derived stub and marks resolved services, so it must run after the
   // purchase pass that creates those stubs.
