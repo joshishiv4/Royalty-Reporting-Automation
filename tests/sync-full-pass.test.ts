@@ -37,6 +37,7 @@ describe('runFullSyncPass', () => {
     const summary = await runFullSyncPass(config, { wl: fakeWl(), db: fakeDb(), now: () => 0 });
 
     expect(summary.passes.map((p) => p.job)).toEqual([
+      'login_type_sync',
       'staff_sync',
       'location_sync',
       'shop_category_sync',

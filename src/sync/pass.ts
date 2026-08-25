@@ -5,6 +5,7 @@ import { WL_PATHS } from '../wl/endpoint.js';
 import { WlTokenClient } from '../wl/token.js';
 import { closeJobState, openJobState } from './job-state.js';
 import { writeLocationList } from './locations.js';
+import { writeLoginTypeList } from './login-types.js';
 import { writeMembership } from './memberships.js';
 import { writePromotionList } from './promotions.js';
 import { writePurchaseList } from './purchases.js';
@@ -365,6 +366,50 @@ export function runProfileSyncPass(
 }
 
 /**
+ * Runs the login-type sync: one job that lists the business's client types.
+ *
+ * Business-wide - the endpoint answers with no k_location - so it is seeded as a
+ * single 'all' item, like staff and locations. Thirteen rows,
+ * which is exactly the Client Types filter the WL "All Clients" report offers.
+ *
+ * Runs EARLY, before the person-creating passes: `login_type.is_teacher_type` is
+ * what the `teacher` view joins on (migration 0014), so without these rows there
+ * are no teachers, whatever else synced. Upsert on k_login_type, and the payload
+ * deliberately omits is_teacher_type so a re-sync never overwrites the studio's
+ * decision (see login-types.ts).
+ */
+export function runLoginTypeSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'login_type_sync',
+    workType: 'login_type_list',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      await enqueue(
+        db,
+        [{ work_type: 'login_type_list', target_key: 'all', k_business: kBusiness }],
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId }) =>
+      async (item) => {
+        try {
+          const response = await wl.request(WL_PATHS.loginType, {
+            priorAttempt: item.attempt_count,
+          });
+          await writeLoginTypeList(db, { kBusiness, response, runId });
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
+}
+
+/**
  * Runs the shop-category sync: one job that lists storefront categories.
  *
  * Genuinely business-wide - the endpoint answers with no k_location - so it is
@@ -592,7 +637,10 @@ const FULL_SYNC_ORDER: ReadonlyArray<{
   readonly job: string;
   readonly run: (config: AppConfig, deps: SyncPassDeps) => Promise<SyncPassSummary>;
 }> = [
-  // person rows first: purchases are seeded from person.uid.
+  // reference FIRST: login_type.is_teacher_type is what the teacher view joins
+  // on, so without it nobody is a teacher however well everything else synced.
+  { job: 'login_type_sync', run: runLoginTypeSyncPass },
+  // person rows next: purchases are seeded from person.uid.
   { job: 'staff_sync', run: runStaffSyncPass },
   // location rows next: promotions and the service catalogue seed from locations.
   { job: 'location_sync', run: runLocationSyncPass },
