@@ -7,26 +7,17 @@
 - [x] `parseMembership` + `writeMembership` (merge, never clobber; upsert on item)
 - [x] Element pass seeds every item; second typed write off the shared raw row
 - [x] Tests, mutation-proven
-- [ ] **Apply `0013` to the dev database** — manual, Supabase SQL editor
-- [ ] Live proof against dev (blocked on the line above)
+- [x] **Apply `0013` to the dev database** — manual, Supabase SQL editor
+- [x] Live proof against dev
 
 ## Last step
 
-Code complete and green: `npm run verify` = 33 files, 325 tests.
-
-Blocked on one manual step: migration `0013` has not been applied to dev. There
-is no way to run DDL from here — PostgREST exposes no `exec_sql` RPC (checked,
-404), and migrations in this project have always been applied by hand in the
-Supabase SQL editor (see task 007 and STATUS). Confirmed the columns are absent
-live: `column purchase_item.sid_value does not exist`.
-
-Until it is applied, the element pass will dead-letter every item — the upsert
-names columns the table does not have.
+Done. 109/109 items carry membership detail; the multi-item question is now
+measured rather than assumed.
 
 ## Blockers
 
-1. **`0013` not applied to dev.** Manual step, needs a human with SQL-editor
-   access. Everything else is done and proven by test.
+None. `0013` was applied to dev 24 Aug 2026 and the pass has run clean since.
 
 ## Log
 
@@ -75,3 +66,43 @@ Two side effects to expect on the first run after `0013` lands:
 - The pass now makes one element call per purchase item every run (109 on dev),
   where it previously made none once every purchase was attributed. That is the
   deliberate cost of keeping membership state fresh.
+
+### 2026-08-24 — migration applied, proven live, task closed
+
+- `0013` applied to dev. All eleven columns present.
+- Three consecutive full passes over every purchase item: **claimed 327 / done
+  327 / requeued 0 / dead 0**. `purchase_item` held at 109 rows throughout and
+  every captured value survived all three runs — refresh, never a duplicate, and
+  merge-never-clobber doing its job.
+- Captured live: `sid_value` 109/109, `i_payment_period` 11, `m_period_price` 11,
+  `dt_cancel` 10, `is_renew` 9, `m_refund` 5. Types: `appointment` x91,
+  `service-membership` x11, `service-limit` x6, `class-period` x1.
+- Refunds, all negative as WL sends them: -280.00, -329.00, -230.00, -70.00,
+  -42.50. The other 104 items read as null rather than 0.00, which is the `"0"`
+  marker guard working on real data.
+- Two design calls confirmed against live rows: item 181117945 is a membership
+  with `m_period_price` **0.00** and a payment period (a zero price is real, and
+  is kept), and items 181117945 / 181866830 are set to renew with `i_renew`
+  **null** (WL sent 0, meaning "not yet renewed" - storing it would claim a
+  renewal count the membership does not have).
+
+### 2026-08-24 — the multi-item question, now measured
+
+The one criterion that could not be shown live. Rather than leave it as "dev
+happens to have none", it was measured from three independent angles:
+
+- **Purchase list**, all 20 people: 109 purchases, 109 items.
+- **Receipt, every one of the 109 purchases**: `a_purchase_item` held exactly
+  ONE entry in all 109. Zero failures.
+- **Element `a_component`** (WL's own "related component items"): empty on 60/60.
+- No `k_purchase` appears under more than one uid.
+
+And the cross-check that matters: WL offers 109 items, we store 109 rows across
+109 purchases. **Nothing is being collapsed or lost** - if the code were keying
+on `k_purchase` the receipt scan would show more items than we hold, and it does
+not.
+
+So the 1:1 is a fact about this business's data, not a defect. The criterion
+stays mock-verified, and the task 008 ledger entry should say what would settle
+it: a genuine multi-item purchase created in WL. Ten minutes of setup, not a
+code change.

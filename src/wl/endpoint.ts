@@ -56,6 +56,9 @@ export const WL_PATHS = {
   locationList: '/v1/location/list',
   reportQuery: '/v1/report/query',
   staffList: '/v1/staff/list',
+  // Business-wide: the thirteen client types, and the lookup that defines a
+  // teacher (login_type.is_teacher_type - migration 0014).
+  loginType: '/v1/login/type',
   user: '/v1/user',
   profilePurchaseList: '/v1/profile/purchase/list',
   // Per purchase ITEM: carries uid_recipient / uid_payer, which neither the

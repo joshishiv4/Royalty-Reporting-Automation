@@ -1,7 +1,7 @@
 ---
 id: 023
 title: P6.2 — membership and refund detail on the purchase item
-status: active
+status: done
 priority: high
 depends_on: [014, 021]
 created: 2026-08-24
@@ -67,13 +67,14 @@ membership columns readable.
 
 ## Acceptance criteria
 
-- [ ] Purchase list pulled per client and upserted on the purchase item
+- [x] Purchase list pulled per client and upserted on the purchase item
       (already true from 014 — proven, not re-built)
-- [ ] A purchase containing several items produces several rows
-- [ ] Membership fields captured where present: payment period, period price,
+- [x] A purchase containing several items produces several rows (structural —
+      the key is `k_purchase_item`; mock-verified, dev is a strict 1:1)
+- [x] Membership fields captured where present: payment period, period price,
       hold state and hold dates, pending cancellation and renewal
-- [ ] Refund amount captured where present
-- [ ] Re-running produces no duplicates
+- [x] Refund amount captured where present
+- [x] Re-running produces no duplicates
 
 ## Constraints & notes
 

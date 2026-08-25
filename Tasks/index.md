@@ -6,7 +6,6 @@ Sorted by status (done last), then priority, then ID.
 | ID  | Title | Status | Priority | Depends on | Path |
 |-----|-------|--------|----------|------------|------|
 | 008 | Live-verification checklist for behaviour only mocks can prove today | backlog | high | — | `backlog/008-live-verification-checklist/` |
-| 023 | P6.2 — membership and refund detail on the purchase item | active | high | 014, 021 | `active/023-purchase-membership-detail/` |
 | 017 | P5.1 — request the client report and wait for it to finish | backlog | high | — | `backlog/017-client-report-request/` |
 | 018 | P5.2 — read the client report page by page | backlog | high | 017 | `backlog/018-client-report-paged-read/` |
 | 019 | P5.3 — save clients into person without duplicates | backlog | high | 018 | `backlog/019-save-clients-dedup/` |
@@ -27,4 +26,6 @@ Sorted by status (done last), then priority, then ID.
 | 015 | Purchase receipt enrichment — money and the payment breakdown | done | high | 014 | `done/015-purchase-receipt-money/` |
 | 021 | Purchase recipient — uid_recipient from the element endpoint | done | high | 014, 015 | `done/021-purchase-recipient/` |
 | 022 | P6.1 — pull each client's profile details | done | high | 010 | `done/022-client-profile-enrichment/` |
+| 023 | P6.2 — membership and refund detail on the purchase item | done | high | 014, 021 | `done/023-purchase-membership-detail/` |
+| 024 | P6.3 — keep the original response, and measure what it costs | done | medium | 010, 015, 022, 023 | `done/024-raw-payload-retention/` |
 | 009 | M03 sync engine — writer + durable queue (umbrella) | done | high | — | `done/009-m03-sync-engine-writer/` |
