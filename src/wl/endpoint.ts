@@ -67,6 +67,8 @@ export const WL_PATHS = {
   profilePurchaseListElement: '/v1/profile/purchase/list/element',
   purchaseReceipt: '/v1/purchase/receipt',
   scheduleClassList: '/v1/schedule/class/list',
+  // Per OCCURRENCE: wants dt_date_local (NOT dt_date) plus k_class_period.
+  loginAttendanceList: '/v1/login/attendance/list',
   schedulePageList: '/v1/schedule/page/list',
   schedulePageElement: '/v1/schedule/page/element',
   // Per-location: needs a k_location. Business-wide only by iterating locations.

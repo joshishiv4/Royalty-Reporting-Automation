@@ -79,6 +79,8 @@ correctly does not start.
 | Promotions (classes/promotion → promotion, per-location) | [`src/sync/promotions.ts`](../src/sync/promotions.ts) |
 | Shop categories (shop/category → shop_category, business-wide) | [`src/sync/shop-categories.ts`](../src/sync/shop-categories.ts) |
 | Login types (login/type → login_type; `is_teacher_type` defines the `teacher` view) | [`src/sync/login-types.ts`](../src/sync/login-types.ts) |
+| The class schedule (schedule/class/list → session + session_staff, keyed on class **and** date) | [`src/sync/sessions.ts`](../src/sync/sessions.ts) |
+| Who booked and who turned up (login/attendance/list → attendance, per occurrence) | [`src/sync/attendance.ts`](../src/sync/attendance.ts) |
 | Service catalogue + categories (appointment/book/service/{list,category} → service, service_category; marks is_resolved) | [`src/sync/services.ts`](../src/sync/services.ts) |
 | The durable sync_queue loop (claim, settle, requeue, dead-letter) | [`src/sync/queue.ts`](../src/sync/queue.ts) |
 | One bounded sync pass per job, and `runFullSyncPass` (every pass in FK order, one token, one budget) | [`src/sync/pass.ts`](../src/sync/pass.ts) |
@@ -172,6 +174,8 @@ to re-run.
 | `0012` | `service_category`; `service` enrichment + `is_resolved`; `unresolved_service` view |
 | `0013` | `purchase_item` membership state (`sid_value`, payment period, hold, cancellation, renewal) + `m_refund` |
 | `0014` | `login_type` (13 WL client types) + `is_teacher_type`; `teacher` view redefined to join it |
+| `0015` | `session` booking fields (`i_wait`, `is_event`, `is_virtual`, `is_wait_list_enabled`, `url_book`) |
+| `0016` | `attendance` booking facts (`is_waitlisted`, `is_unpaid`, `uid_book`) |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs. They are not migrations and change nothing.

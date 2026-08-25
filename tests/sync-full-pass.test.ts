@@ -47,6 +47,8 @@ describe('runFullSyncPass', () => {
       'receipt_sync',
       'purchase_element_sync',
       'profile_sync',
+      'schedule_sync',
+      'attendance_sync',
       'service_sync',
     ]);
     expect(summary.passes.every((p) => p.ran)).toBe(true);
@@ -88,9 +90,13 @@ describe('runFullSyncPass', () => {
         ),
       ),
       upsert: vi.fn((_table: string, rows: unknown[]) => Promise.resolve(rows)),
+      // Only the STAFF queue yields work. Without the work_type check this fake
+      // hands every pass a staff_list item forever, and any handler that returns
+      // an outcome instead of throwing loops until the heap dies - which is not
+      // a bug in that handler, just a fake that never drains.
       select: vi.fn((_t: string, query: string) =>
         Promise.resolve(
-          query.includes('order=next_attempt_at.asc')
+          query.includes('order=next_attempt_at.asc') && query.includes('work_type=in.(staff_list)')
             ? [
                 {
                   id: 'q1',

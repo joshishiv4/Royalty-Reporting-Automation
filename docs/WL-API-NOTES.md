@@ -264,6 +264,44 @@ Also carried but **not stored** (no person column, out of 6.1 scope): `id_gender
 login-mail *URL*, not the address; `/v1/profile/email` is an email→uid lookup
 (needs `text_mail`); `/v1/profile/setting` is notification flags only.
 
+### `/v1/schedule/class/list` — the schedule, and the ONE endpoint that wants a bare date (probed live 25 Aug 2026)
+
+The house rule is that a WL date needs a time component. **This endpoint is the
+exception**: `dt_date` and `dt_end` must be bare `YYYY-MM-DD`. Sending
+`2026-08-18 00:00:00` is rejected with `date-end-invalid`. The Postman collection
+documents this correctly; guessing the usual format is what made the schedule look
+blocked.
+
+It also demands a `uid`, but **the schedule it returns is the business's, not that
+person's** — four different uids were probed and all four returned the identical
+seven sessions. So one call covers the whole studio and its cost does not grow
+with the client base. The uid is context, not a filter.
+
+`a_session` carries, per occurrence:
+
+| Field | → session | Notes |
+|---|---|---|
+| `k_class_period` | `k_period` | **Repeats weekly** — see the trap below. |
+| `dt_date` | `dt_start_utc` | Global time. |
+| `dtl_date` | `dtl_start_local` | Local, as WL sends it. Never re-derive it. |
+| `text_timezone` | same | `"ET"` — an abbreviation, not an IANA zone. |
+| `i_book` / `i_capacity` / `i_wait` | `i_booked` / `i_capacity` / `i_wait` | |
+| `is_event` / `is_cancel` | `is_event` / `is_cancelled_studio` | **Strings `"0"`/`"1"`**, not booleans. |
+| `is_virtual` / `is_wait_list_enabled` | same | These two ARE real booleans. |
+| `url_book` | `url_book` | WL-generated, carries the period and start time. |
+| `a_staff` / `a_staff_uid` | `session_staff` | k_staff and person uid, positionally paired. |
+
+**The trap: a class id repeats.** `k_class_period` 18448467 came back SIX times in
+one 38-day window — one per week, same id, six dates. Keyed on the id alone, five
+weeks of teaching vanish. The key is (class, date).
+
+**`a_staff_uid` is the only place the API names who teaches.** The purchase side
+never does — see the element notes above.
+
+**One malformed record per response.** A row arrived carrying `dtl_date` and
+nothing else: no class period, no capacity, no staff. It cannot be keyed, so it is
+counted and skipped rather than stored half-filled.
+
 ### Services and locations (probed live 21 Aug 2026)
 
 - **`/v1/location/list`** carries the detail: `s_title` (name) and an `a_timezone`
