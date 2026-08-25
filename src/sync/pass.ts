@@ -21,6 +21,7 @@ import { writeRecipient } from './recipients.js';
 import { writeReceipt } from './receipts.js';
 import { writeServiceCategoryList, writeServiceList } from './services.js';
 import { writeAttendanceList } from './attendance.js';
+import { parseVisitList, writeClientSession } from './client-sessions.js';
 import { writeSessionList } from './sessions.js';
 import { writeShopCategoryList } from './shop-categories.js';
 import { writeStaffList } from './writer.js';
@@ -609,6 +610,80 @@ export function runAttendanceSyncPass(
 }
 
 /**
+ * Runs the per-client session sync: one job PER person, fetching that client's
+ * upcoming visits and then the detail of each (PRD 7.2).
+ *
+ * THE ONLY ROUTE TO PRIVATE APPOINTMENTS. The business-wide schedule call
+ * returns classes only. Measured live 25 Aug 2026: six class occurrences taught
+ * by ONE person, against 115 visits from the per-client call - sixteen of the
+ * seventeen teachers had no session we could see. Private lessons are the main
+ * revenue line, so without this pass almost nothing is attributable.
+ *
+ * FUTURE ONLY, AND NO WINDOW TO WIDEN. /v1/schedule/page/list ignores date
+ * parameters and returns upcoming visits. Fine for ongoing sync - a session is
+ * caught while upcoming and its outcome filled in later - but it CANNOT
+ * backfill. History is P9's problem, not this pass's.
+ *
+ * A client with nothing booked returns an empty list, which is a real answer:
+ * the job completes rather than failing.
+ *
+ * COST: one list call per person plus one detail call per visit. Live that is
+ * 22 + 115 = 137 calls, and the detail half grows with the client base. Task 7.3
+ * adds the at-most-twice rule that keeps it bounded; until then this pass
+ * re-reads every upcoming visit on every run.
+ */
+export function runClientSessionSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'client_session_sync',
+    workType: 'client_visits',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      const people = await db.select<{ uid: string }>(
+        'person',
+        `k_business=eq.${kBusiness}&select=uid`,
+      );
+      await enqueue(
+        db,
+        people.map((p) => ({
+          work_type: 'client_visits',
+          target_key: p.uid,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId }) =>
+      async (item) => {
+        try {
+          const uid = item.target_key;
+          const listed = await wl.request(WL_PATHS.schedulePageList, {
+            query: { uid },
+            priorAttempt: item.attempt_count,
+          });
+          const visits = parseVisitList(listed.body);
+
+          // Each visit needs its own detail call - the list carries pointers
+          // (k_visit and a date) and nothing else.
+          for (const kVisit of visits) {
+            const detail = await wl.request(WL_PATHS.schedulePageElement, {
+              query: { k_visit: kVisit },
+              priorAttempt: item.attempt_count,
+            });
+            await writeClientSession(db, { kBusiness, uid, kVisit, response: detail, runId });
+          }
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
+}
+
+/**
  * Runs the shop-category sync: one job that lists storefront categories.
  *
  * Genuinely business-wide - the endpoint answers with no k_location - so it is
@@ -860,6 +935,9 @@ const FULL_SYNC_ORDER: ReadonlyArray<{
   { job: 'profile_sync', run: runProfileSyncPass },
   // the schedule: business-wide, needs a person row to exist (any one will do).
   { job: 'schedule_sync', run: runScheduleSyncPass },
+  // per-client visits: the ONLY route to private appointments. After the
+  // schedule pass so a class booking converges onto the row it already wrote.
+  { job: 'client_session_sync', run: runClientSessionSyncPass },
   // per-occurrence attendance: needs the session rows the schedule pass wrote.
   { job: 'attendance_sync', run: runAttendanceSyncPass },
   // per-location catalogue LAST: it upserts the authoritative title over any
