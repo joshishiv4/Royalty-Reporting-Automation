@@ -48,6 +48,7 @@ describe('runFullSyncPass', () => {
       'purchase_element_sync',
       'profile_sync',
       'schedule_sync',
+      'client_session_sync',
       'attendance_sync',
       'service_sync',
     ]);

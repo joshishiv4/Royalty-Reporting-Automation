@@ -81,6 +81,7 @@ correctly does not start.
 | Login types (login/type → login_type; `is_teacher_type` defines the `teacher` view) | [`src/sync/login-types.ts`](../src/sync/login-types.ts) |
 | The class schedule (schedule/class/list → session + session_staff, keyed on class **and** date) | [`src/sync/sessions.ts`](../src/sync/sessions.ts) |
 | Who booked and who turned up (login/attendance/list → attendance, per occurrence) | [`src/sync/attendance.ts`](../src/sync/attendance.ts) |
+| Private appointments, per client (schedule/page/list + element → session, staff, attendance) | [`src/sync/client-sessions.ts`](../src/sync/client-sessions.ts) |
 | Service catalogue + categories (appointment/book/service/{list,category} → service, service_category; marks is_resolved) | [`src/sync/services.ts`](../src/sync/services.ts) |
 | The durable sync_queue loop (claim, settle, requeue, dead-letter) | [`src/sync/queue.ts`](../src/sync/queue.ts) |
 | One bounded sync pass per job, and `runFullSyncPass` (every pass in FK order, one token, one budget) | [`src/sync/pass.ts`](../src/sync/pass.ts) |
@@ -176,6 +177,7 @@ to re-run.
 | `0014` | `login_type` (13 WL client types) + `is_teacher_type`; `teacher` view redefined to join it |
 | `0015` | `session` booking fields (`i_wait`, `is_event`, `is_virtual`, `is_wait_list_enabled`, `url_book`) |
 | `0016` | `attendance` booking facts (`is_waitlisted`, `is_unpaid`, `uid_book`) |
+| `0017` | `session` visit detail (`is_checkin`, `k_service`, `dt_cancel_by` — a deadline, not a cancellation) |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs. They are not migrations and change nothing.

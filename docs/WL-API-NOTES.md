@@ -302,6 +302,39 @@ never does — see the element notes above.
 nothing else: no class period, no capacity, no staff. It cannot be keyed, so it is
 counted and skipped rather than stored half-filled.
 
+### `/v1/schedule/page/list` + `/element` — the ONLY route to private appointments (probed live 25 Aug 2026)
+
+The business-wide schedule call returns **classes only**. Measured: it gave six
+occurrences of one class taught by one person, while the per-client call gave
+**115 visits**. Sixteen of the studio's seventeen teachers had no session visible
+at all, because they teach private appointments.
+
+`/v1/schedule/page/list?uid=` returns pointers and nothing else — `k_visit`,
+`dtu_date`, `id_visit`, `k_business`. Every detail needs
+`/v1/schedule/page/element?k_visit=`.
+
+**Future only, and there is no window to widen.** The list ignores date
+parameters entirely. Ongoing sync is fine (a session is caught while upcoming and
+its outcome filled in later); backfill is impossible from here.
+
+**Two shapes, told apart by which key WL fills:**
+
+| | `k_appointment` | `k_class_period` | `k_service` |
+|---|---|---|---|
+| private appointment | set | null | set |
+| class booking | null | set | null |
+
+The element body also carries `a_staff` (`k_staff` + `s_name_full`) — for
+appointments this is the only place the teacher appears — plus `is_checkin`,
+`i_capacity`, `i_duration`, `is_virtual`, `is_event`, `dt_date_global`,
+`dt_date_local` and `text_timezone`.
+
+**TRAP: `dt_cancel` is a DEADLINE, not a cancellation.** The name invites the
+wrong reading. Measured across 40 visits it sat **exactly 24 hours before the
+session start on 40 of 40** — including sessions that were attended. It is the
+studio's cancel-by policy time. Stored as `dt_cancel_by`; reading it as "when
+this was cancelled" would put a cancellation on every session in the business.
+
 ### Services and locations (probed live 21 Aug 2026)
 
 - **`/v1/location/list`** carries the detail: `s_title` (name) and an `a_timezone`
