@@ -708,13 +708,21 @@ export function runClientSessionSyncPass(
             const prior = seen.get(kVisit);
             if (prior !== undefined) {
               const started = Date.parse(prior.dt_start_utc);
-              // Two reads is everything there is to learn; and a session a week
-              // past its start is settled whatever the count says, so a visit
-              // that somehow never reached two is not retried forever.
-              if (
-                prior.detail_fetch_count >= MAX_DETAIL_FETCHES ||
-                (Number.isFinite(started) && started < settledBefore)
-              ) {
+              const hasHappened = Number.isFinite(started) && started < at;
+
+              // Two reads is everything there is to learn.
+              const spent = prior.detail_fetch_count >= MAX_DETAIL_FETCHES;
+              // A week past its start it is settled whatever the count says, so
+              // a visit that somehow never reached two is not retried forever.
+              const settled = Number.isFinite(started) && started < settledBefore;
+              // THE SECOND READ IS ONLY WORTH MAKING ONCE THE SESSION HAS
+              // HAPPENED. Spending it while the session is still upcoming burns
+              // the quota on an is_checkin that is necessarily still false, and
+              // the real outcome then never gets read at all. That is the whole
+              // point of "once when discovered, once after its date has passed".
+              const tooEarly = prior.detail_fetch_count >= 1 && !hasHappened;
+
+              if (spent || settled || tooEarly) {
                 skipped += 1;
                 continue;
               }

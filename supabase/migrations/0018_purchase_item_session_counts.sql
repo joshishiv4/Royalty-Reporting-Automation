@@ -48,8 +48,10 @@ alter table public.purchase_item
   add column if not exists i_buy    integer;
 
 comment on column public.purchase_item.i_limit is
-  'Package size - how many sessions the item entitles. Live: set on 6 of 109 '
-  '(4, 4, 8, 12, 48 lessons); null on single appointments, which have no limit.';
+  'Package size - how many sessions the item entitles. WL sends 0, NOT null, on '
+  'an unlimited item, and 0 is stored as sent (the ticket asked for raw values). '
+  'So "has a limit" is i_limit > 0, not i_limit is not null - live that is 6 of '
+  '109: 4, 4, 8, 8, 12 and 48 lessons.';
 comment on column public.purchase_item.i_remain is
   'Sessions REMAINING. This is the field the portal shows a student, not '
   'i_left. Stored as WL sends it, never derived from i_limit - i_use.';
@@ -61,6 +63,11 @@ comment on column public.purchase_item.i_use is
 
 -- "Which packages still have sessions on them" is the question this answers, and
 -- it is asked of the small minority of items that carry a limit at all.
+--
+-- The predicate is i_limit > 0, not "is not null". WL sends 0 for an unlimited
+-- item and that 0 is stored, so a null test would index all 109 rows and index
+-- nothing usefully - which is exactly what the first version of this did.
+drop index if exists purchase_item_remaining_idx;
 create index if not exists purchase_item_remaining_idx
   on public.purchase_item (k_business, i_remain)
-  where i_limit is not null;
+  where i_limit > 0;

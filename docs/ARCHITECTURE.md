@@ -180,6 +180,7 @@ to re-run.
 | `0017` | `session` visit detail (`is_checkin`, `k_service`, `dt_cancel_by` — a deadline, not a cancellation) |
 | `0018` | `purchase_item` session counts (`i_limit`, `i_left`, `i_remain`, `i_use`, `i_book`, `i_buy`) |
 | `0019` | `session.detail_fetch_count` / `detail_fetched_at` — bounds the per-visit detail re-read |
+| `0020` | `session_outcome` view — what happened to each booking, derived in one place |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs. They are not migrations and change nothing.
