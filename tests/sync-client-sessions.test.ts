@@ -208,6 +208,34 @@ describe('writeClientSession', () => {
     expect(staff?.rows?.[0]).toMatchObject({ k_staff: '344486', k_period: '132190448' });
   });
 
+  // PRD 7.3. The counter is the caller's knowledge - the writer sees one payload
+  // and cannot know how many times it has been read.
+  it('records the fetch count and time when the caller supplies them', async () => {
+    const { db, calls } = fakeDb();
+    await writeClientSession(db, {
+      ...input(appointment()),
+      detailFetchCount: 2,
+      fetchedAt: '2026-08-25T09:00:00.000Z',
+    });
+
+    const sess = calls.find((c) => c.op === 'upsert' && c.table === 'session');
+    expect(sess?.rows?.[0]).toMatchObject({
+      detail_fetch_count: 2,
+      detail_fetched_at: '2026-08-25T09:00:00.000Z',
+    });
+  });
+
+  // Omitting it must LEAVE the stored count alone, not reset it to zero - a
+  // PostgREST upsert writes only the columns it is sent.
+  it('leaves the stored fetch count untouched when not supplied', async () => {
+    const { db, calls } = fakeDb();
+    await writeClientSession(db, input(appointment()));
+
+    const sess = calls.find((c) => c.op === 'upsert' && c.table === 'session');
+    expect(sess?.rows?.[0]).not.toHaveProperty('detail_fetch_count');
+    expect(sess?.rows?.[0]).not.toHaveProperty('detail_fetched_at');
+  });
+
   it('stores the payload but writes nothing when the visit cannot be keyed', async () => {
     const { db, calls } = fakeDb();
     const result = await writeClientSession(

@@ -610,6 +610,16 @@ export function runAttendanceSyncPass(
 }
 
 /**
+ * How long after its start a session stops being worth re-reading (PRD 7.3).
+ * Generously wide: WL allows cancellation up to 24h before, so an outcome is
+ * settled long before a week is out. A constant, not a column - tuning this
+ * should not need a migration.
+ */
+const SESSION_IMMUTABLE_AFTER_DAYS = 7;
+/** Once on discovery, once after it has happened. A third read learns nothing. */
+const MAX_DETAIL_FETCHES = 2;
+
+/**
  * Runs the per-client session sync: one job PER person, fetching that client's
  * upcoming visits and then the detail of each (PRD 7.2).
  *
@@ -655,7 +665,7 @@ export function runClientSessionSyncPass(
       );
     },
     makeHandler:
-      ({ wl, db, kBusiness, runId }) =>
+      ({ wl, db, kBusiness, runId, nowIso }) =>
       async (item) => {
         try {
           const uid = item.target_key;
@@ -665,15 +675,72 @@ export function runClientSessionSyncPass(
           });
           const visits = parseVisitList(listed.body);
 
+          // What we already know about these visits, so a settled one is not
+          // read again (PRD 7.3). One query for the whole client, not one per
+          // visit - the point of this rule is FEWER round trips, not more.
+          const known = await db.select<{
+            k_visit: string;
+            detail_fetch_count: number;
+            dt_start_utc: string;
+          }>(
+            'attendance',
+            `k_business=eq.${kBusiness}&uid=eq.${uid}&k_visit=not.is.null` +
+              `&select=k_visit,session!inner(detail_fetch_count,dt_start_utc)`,
+          );
+          const seen = new Map(
+            known.map((r) => {
+              const s = r as unknown as {
+                k_visit: string;
+                session: { detail_fetch_count: number; dt_start_utc: string };
+              };
+              return [String(s.k_visit), s.session];
+            }),
+          );
+
+          const at = Date.parse(nowIso());
+          const settledBefore = at - SESSION_IMMUTABLE_AFTER_DAYS * 86_400_000;
+          let fetched = 0;
+          let skipped = 0;
+
           // Each visit needs its own detail call - the list carries pointers
           // (k_visit and a date) and nothing else.
           for (const kVisit of visits) {
+            const prior = seen.get(kVisit);
+            if (prior !== undefined) {
+              const started = Date.parse(prior.dt_start_utc);
+              // Two reads is everything there is to learn; and a session a week
+              // past its start is settled whatever the count says, so a visit
+              // that somehow never reached two is not retried forever.
+              if (
+                prior.detail_fetch_count >= MAX_DETAIL_FETCHES ||
+                (Number.isFinite(started) && started < settledBefore)
+              ) {
+                skipped += 1;
+                continue;
+              }
+            }
+
             const detail = await wl.request(WL_PATHS.schedulePageElement, {
               query: { k_visit: kVisit },
               priorAttempt: item.attempt_count,
             });
-            await writeClientSession(db, { kBusiness, uid, kVisit, response: detail, runId });
+            await writeClientSession(db, {
+              kBusiness,
+              uid,
+              kVisit,
+              response: detail,
+              runId,
+              detailFetchCount: (prior?.detail_fetch_count ?? 0) + 1,
+              fetchedAt: nowIso(),
+            });
+            fetched += 1;
           }
+
+          // fetched + skipped is the call-volume story this rule exists for:
+          // on a settled client every visit is skipped and the pass costs a
+          // single list call. Measured figures are in ARCHITECTURE.md.
+          void fetched;
+          void skipped;
           return { kind: 'done' };
         } catch (error) {
           if (error instanceof WlRequestError) return outcomeFromWlError(error);

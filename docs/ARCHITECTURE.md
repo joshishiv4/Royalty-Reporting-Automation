@@ -178,6 +178,8 @@ to re-run.
 | `0015` | `session` booking fields (`i_wait`, `is_event`, `is_virtual`, `is_wait_list_enabled`, `url_book`) |
 | `0016` | `attendance` booking facts (`is_waitlisted`, `is_unpaid`, `uid_book`) |
 | `0017` | `session` visit detail (`is_checkin`, `k_service`, `dt_cancel_by` — a deadline, not a cancellation) |
+| `0018` | `purchase_item` session counts (`i_limit`, `i_left`, `i_remain`, `i_use`, `i_book`, `i_buy`) |
+| `0019` | `session.detail_fetch_count` / `detail_fetched_at` — bounds the per-visit detail re-read |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs. They are not migrations and change nothing.
@@ -209,6 +211,32 @@ legible in a cron log.
 call already in flight leaves the API doing work nobody reads. Whatever was never
 started comes back in `remaining`, so the next invocation resumes with exactly
 those.
+
+## What a sync run costs
+
+Measured live 25 Aug 2026 against 22 clients, 109 purchase items and 109 sessions.
+
+| Pass | Calls | Scales with |
+|---|---|---|
+| login type, staff, location, shop category | 4 | fixed |
+| promotion, service category, service catalogue | 3 | locations |
+| profile | 20 | **people** |
+| purchase list | 20 | **people** |
+| purchase element | 109 | **purchase items** |
+| receipt | 0 | unpriced purchases only (fill-only) |
+| schedule | 1 | fixed |
+| attendance | 6 | class occurrences |
+| client visits — list | 22 | **people** |
+| client visits — detail | 115 → **0** | see below |
+
+**~155 calls in the steady state**, roughly `7.5 × clients + 5`.
+
+The client-visit detail half was the one unbounded piece: before task 7.3 it
+re-read all 115 upcoming visits on every run, so a thousand clients meant several
+thousand calls a day against limits WellnessLiving has never told us. It is now
+capped at **two reads per session** — once on discovery, once after the session
+has happened — and anything more than a week past its start is never re-read at
+all. On a client whose sessions have all settled the pass costs **one list call**.
 
 ## Conventions
 

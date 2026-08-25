@@ -27,9 +27,29 @@ function elementBody(overrides: Record<string, unknown> = {}): unknown {
     is_renew: false,
     i_renew: 0,
     m_refund: '0',
+    // Session counts. i_left is 0 on every live item - it is NOT the remainder.
+    i_limit: 0,
+    i_left: 0,
+    i_remain: 0,
+    i_use: 0,
+    i_book: 0,
+    i_buy: 1,
     status: 'ok',
     ...overrides,
   };
+}
+
+/** The live four-session package: limit 4, used 3, ONE remaining, i_left 0. */
+function packageBody(overrides: Record<string, unknown> = {}): unknown {
+  return elementBody({
+    sid_value: 'service-limit',
+    s_title: 'Quick Play Package (4 Lessons)',
+    i_limit: 4,
+    i_left: 0,
+    i_remain: 1,
+    i_use: 3,
+    ...overrides,
+  });
 }
 
 /** A live-shaped membership: the "service-membership" case, 11 of 109 on dev. */
@@ -141,6 +161,48 @@ describe('parseMembership', () => {
   });
 });
 
+describe('parseMembership session counts (PRD 6.4)', () => {
+  it('stores package size, used and remaining as WL sends them', () => {
+    expect(parse(packageBody())).toMatchObject({
+      i_limit: 4,
+      i_use: 3,
+      i_remain: 1,
+    });
+  });
+
+  // Q14. The fields never contradicted each other - i_left is simply not the
+  // remaining count. It is 0 on 109 of 109 live items, including this one, where
+  // one session genuinely remains.
+  it('keeps i_left at zero WITHOUT treating it as the remainder', () => {
+    const row = parse(packageBody());
+    expect(row.i_left).toBe(0);
+    expect(row.i_remain).toBe(1);
+  });
+
+  // The whole point of storing counts. readInt drops zeros for membership terms;
+  // doing that here would erase the difference between a spent package and one
+  // that was never limited.
+  it('KEEPS a zero remaining, because a spent package is not an absent one', () => {
+    const spent = parse(packageBody({ i_use: 4, i_remain: 0 }));
+    expect(spent.i_remain).toBe(0);
+    expect(spent.i_limit).toBe(4);
+  });
+
+  it('does not compute i_remain, so a WL disagreement stays visible', () => {
+    // limit 8, used 2 would "obviously" be 6 - but WL said 5, and we store 5.
+    expect(parse(packageBody({ i_limit: 8, i_use: 2, i_remain: 5 })).i_remain).toBe(5);
+  });
+
+  it('reads a count sent as a numeric string', () => {
+    expect(parse(packageBody({ i_remain: '7' })).i_remain).toBe(7);
+  });
+
+  it('omits a count WL did not send at all', () => {
+    const row = parse(packageBody({ i_limit: undefined }));
+    expect(row).not.toHaveProperty('i_limit');
+  });
+});
+
 describe('writeMembership', () => {
   function fakeDb(opts: { itemExists?: boolean } = {}) {
     const calls: Array<{
@@ -216,9 +278,10 @@ describe('writeMembership', () => {
 
   it('counts only the columns WL actually filled', async () => {
     const { db } = fakeDb();
-    // sid_value, i_payment_period, m_period_price, i_renew - four filled.
-    expect((await writeMembership(db, input(membershipBody()))).fieldsFilled).toBe(4);
-    // The quiet appointment fills sid_value alone.
-    expect((await writeMembership(db, input(elementBody()))).fieldsFilled).toBe(1);
+    // sid_value, i_payment_period, m_period_price, i_renew, plus the six
+    // session counts - ten filled.
+    expect((await writeMembership(db, input(membershipBody()))).fieldsFilled).toBe(10);
+    // The quiet appointment fills sid_value and its six counts.
+    expect((await writeMembership(db, input(elementBody()))).fieldsFilled).toBe(7);
   });
 });

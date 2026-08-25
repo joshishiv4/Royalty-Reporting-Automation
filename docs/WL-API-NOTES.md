@@ -352,7 +352,8 @@ this was cancelled" would put a cancellation on every session in the business.
 ### Promotions and shop categories (probed live 24 Aug 2026)
 
 Reference lookups, both confirmed working against dev — unlike the client report
-(still blocked, Q4) and the guessed service endpoints (all 404).
+(resolved - the parameter is `dt_date_local`) and the guessed service
+endpoints (all 404).
 
 - **`/v1/classes/promotion`** is **per-location** — it needs a `k_location`. At
   244238 `a_promotion` held 12 records: `k_promotion` (text key), `text_title`,

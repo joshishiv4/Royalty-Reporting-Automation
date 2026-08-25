@@ -117,8 +117,10 @@ export function parseSessionList(body: unknown, kBusiness: string): ParsedSessio
       // WL gives ONE cancellation flag; the schema deliberately keeps two,
       // because a studio pulling a class and a client dropping out have
       // different royalty consequences (0004). A cancellation on the schedule
-      // is the studio's - the per-client half arrives with attendance, which is
-      // still blocked upstream, so is_cancelled_client stays at its default.
+      // is the studio's. The per-client half stays at its default: attendance
+      // populates now, but WL reports no cancellation there either - and the
+      // detail endpoint's dt_cancel is a DEADLINE, not a cancellation (0017).
+      // Nothing WL returns fills it. See WL-API-NOTES.
       is_cancelled_studio: wlBool(rec?.is_cancel),
       url_book: readString(rec, 'url_book'),
     });

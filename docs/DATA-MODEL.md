@@ -313,7 +313,8 @@ that difference:
 countable — `select count(*)` is its size, the rows are which services to chase. This
 is the "store cleanly as unresolved rather than fail the row" behaviour the board
 asked for, applied to purchases today; the same stub-don't-fail pattern will cover
-sessions once attendance is unblocked (see [STATUS.md](STATUS.md)).
+sessions, and attendance now populates - the blocker was our own parameter
+name (see [STATUS.md](STATUS.md)).
 
 ### No FK on `service.k_service_category`
 

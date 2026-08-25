@@ -69,7 +69,7 @@ introduces `service.is_resolved` + the `unresolved_service` view. A service in t
 bookable list is `is_resolved = true`; a service only ever referenced by a transaction
 stays `false` and is countable as the Q19 gap (9 bookable vs ~200 referenced). The
 "unresolved service" behaviour is live for **purchases**; the same stub-don't-fail
-pattern will cover **sessions** once attendance is unblocked (see below).
+pattern now covers **sessions** too - attendance populates (see below).
 
 ## Done
 
@@ -159,12 +159,24 @@ resolves them. `enrollment_margin` reports revenue with `teacher_cost` null.
 **Needs:** either an endpoint we have not found, or the rates supplied another way
 into `staff_pay_rate.m_rate`.
 
-### 3. `/v1/login/attendance/list` returns `date-incorrect`
+### ~~3. `/v1/login/attendance/list` returns `date-incorrect`~~ — RESOLVED 25 Aug 2026, AND IT WAS OURS
 
-Every date format tried fails, including the one other endpoints require.
-`attendance` is modelled but cannot be populated.
+Recorded as a WL problem: "every date format tried fails, including the one other
+endpoints require". **The date was never the problem — the parameter NAME was.**
+It is `dt_date_local`, not `dt_date`, and it wants the occurrence's LOCAL start
+time (`YYYY-MM-DD HH:MM:SS`) alongside `k_class_period`. Measured: `dt_date` is
+rejected, a bare date is rejected, and the session's global time answers with an
+empty list. Only the local time returns anything. The Postman collection
+documented this correctly the whole time.
 
-**Needs:** correct parameters from WL.
+`attendance` now populates — 12 rows live, and it is currently the only route to
+clients outside the staff list (both attendees of every session were people we do
+not otherwise hold).
+
+**The lesson, which is the reason this entry is kept rather than deleted:** two of
+our four "WL blockers" turned out to be our own parameter mistakes — this one and
+the schedule window, which wanted bare dates. Before recording a blocker, check
+the supplied Postman collection against the call actually being made.
 
 ### ~~4. Nothing identifies a purchase's recipient~~ — RESOLVED 24 Aug 2026
 

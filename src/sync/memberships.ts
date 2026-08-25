@@ -23,6 +23,13 @@ import { linkRows } from './writer.js';
  * another source set. Booleans are different: WL always sends true/false, so
  * `false` is an answer, not an absence, and is always written.
  *
+ * SESSION COUNTS (PRD 6.4) ride on this same payload - i_limit, i_left, i_remain,
+ * i_use, i_book, i_buy - so they cost no extra call. Q14 asked why they seemed to
+ * contradict each other: they never did. i_left is 0 on 109 of 109 items and is
+ * simply not the remaining count; i_limit - i_use = i_remain held on 6 of 6
+ * limited items. Nothing is reconciled in code - the raw values are stored and
+ * the arithmetic is left to whoever reads them, exactly as the ticket asked.
+ *
  * REFRESH, NOT FILL-ONLY. Membership state changes - a hold starts, a
  * cancellation goes pending, a renewal counter ticks. Upsert on k_purchase_item
  * updates in place, so a re-run refreshes and never duplicates.
@@ -44,6 +51,13 @@ export type MembershipRow = {
   readonly dt_cancel?: string;
   readonly i_renew?: number;
   readonly m_refund?: string;
+  // Session counts (PRD 6.4). Stored as WL sends them, never arithmetic.
+  readonly i_limit?: number;
+  readonly i_left?: number;
+  readonly i_remain?: number;
+  readonly i_use?: number;
+  readonly i_book?: number;
+  readonly i_buy?: number;
 };
 
 /**
@@ -81,6 +95,16 @@ export function parseMembership(
   put('dt_cancel', readString(b, 'dt_cancel'));
   put('i_renew', readInt(b?.i_renew));
   put('m_refund', readRefund(b?.m_refund));
+
+  // Session counts. readCount, NOT readInt: zero is a real answer here - "0
+  // sessions remaining" is the difference between a usable package and a spent
+  // one, and readInt drops zeros on purpose for the membership-term fields.
+  put('i_limit', readCount(b?.i_limit));
+  put('i_left', readCount(b?.i_left));
+  put('i_remain', readCount(b?.i_remain));
+  put('i_use', readCount(b?.i_use));
+  put('i_book', readCount(b?.i_book));
+  put('i_buy', readCount(b?.i_buy));
 
   return row as unknown as MembershipRow;
 }
@@ -155,6 +179,18 @@ function readInt(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) n = Math.trunc(value);
   else if (typeof value === 'string' && /^-?\d+$/.test(value)) n = Number.parseInt(value, 10);
   return n === null || n === 0 ? null : n;
+}
+
+/**
+ * A session count. Unlike readInt, ZERO IS KEPT: a package with i_remain 0 is
+ * spent, which is a fact worth storing, while readInt's zero-means-absent rule
+ * exists for membership terms where 0 means "no such term". Same payload, two
+ * different meanings for the same number - so two readers.
+ */
+function readCount(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === 'string' && /^-?\d+$/.test(value)) return Number.parseInt(value, 10);
+  return null;
 }
 
 /**

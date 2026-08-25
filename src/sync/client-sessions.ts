@@ -127,6 +127,10 @@ export interface WriteClientSessionInput {
   readonly kVisit: string;
   readonly response: WlResponse<unknown>;
   readonly runId: string;
+  /** New fetch count for this session (PRD 7.3). Omitted leaves it untouched. */
+  readonly detailFetchCount?: number;
+  /** When this read happened, as an ISO string. Required alongside the count. */
+  readonly fetchedAt?: string;
 }
 
 export interface WriteClientSessionResult {
@@ -166,7 +170,21 @@ export async function writeClientSession(
     });
   }
 
-  await db.upsert('session', [session], { onConflict: 'k_period,dt_start_utc' });
+  // The detail counter rides on the same upsert (PRD 7.3). It is passed in
+  // rather than incremented here, because "how many times has this been read"
+  // is the caller's knowledge - the writer sees one payload and cannot count.
+  await db.upsert(
+    'session',
+    [
+      {
+        ...session,
+        ...(input.detailFetchCount === undefined
+          ? {}
+          : { detail_fetch_count: input.detailFetchCount, detail_fetched_at: input.fetchedAt }),
+      },
+    ],
+    { onConflict: 'k_period,dt_start_utc' },
+  );
   await linkRows(db, rawWlId, 'session', [`${session.k_period}|${session.dt_start_utc}`], 'visit');
 
   if (staff.length > 0) {
