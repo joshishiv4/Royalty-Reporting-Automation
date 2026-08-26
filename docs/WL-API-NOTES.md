@@ -467,3 +467,68 @@ appear to be tagged, which may help matching.
 
 A real UUID, on every response — unlike WL's `k_log`. Worth storing and quoting on
 a support ticket.
+
+
+## `/v1/report/query` — the only endpoint that lists clients
+
+Measured 26 Aug 2026. `cid_report` 689 is WL's "Client List". It agrees with the
+portal exactly: **517 activated clients**, and all twelve client-type tiles match
+one for one. 1,285 across every status.
+
+### It is asynchronous, and it fails silently
+
+The response is `status: "ok"` with `a_row: []` while the report is still being
+built. The only thing that says so is `id_report_status`:
+
+| `id_report_status` | Meaning |
+|---|---|
+| `2` | queued. `dtu_complete` null. **The rows are meaningless, not empty.** |
+| `3` | complete. `dtu_complete` set. Zero rows now genuinely means nobody. |
+
+A filter matching nobody and a filter matching 229 people **both** returned 0
+rows on the first call and differed only on the second. Trusting the first answer
+stores zero clients and reports a clean run — the worst kind of failure, because
+it looks like success. WL caches per filter, so any change to `json_filter`
+starts a new report and its first call is always queued.
+
+Only the FIRST call may set `is_refresh: 1`. Setting it on every poll restarts
+the report and the loop never converges.
+
+### `o_date` is mandatory, and it excludes without saying so
+
+Omitting it is rejected outright (`end-date-not-set`), so there is no "no date
+filter" option. And `id_report_date: 4` means **client since date**, so the
+window silently drops anyone who joined outside it.
+
+**Measured: `2010-01-01 .. 2026-12-31` returned 516 activated clients where the
+portal shows 517.** One client, joined before 2010, missing with no error of any
+kind. The window we send is therefore `1900-01-01 .. 2100-12-31` — the only way
+to say "everyone" is to name a range nobody can fall outside.
+
+### Rows are positional, and some column ids are business configuration
+
+`a_row` holds bare arrays; the column ids are in `a_field`, and the order comes
+from how the report is configured in the portal. Some ids are this business's own
+— `field-custom-378723`, `field-custom-373189`, `field-custom-879703`.
+
+Map by field **name**, never by index. Reading `row[5]` because email sits there
+today would write phone numbers into the email column the first time somebody
+adds a column in the WL UI. Nothing we read is a `field-custom-*`, so
+reconfiguring those cannot break the sync.
+
+Mapping was confirmed by joining 25 API rows against the portal's own CSV export
+of the same 25 clients: **23 of 26 CSV columns matched on all 25 rows**; the
+other three are blank for all 25, so there was nothing to compare. The portal's
+"Client" column is `field-general-2.text_name` + `field-general-1` joined, in
+that order. `o_note.text_note_list` matches too — the API carries slightly MORE
+text than the CSV export, which truncates.
+
+### Teachers
+
+`k_login_type` `1260510` is "Staff Client Profile" — **25 activated**, exactly
+what the portal shows, and the same 25 names.
+
+`docs/DATA-MODEL.md` previously recorded this approach as rejected: *"47 clients
+carry it; only 20 are staff"*. That measurement was over **every status**, where
+the count is indeed 47. On activated clients it is 25. The old finding was not
+wrong, it was counting a different population.

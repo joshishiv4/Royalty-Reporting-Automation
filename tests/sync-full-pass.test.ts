@@ -38,6 +38,7 @@ describe('runFullSyncPass', () => {
 
     expect(summary.passes.map((p) => p.job)).toEqual([
       'login_type_sync',
+      'client_list_sync',
       'staff_sync',
       'location_sync',
       'shop_category_sync',

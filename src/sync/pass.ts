@@ -5,9 +5,11 @@ import { GHL_PATHS } from '../ghl/endpoint.js';
 import { SupabaseClient } from '../supabase/client.js';
 import { WlClient, WlRequestError } from '../wl/client.js';
 import { WL_PATHS } from '../wl/endpoint.js';
+import { fetchAllReportRows, MEMBER_STATUS_ACTIVATED } from '../wl/report.js';
 import { WlTokenClient } from '../wl/token.js';
 import { recordingGhl, storeRawGhl } from './ghl-writer.js';
 import { closeJobState, openJobState } from './job-state.js';
+import { writeClientList } from './clients.js';
 import { writeLocationList } from './locations.js';
 import { writeLoginTypeList } from './login-types.js';
 import { writeMembership } from './memberships.js';
@@ -100,6 +102,68 @@ interface JobSpec {
   readonly seed: (ctx: PassContext) => Promise<void>;
   /** Builds the handler that processes one claimed item. */
   readonly makeHandler: (ctx: PassContext) => QueueHandler;
+}
+
+/**
+ * Runs the client-list sync: the report that enumerates every activated client.
+ *
+ * This is the pass that closes the enumeration blocker. Every other person-
+ * producing pass learns about a client from something else - a purchase, a
+ * staff list - so the database only ever held people who had already done
+ * something. This one asks WL who exists.
+ *
+ * ACTIVATED ONLY, DELIBERATELY. `o_member_status: [3]` is what the portal calls
+ * "Activated Clients": 517 here, against 1,285 across every status. The other
+ * 768 are overwhelmingly cancelled (713) or garbage profiles (22), and pulling
+ * them would treble the row count and the storage for people nobody will ever
+ * bill. Widening this is one constant, if that changes.
+ *
+ * ONE QUEUE ITEM, NOT ONE PER PAGE. The response carries no total, so the number
+ * of pages is not known until the walk ends - there is nothing to fan out over
+ * up front. At 500 rows a page this is 2 calls plus one poll each.
+ */
+export function runClientListSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'client_list_sync',
+    workType: 'client_list',
+    seed: ({ db, kBusiness, nowIso }) =>
+      enqueue(
+        db,
+        [{ work_type: 'client_list', target_key: 'all', k_business: kBusiness }],
+        nowIso(),
+      ).then(() => undefined),
+    makeHandler:
+      ({ wl, db, kBusiness, runId, nowIso }) =>
+      async (item) => {
+        try {
+          const { fields, pages } = await fetchAllReportRows(
+            wl,
+            kBusiness,
+            { memberStatuses: [MEMBER_STATUS_ACTIVATED] },
+            { priorAttempt: item.attempt_count },
+          );
+          // Written page by page: one raw_wl row per payload, which is what
+          // raw_link points at. Batching them would lose which page a person
+          // came from.
+          for (const page of pages) {
+            await writeClientList(db, {
+              kBusiness,
+              runId,
+              page,
+              fields,
+              syncedAt: nowIso(),
+            });
+          }
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
 }
 
 /** Runs the staff sync: one job that lists staff and writes them as people. */
@@ -1154,6 +1218,9 @@ const FULL_SYNC_ORDER: ReadonlyArray<{
   // reference FIRST: login_type.is_teacher_type is what the teacher view joins
   // on, so without it nobody is a teacher however well everything else synced.
   { job: 'login_type_sync', run: runLoginTypeSyncPass },
+  // every activated client, BEFORE anything that derives people from activity:
+  // this is the only pass that knows who exists rather than who has transacted.
+  { job: 'client_list_sync', run: runClientListSyncPass },
   // person rows next: purchases are seeded from person.uid.
   { job: 'staff_sync', run: runStaffSyncPass },
   // location rows next: promotions and the service catalogue seed from locations.

@@ -69,6 +69,8 @@ correctly does not start.
 | Trace ids | [`src/wl/trace.ts`](../src/wl/trace.ts) |
 | One sync pass | [`src/wl/sync.ts`](../src/wl/sync.ts) |
 | Auth reachability probe | [`src/wl/health.ts`](../src/wl/health.ts) |
+| The client-list report: async polling, the mandatory date window, paging | [`src/wl/report.ts`](../src/wl/report.ts) |
+| Client-list rows → person (mapped by field NAME, never position) | [`src/sync/clients.ts`](../src/sync/clients.ts) |
 | Writing WL responses to Supabase (raw_wl → typed rows → raw_link) | [`src/sync/writer.ts`](../src/sync/writer.ts) |
 | Writing GHL responses to Supabase (raw_ghl), and the recorder that makes every search store itself | [`src/sync/ghl-writer.ts`](../src/sync/ghl-writer.ts) |
 | Writing purchases (list → purchase + purchase_item, stub FKs) | [`src/sync/purchases.ts`](../src/sync/purchases.ts) |
