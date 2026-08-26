@@ -532,3 +532,55 @@ what the portal shows, and the same 25 names.
 carry it; only 20 are staff"*. That measurement was over **every status**, where
 the count is indeed 47. On activated clients it is 25. The old finding was not
 wrong, it was counting a different population.
+
+### `a_dynamic` decodes the column ids, and WL's own titles confirm the mapping
+
+The response carries `a_dynamic`: one entry per configured column, with
+`text_title`, `text_title_export`, `a_type` and the `is_dynamic` / `is_export` /
+`is_show` / `is_store` / `is_order` flags. It is how to decode a `field-*` id
+without guessing, and it confirmed every mapping independently of the CSV:
+
+| Field id | WL's own `text_title` |
+|---|---|
+| `field-general-1` | Last Name |
+| `field-general-2` | First Name |
+| `field-general-3` | **Username** |
+| `field-general-4` | Phone Number |
+| `field-general-5` | Home Phone Number |
+| `field-general-6` | Work Phone Number |
+| `field-general-7` | Date of Birth |
+| `field-general-8` | Gender |
+| `field-general-9` / `-city` / `-zip` | Address / City / ZIP-Postal Code |
+| `field-general-11` | **Client ID** |
+| `field-general-12` | Referred by |
+| `field-general-14` | Status |
+| `field-general-15` | Time Zone |
+
+Two of those are worth stating out loud.
+
+`field-general-3` is titled **Username**, not Email — but the values are email
+addresses and matched the CSV's "Email" column on all 25 rows. In WL the username
+IS the email, so mapping it to `person.email` is right; the title is not.
+
+`field-general-11` is titled **Client ID**, which is exactly what DATA-MODEL warns
+about: the WL UI's "Client ID #" is `text_member`, a different identifier from
+`uid`. Mapped accordingly.
+
+We still map by field **id** rather than by title. Titles are business-editable
+and localisable; the `field-general-*` ids are WL's own. `a_dynamic` is the
+decoder ring, not the key.
+
+### What the official documentation does not say
+
+https://apidoc.wellnessliving.io/v1reportquery-28700318e0 documents every request
+field and the `a_dynamic` map. It says **nothing** about:
+
+* the endpoint being asynchronous — no mention of `id_report_status`,
+  `dtu_queue`, `dtu_start`, `dtu_complete`, `s_report`, `i_cas_change`
+* what the `id_report_date` values mean
+* what the member-status codes are
+
+All three were established by measurement, and all three decide whether a sync
+returns the right people or silently returns none. `/v1/report/data` is a
+**different** endpoint (GET, `id_report` rather than `cid_report`) and is not what
+we use.
