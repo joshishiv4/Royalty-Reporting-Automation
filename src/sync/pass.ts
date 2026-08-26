@@ -833,12 +833,14 @@ export function runGhlMatchSyncPass(
       ({ db, kBusiness, runId, nowIso }) =>
       async (item) => {
         try {
-          const rows = await db.select<{ uid: string; phone: string | null; email: string | null }>(
-            'person',
-            `uid=eq.${item.target_key}&select=uid,phone,email`,
-          );
-          const subject = rows[0];
-          if (subject === undefined) {
+          const rows = await db.select<{
+            uid: string;
+            phone: string | null;
+            email: string | null;
+            ghl_unresolved_since: string | null;
+          }>('person', `uid=eq.${item.target_key}&select=uid,phone,email,ghl_unresolved_since`);
+          const row = rows[0];
+          if (row === undefined) {
             return {
               kind: 'dead',
               failure: internalFailure(runId, `person ${item.target_key} gone before matching`),
@@ -848,7 +850,16 @@ export function runGhlMatchSyncPass(
           // A GHL client per pass, not per item: one place that owns the HTTP
           // boundary, and its retry ladder is shared across the batch.
           const ghl = deps.ghl ?? new GhlClient(config.ghl, { env: config.env });
+          // Only the three fields the matcher is allowed to see. The unresolved
+          // clock is ours, not evidence about who this person is.
+          const subject = { uid: row.uid, phone: row.phone, email: row.email };
           const outcome = await matchPerson(ghl, subject);
+
+          // Set on the first non-matching outcome and left alone thereafter, so
+          // a deliberate retry does not restart the 48-hour clock on a record
+          // nobody has actually dealt with. Cleared the moment it matches.
+          const unresolvedSince =
+            outcome.state === 'matched' ? null : (row.ghl_unresolved_since ?? nowIso());
 
           await db.update(
             'person',
@@ -861,6 +872,7 @@ export function runGhlMatchSyncPass(
               // nobody" is exactly the fact the automatic seed needs, and it is
               // the one an unmatched row would otherwise be unable to state.
               ghl_match_attempted_at: nowIso(),
+              ghl_unresolved_since: unresolvedSince,
             },
             `uid=eq.${subject.uid}&k_business=eq.${kBusiness}`,
           );

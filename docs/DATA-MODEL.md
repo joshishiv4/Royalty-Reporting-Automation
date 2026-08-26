@@ -98,6 +98,44 @@ filled in, which is why it is a nullable column rather than a second table.
 — observed 4 fields keyed 299334/299335/299332/299336 — so `k_field_map` records
 which key supplied which value.
 
+### The GoHighLevel link
+
+Four columns on `person`, and three of them exist because one was not enough.
+
+| Column | Answers |
+|---|---|
+| `ghl_contact_id` | which contact, once resolved |
+| `ghl_match_state` | `matched` / `ambiguous` / `unmatched` / `failed` |
+| `ghl_match_attempted_at` | when we last looked |
+| `ghl_unresolved_since` | since when this client has had no usable link |
+
+`ghl_contact_id` is **deliberately not unique**. A family on one phone number
+resolves several clients to the same contact: the phone search returns one
+contact, so every member matches it. That is a correct result, not a collision,
+and it is flagged nowhere. A unique index here would look like tidying up and
+would silently break it.
+
+The two timestamps are not redundant. `ghl_match_attempted_at` is what the
+automatic pass reads — a null there means nobody has ever searched for this
+client, which is the only thing that pass picks up, so a matched client cannot be
+re-queried even by the weekly full refresh. But it is rewritten by every retry,
+so it cannot answer "how long has this been sitting unresolved". Building the
+48-hour alert on it would produce an alert that can never fire: a record
+ambiguous for a month reads as two minutes old the moment somebody re-runs the
+retry pass, which is worse than no alert because it reports safety.
+
+`ghl_unresolved_since` is set on the first non-matching outcome, left alone by
+every later attempt, and cleared only by an actual match. The three GoHighLevel
+rows in `data_health_issue` date from it rather than `synced_at` — `synced_at`
+moves on every WL sync, so `data_health.oldest` had never meant what its name
+said for those rows.
+
+`unmatched` is not an error. The person is simply not in GoHighLevel; the client
+record stays complete and fully usable with the link empty, and **nothing is
+created in GoHighLevel to fill the gap** — which is why `matched` always means a
+contact that already existed. `ambiguous` is never auto-resolved: choosing
+between candidates would put one person's royalties on another person's record.
+
 ## Money
 
 ```

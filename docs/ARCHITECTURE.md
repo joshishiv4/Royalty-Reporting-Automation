@@ -208,9 +208,20 @@ to re-run.
 | `0020` | `session_outcome` view — what happened to each booking, derived in one place |
 | `0021` | `session.is_request` / `is_confirmed` / `is_denied`; `is_countable` on the outcome view; two new health issues |
 | `0022` | `person.ghl_match_attempted_at` — separates "never searched" from "searched, not found" |
+| `0023` | `person.ghl_unresolved_since` — a clock retries do not reset; the 48-hour GHL alert; `ghl_contact_id` documented as deliberately non-unique |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
-proofs. They are not migrations and change nothing.
+proofs, plus case tables for rules that live in SQL. They are not migrations and
+change nothing.
+
+| Check | Proves |
+|---|---|
+| `session_outcome_cases.sql` | every `session_outcome` case, and `is_countable` where it disagrees with the outcome |
+| `ghl_match_cases.sql` | the GoHighLevel outcomes: a shared contact stays legal, an unlinked client stays visible, no link is ever invented, and the 48-hour boundary |
+
+A rule derived in a view is tested in SQL rather than mirrored into TypeScript.
+Copying it into vitest would give the suite a second definition to disagree with —
+the exact thing deriving it in one place was meant to prevent.
 
 ## How a sync pass runs
 

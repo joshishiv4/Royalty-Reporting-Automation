@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../src/config/schema.js';
+import type { GhlContact } from '../src/ghl/client.js';
 import type { SupabaseClient } from '../src/supabase/client.js';
 import { runGhlMatchSyncPass } from '../src/sync/pass.js';
 
@@ -15,8 +16,21 @@ import { runGhlMatchSyncPass } from '../src/sync/pass.js';
 const K_BUSINESS = '111111';
 const config = { env: 'dev', wl: { kBusiness: K_BUSINESS }, ghl: {} } as unknown as AppConfig;
 
+const contact = (id: string): GhlContact => ({
+  id,
+  locationId: 'loc-1',
+  email: null,
+  phone: null,
+  firstName: null,
+  lastName: null,
+  raw: {},
+});
+
 /** Captures the seed query so we can assert what the pass asked the database for. */
-function harness(seedRows: Array<{ uid: string }> = []) {
+function harness(
+  seedRows: Array<{ uid: string }> = [],
+  opts: { person?: Record<string, unknown>; contacts?: GhlContact[] } = {},
+) {
   const seedQueries: string[] = [];
   const patches: Array<Record<string, unknown>> = [];
   const queueItem = {
@@ -49,7 +63,15 @@ function harness(seedRows: Array<{ uid: string }> = []) {
       }
       // The handler reading back the person it claimed.
       if (table === 'person' && query.includes('phone')) {
-        return Promise.resolve([{ uid: 'u1', phone: '+15550000000', email: null }]);
+        return Promise.resolve([
+          {
+            uid: 'u1',
+            phone: '+15550000000',
+            email: null,
+            ghl_unresolved_since: null,
+            ...opts.person,
+          },
+        ]);
       }
       if (table === 'sync_queue' && query.includes('order=next_attempt_at.asc') && !claimed) {
         return Promise.resolve([queueItem]);
@@ -59,9 +81,15 @@ function harness(seedRows: Array<{ uid: string }> = []) {
   } as unknown as SupabaseClient;
 
   const ghl = {
-    searchContacts: vi.fn(() =>
-      Promise.resolve({ contacts: [], total: 0, latencyMs: 1, httpStatus: 200 }),
-    ),
+    searchContacts: vi.fn((_filters: { email?: string; phone?: string }) => {
+      const contacts = opts.contacts ?? [];
+      return Promise.resolve({
+        contacts,
+        total: contacts.length,
+        latencyMs: 1,
+        httpStatus: 200,
+      });
+    }),
   };
   return { db, ghl, seedQueries, patches };
 }
@@ -158,5 +186,83 @@ describe('every attempt is recorded, match or not', () => {
     await run(h);
 
     expect(h.patches[0]?.ghl_contact_id).toBeNull();
+  });
+});
+
+/**
+ * Board item M05. Neither outcome here is an error, and that is exactly why
+ * they need tests: "normal" is the behaviour that quietly stops being checked.
+ */
+describe('no match is an outcome, not a failure', () => {
+  it('completes the work item rather than dead-lettering it', async () => {
+    const h = harness([{ uid: 'u1' }]);
+    const summary = await run(h);
+
+    expect(summary.done).toBe(1);
+    expect(summary.dead).toBe(0);
+  });
+
+  // The link is left empty on purpose. Nothing is created in GoHighLevel to
+  // fill the gap, so 'matched' always means a contact that already existed.
+  it('leaves the link empty and says so in the state', async () => {
+    const h = harness([{ uid: 'u1' }]);
+    await run(h);
+
+    expect(h.patches[0]?.ghl_contact_id).toBeNull();
+    expect(h.patches[0]?.ghl_match_state).toBe('unmatched');
+  });
+});
+
+describe('the unresolved clock survives retries', () => {
+  /**
+   * The 48-hour alert measures how long a HUMAN has left something unresolved.
+   * Built on ghl_match_attempted_at it would measure how recently a job ran -
+   * every deliberate retry would reset it, and a record ambiguous for a month
+   * would read as brand new. An alert that cannot fire reports safety.
+   */
+  it('starts the clock on the first non-matching outcome', async () => {
+    const h = harness([{ uid: 'u1' }]);
+    await run(h);
+
+    expect(h.patches[0]?.ghl_unresolved_since).not.toBeNull();
+  });
+
+  it('does NOT reset the clock when a retry finds nothing again', async () => {
+    const started = '2026-01-01T00:00:00.000Z';
+    const h = harness([{ uid: 'u1' }], { person: { ghl_unresolved_since: started } });
+    await run(h, true);
+
+    expect(h.patches[0]?.ghl_unresolved_since).toBe(started);
+    // ...while the attempt time still moves, so "when did we last look" stays
+    // answerable. Two clocks, two questions.
+    expect(h.patches[0]?.ghl_match_attempted_at).not.toBe(started);
+  });
+
+  it('clears the clock the moment a contact is found', async () => {
+    const h = harness([{ uid: 'u1' }], {
+      person: { ghl_unresolved_since: '2026-01-01T00:00:00.000Z' },
+      contacts: [contact('ghl-7')],
+    });
+    await run(h);
+
+    expect(h.patches[0]?.ghl_match_state).toBe('matched');
+    expect(h.patches[0]?.ghl_contact_id).toBe('ghl-7');
+    expect(h.patches[0]?.ghl_unresolved_since).toBeNull();
+  });
+});
+
+describe('the matcher is told nothing it must not use', () => {
+  // Names are never used for matching. The person row now carries more columns
+  // than it did, so this asserts the subject handed over is still exactly the
+  // three fields - a name added to person cannot leak into a search.
+  it('passes only uid, phone and email to the matcher', async () => {
+    const h = harness([{ uid: 'u1' }], {
+      person: { first_name: 'Ada', last_name: 'Lovelace' },
+    });
+    await run(h);
+
+    for (const [filters] of h.ghl.searchContacts.mock.calls) {
+      expect(Object.keys(filters).every((k) => k === 'phone' || k === 'email')).toBe(true);
+    }
   });
 });
