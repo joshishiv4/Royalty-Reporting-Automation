@@ -207,6 +207,7 @@ to re-run.
 | `0019` | `session.detail_fetch_count` / `detail_fetched_at` — bounds the per-visit detail re-read |
 | `0020` | `session_outcome` view — what happened to each booking, derived in one place |
 | `0021` | `session.is_request` / `is_confirmed` / `is_denied`; `is_countable` on the outcome view; two new health issues |
+| `0022` | `person.ghl_match_attempted_at` — separates "never searched" from "searched, not found" |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs. They are not migrations and change nothing.

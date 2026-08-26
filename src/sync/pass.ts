@@ -54,6 +54,12 @@ export interface SyncPassDeps {
   leaseMs?: number;
   /** Injected GoHighLevel client. Tests pass a fake; production builds one. */
   ghl?: Pick<GhlClient, 'searchContacts'>;
+  /**
+   * Re-search clients already searched for whose verdict is not 'matched'.
+   * DELIBERATE ONLY - nothing on a schedule sets this. A retry can only produce
+   * a different answer after someone has added contacts to GoHighLevel.
+   */
+  retryUnresolved?: boolean;
 }
 
 export interface SyncPassSummary {
@@ -771,11 +777,23 @@ export function runClientSessionSyncPass(
  * would search on nulls and record 'unmatched' for everyone. The order here is
  * load-bearing, not incidental.
  *
- * SEEDS ONLY WHAT IS NOT SETTLED. A matched person is never re-searched -
- * matching runs once per client and then effectively never again, which is what
- * keeps the GoHighLevel call volume at roughly the client count in total rather
- * than per run. 'ambiguous' is also left alone: it is a human decision, and
- * re-running would only produce the same tie.
+ * ONCE PER CLIENT, AND ONLY ONCE. By default this seeds people who have NEVER
+ * been searched for - ghl_match_attempted_at is null. A client with a verdict is
+ * not touched again by any recurring run, including the weekly full refresh.
+ * That is what keeps the ongoing cost of this integration at effectively zero:
+ * roughly one GoHighLevel search per client for the life of the system, not that
+ * many per run.
+ *
+ * 'unmatched' ALONE IS NOT ENOUGH TO DECIDE. It is the default state, so a
+ * client nobody has searched for and a client who genuinely is not in
+ * GoHighLevel look the same. The attempt timestamp (migration 0022) is what
+ * separates them, and without it "match new clients automatically" and "retrying
+ * unmatched is manual" contradict each other on the same rows.
+ *
+ * RETRYING IS DELIBERATE. Pass `retryUnresolved` to include clients already
+ * searched for whose verdict is not 'matched'. Nothing sets that on a schedule -
+ * it exists so a human can re-run after contacts have been added to
+ * GoHighLevel, which is the only time a retry can produce a different answer.
  *
  * PHONE FIRST, EMAIL SECOND, NAMES NEVER - see matcher.ts for why each of those
  * is the way round it is.
@@ -788,11 +806,18 @@ export function runGhlMatchSyncPass(
     jobName: 'ghl_match_sync',
     workType: 'ghl_contact_match',
     seed: async ({ db, kBusiness, nowIso }) => {
-      // 'unmatched' and 'failed' are worth another look; 'matched' is done and
-      // 'ambiguous' is waiting on a person, not on us.
+      // Default: only people nobody has searched for yet. A retry is a separate,
+      // deliberate request - see the header.
+      const filter =
+        deps.retryUnresolved === true
+          ? // Everything still unresolved, however long ago it was tried.
+            // 'failed' is included with the two the criteria name: it is not
+            // resolved either, and excluding it would strand the row forever.
+            `ghl_match_state=in.(unmatched,ambiguous,failed)`
+          : `ghl_match_attempted_at=is.null`;
       const people = await db.select<{ uid: string }>(
         'person',
-        `k_business=eq.${kBusiness}&ghl_match_state=in.(unmatched,failed)&select=uid`,
+        `k_business=eq.${kBusiness}&${filter}&select=uid`,
       );
       await enqueue(
         db,
@@ -805,7 +830,7 @@ export function runGhlMatchSyncPass(
       );
     },
     makeHandler:
-      ({ db, kBusiness, runId }) =>
+      ({ db, kBusiness, runId, nowIso }) =>
       async (item) => {
         try {
           const rows = await db.select<{ uid: string; phone: string | null; email: string | null }>(
@@ -832,6 +857,10 @@ export function runGhlMatchSyncPass(
               // Only ever set on a real match; a non-match must not leave a
               // stale id behind from an earlier attempt.
               ghl_contact_id: outcome.ghlContactId,
+              // Stamped on EVERY outcome, not just a match. "We looked and found
+              // nobody" is exactly the fact the automatic seed needs, and it is
+              // the one an unmatched row would otherwise be unable to state.
+              ghl_match_attempted_at: nowIso(),
             },
             `uid=eq.${subject.uid}&k_business=eq.${kBusiness}`,
           );
