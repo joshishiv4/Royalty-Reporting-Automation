@@ -57,6 +57,8 @@ export function describeConfig(config: AppConfig): Record<string, string> {
     wlClientSecret: fingerprint(config.wl.clientSecret),
     supabaseUrl: config.supabase.url.length > 0 ? 'set' : 'missing',
     supabaseServiceRoleKey: fingerprint(config.supabase.serviceRoleKey),
+    ghlHost: config.ghl.host.length > 0 ? 'set' : 'missing',
+    ghlVersion: config.ghl.version.length > 0 ? 'set' : 'missing',
     ghlApiToken: fingerprint(config.ghl.apiToken),
     ghlLocationId: fingerprint(config.ghl.locationId),
     logLevel: config.runtime.logLevel,

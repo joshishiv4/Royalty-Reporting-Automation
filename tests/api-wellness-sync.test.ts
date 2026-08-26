@@ -154,6 +154,8 @@ describe('/api/wellness-sync - the verdict', () => {
       WL_CLIENT_SECRET: 'client-secret-0000',
       SUPABASE_URL: 'https://project.supabase.example.test',
       SUPABASE_SERVICE_ROLE_KEY: 'service-role-key-0000',
+      GHL_API_HOST: 'ghl.example.test',
+      GHL_API_VERSION: '2021-07-28',
       GHL_API_TOKEN: 'ghl-token-0000',
       GHL_LOCATION_ID: 'location-0000',
     };

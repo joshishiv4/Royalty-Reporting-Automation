@@ -98,10 +98,21 @@ describe('checkAll', () => {
   /** Routes each probe to its own canned response: they call different hosts. */
   function routedFetch() {
     return vi.fn<typeof globalThis.fetch>().mockImplementation((input) => {
-      if (calledUrl(input).includes('/oauth2/token')) {
+      const url = calledUrl(input);
+      if (url.includes('/oauth2/token')) {
         return Promise.resolve(
           new Response(JSON.stringify({ access_token: 'probe-token', expires_in: 3600 }), {
             status: 200,
+          }),
+        );
+      }
+      // The GHL probe searches for a deliberately unrouteable address, so an
+      // empty contact list is the SUCCESSFUL answer, not a miss.
+      if (url.includes('/contacts/search')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ contacts: [], total: 0 }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
           }),
         );
       }
@@ -109,11 +120,17 @@ describe('checkAll', () => {
     });
   }
 
-  it('probes both Supabase and the WellnessLiving token endpoint', async () => {
+  // Three probes, and the ORDER is asserted: a health screen that silently
+  // reordered would make two runs incomparable at a glance.
+  it('probes Supabase, the WellnessLiving token endpoint, and GoHighLevel', async () => {
     const config = await loadFake();
     const results = await checkAll(config, { fetch: routedFetch(), now: makeClock() });
 
-    expect(results.map((r) => r.target)).toEqual(['supabase:rest', 'wl:oauth2']);
+    expect(results.map((r) => r.target)).toEqual([
+      'supabase:rest',
+      'wl:oauth2',
+      'ghl:contacts-search',
+    ]);
     expect(results.every((r) => r.ok)).toBe(true);
   });
 

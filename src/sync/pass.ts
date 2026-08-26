@@ -20,6 +20,8 @@ import { writeProfile } from './profiles.js';
 import { writeRecipient } from './recipients.js';
 import { writeReceipt } from './receipts.js';
 import { writeServiceCategoryList, writeServiceList } from './services.js';
+import { GhlClient } from '../ghl/client.js';
+import { matchPerson } from '../ghl/matcher.js';
 import { writeAttendanceList } from './attendance.js';
 import { parseVisitList, writeClientSession } from './client-sessions.js';
 import { writeSessionList } from './sessions.js';
@@ -50,6 +52,8 @@ export interface SyncPassDeps {
   limit?: number;
   /** Claim lease length, kept above the step budget. */
   leaseMs?: number;
+  /** Injected GoHighLevel client. Tests pass a fake; production builds one. */
+  ghl?: Pick<GhlClient, 'searchContacts'>;
 }
 
 export interface SyncPassSummary {
@@ -759,6 +763,88 @@ export function runClientSessionSyncPass(
 }
 
 /**
+ * Runs the GoHighLevel match: one job PER person, linking them to their contact
+ * (PRD M04).
+ *
+ * RUNS AFTER ENRICHMENT, AND THAT IS THE WHOLE REASON 6.1 EXISTS. A person's
+ * phone and primary email only arrive from the profile pass; matching before it
+ * would search on nulls and record 'unmatched' for everyone. The order here is
+ * load-bearing, not incidental.
+ *
+ * SEEDS ONLY WHAT IS NOT SETTLED. A matched person is never re-searched -
+ * matching runs once per client and then effectively never again, which is what
+ * keeps the GoHighLevel call volume at roughly the client count in total rather
+ * than per run. 'ambiguous' is also left alone: it is a human decision, and
+ * re-running would only produce the same tie.
+ *
+ * PHONE FIRST, EMAIL SECOND, NAMES NEVER - see matcher.ts for why each of those
+ * is the way round it is.
+ */
+export function runGhlMatchSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'ghl_match_sync',
+    workType: 'ghl_contact_match',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      // 'unmatched' and 'failed' are worth another look; 'matched' is done and
+      // 'ambiguous' is waiting on a person, not on us.
+      const people = await db.select<{ uid: string }>(
+        'person',
+        `k_business=eq.${kBusiness}&ghl_match_state=in.(unmatched,failed)&select=uid`,
+      );
+      await enqueue(
+        db,
+        people.map((p) => ({
+          work_type: 'ghl_contact_match',
+          target_key: p.uid,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ db, kBusiness, runId }) =>
+      async (item) => {
+        try {
+          const rows = await db.select<{ uid: string; phone: string | null; email: string | null }>(
+            'person',
+            `uid=eq.${item.target_key}&select=uid,phone,email`,
+          );
+          const subject = rows[0];
+          if (subject === undefined) {
+            return {
+              kind: 'dead',
+              failure: internalFailure(runId, `person ${item.target_key} gone before matching`),
+            };
+          }
+
+          // A GHL client per pass, not per item: one place that owns the HTTP
+          // boundary, and its retry ladder is shared across the batch.
+          const ghl = deps.ghl ?? new GhlClient(config.ghl, { env: config.env });
+          const outcome = await matchPerson(ghl, subject);
+
+          await db.update(
+            'person',
+            {
+              ghl_match_state: outcome.state,
+              // Only ever set on a real match; a non-match must not leave a
+              // stale id behind from an earlier attempt.
+              ghl_contact_id: outcome.ghlContactId,
+            },
+            `uid=eq.${subject.uid}&k_business=eq.${kBusiness}`,
+          );
+          return { kind: 'done' };
+        } catch (error) {
+          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          throw error;
+        }
+      },
+  });
+}
+
+/**
  * Runs the shop-category sync: one job that lists storefront categories.
  *
  * Genuinely business-wide - the endpoint answers with no k_location - so it is
@@ -1015,6 +1101,9 @@ const FULL_SYNC_ORDER: ReadonlyArray<{
   { job: 'client_session_sync', run: runClientSessionSyncPass },
   // per-occurrence attendance: needs the session rows the schedule pass wrote.
   { job: 'attendance_sync', run: runAttendanceSyncPass },
+  // GoHighLevel matching LAST among the person passes: it needs the phone and
+  // primary email that only the profile pass supplies (PRD 6.1).
+  { job: 'ghl_match_sync', run: runGhlMatchSyncPass },
   // per-location catalogue LAST: it upserts the authoritative title over any
   // purchase-derived stub and marks resolved services, so it must run after the
   // purchase pass that creates those stubs.

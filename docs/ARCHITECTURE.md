@@ -79,6 +79,7 @@ correctly does not start.
 | Promotions (classes/promotion → promotion, per-location) | [`src/sync/promotions.ts`](../src/sync/promotions.ts) |
 | Shop categories (shop/category → shop_category, business-wide) | [`src/sync/shop-categories.ts`](../src/sync/shop-categories.ts) |
 | Login types (login/type → login_type; `is_teacher_type` defines the `teacher` view) | [`src/sync/login-types.ts`](../src/sync/login-types.ts) |
+| Linking a person to their GoHighLevel contact (phone first, email second, names never) | [`src/ghl/matcher.ts`](../src/ghl/matcher.ts) |
 | The class schedule (schedule/class/list → session + session_staff, keyed on class **and** date) | [`src/sync/sessions.ts`](../src/sync/sessions.ts) |
 | Who booked and who turned up (login/attendance/list → attendance, per occurrence) | [`src/sync/attendance.ts`](../src/sync/attendance.ts) |
 | Private appointments, per client (schedule/page/list + element → session, staff, attendance) | [`src/sync/client-sessions.ts`](../src/sync/client-sessions.ts) |
@@ -108,6 +109,30 @@ request rate.
 **Every call carries our own trace id.** `runId.seq`, so one grep of a `runId`
 returns a whole pass in order. WL's `k_log` is captured where it exists, which is
 not most endpoints — see [WL-API-NOTES.md](WL-API-NOTES.md).
+
+### GoHighLevel
+
+| Question | File |
+|---|---|
+| Every contact-search call, retries, HTTP-status classification | [`src/ghl/client.ts`](../src/ghl/client.ts) |
+| URL building and the endpoint list | [`src/ghl/endpoint.ts`](../src/ghl/endpoint.ts) |
+| Backoff timing (mirrors WL's shape) | [`src/ghl/retry.ts`](../src/ghl/retry.ts) |
+| Auth reachability probe | [`src/ghl/health.ts`](../src/ghl/health.ts) |
+
+Three things about this client are worth knowing before changing it:
+
+**It is read-only by construction, not by convention.** The public surface is
+exactly `searchContacts`. There is no generic `request()` method a future caller
+could point at a mutating path, and `GHL_PATHS` lists one path — a write path
+cannot be added by accident.
+
+**No OAuth dance.** GoHighLevel Private Integration Tokens (`pit-...`) are
+long-lived bearer tokens; there is no refresh flow, no cache to share and no
+single-flight to arrange. The token is sent verbatim on every call.
+
+**Success is the HTTP status.** Unlike WellnessLiving, GHL uses HTTP status
+honestly — 200 is ok, 4xx/5xx mean what they say. There is no "200 with an error
+envelope inside" trap to guard against.
 
 ### Entry points
 
@@ -181,6 +206,7 @@ to re-run.
 | `0018` | `purchase_item` session counts (`i_limit`, `i_left`, `i_remain`, `i_use`, `i_book`, `i_buy`) |
 | `0019` | `session.detail_fetch_count` / `detail_fetched_at` — bounds the per-visit detail re-read |
 | `0020` | `session_outcome` view — what happened to each booking, derived in one place |
+| `0021` | `session.is_request` / `is_confirmed` / `is_denied`; `is_countable` on the outcome view; two new health issues |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs. They are not migrations and change nothing.

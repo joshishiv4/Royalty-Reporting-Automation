@@ -17,6 +17,8 @@
   },
 
   "gohighlevel": {
+    "host": "FILL_ME",
+    "version": "FILL_ME",
     "apiToken": "FILL_ME",
     "locationId": "FILL_ME"
   }

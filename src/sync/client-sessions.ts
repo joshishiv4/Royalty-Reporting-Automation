@@ -30,6 +30,17 @@ import { linkRows, storeRawWl } from './writer.js';
  * the same row the schedule pass writes, so the two converge instead of
  * duplicating.
  *
+ * BOOKING-REQUEST STATE (PRD 7.5) is nested under a_appointment_visit_info:
+ * is_request, is_confirmed and is_deny. A request is a PROPOSAL, not work, and
+ * must not earn a royalty.
+ *
+ * is_confirmed IS STORED BUT IS NOT A GATE, and that distinction matters. It is
+ * FALSE on 60 of 60 payloads measured. Read as "not confirmed" it would exclude
+ * every session in the business and royalties would come to zero. is_request is
+ * false on all 60 too, which says this studio has no request flow at all - so
+ * is_confirmed is simply not meaningful here. Exclusion is driven by is_request
+ * and is_deny, which mean something on their own.
+ *
  * dt_cancel IS A DEADLINE, NOT A CANCELLATION. See migration 0017 - it was
  * exactly 24 hours before start on 40 of 40 visits measured, attended ones
  * included. It is stored as dt_cancel_by and must never be read as "cancelled".
@@ -53,6 +64,11 @@ export type ClientSessionRow = {
   readonly is_virtual: boolean;
   readonly is_checkin: boolean;
   readonly dt_cancel_by: string | null;
+  // Booking-request state (PRD 7.5). See the header for why is_confirmed is
+  // stored but never used as a gate.
+  readonly is_request: boolean;
+  readonly is_confirmed: boolean;
+  readonly is_denied: boolean;
 };
 
 export type ParsedVisit = {
@@ -77,6 +93,8 @@ export function parseVisitElement(body: unknown, kBusiness: string): ParsedVisit
   const kPeriod = kAppointment ?? kClassPeriod;
   if (kPeriod === null) return null;
   const kind = kAppointment !== null ? 'appointment' : 'class';
+
+  const visitInfo = asRecord(b?.a_appointment_visit_info);
 
   const staff: Array<{ k_staff: string; s_name: string | null }> = [];
   for (const value of collection(b?.a_staff)) {
@@ -105,6 +123,10 @@ export function parseVisitElement(body: unknown, kBusiness: string): ParsedVisit
       is_checkin: wlBool(b?.is_checkin),
       // Named for what it is. See the header and migration 0017.
       dt_cancel_by: readString(b, 'dt_cancel'),
+      // WL nests these under a_appointment_visit_info, not at the top level.
+      is_request: wlBool(visitInfo?.is_request),
+      is_confirmed: wlBool(visitInfo?.is_confirmed),
+      is_denied: wlBool(visitInfo?.is_deny),
     },
     staff,
   };

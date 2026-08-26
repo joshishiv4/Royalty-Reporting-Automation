@@ -30,6 +30,13 @@ export const SECRET_KEYS = [
   'WL_CLIENT_SECRET',
   'SUPABASE_URL',
   'SUPABASE_SERVICE_ROLE_KEY',
+  // GoHighLevel. GHL_API_HOST is per-environment for the same reason WL_API_HOST
+  // is: hardcoding it is a named project risk. GHL_API_VERSION is stored beside
+  // it so the date-stamped API contract that this client parses moves with the
+  // config bundle; a schema-shape change is a coordinated code+config bump, not
+  // a code deploy the config side sleeps through.
+  'GHL_API_HOST',
+  'GHL_API_VERSION',
   'GHL_API_TOKEN',
   'GHL_LOCATION_ID',
 ] as const;

@@ -207,12 +207,21 @@ describe('an error carried on HTTP 200 never becomes data', () => {
 describe('the success check cannot be bypassed', () => {
   const ROOT = fileURLToPath(new URL('../', import.meta.url));
 
-  /** The only modules allowed to perform an HTTP call directly. */
+  /**
+   * The only modules allowed to perform an HTTP call directly.
+   *
+   * The rule this enforces is "nothing bypasses WlClient's status check", and
+   * the allow-list is how a module that talks to something OTHER than
+   * WellnessLiving declares itself - Supabase and GoHighLevel each own exactly
+   * one HTTP boundary, the same way WlClient owns WL's. Adding a second file for
+   * any of them is what this test is here to catch.
+   */
   const ALLOWED = new Set([
     join('src', 'wl', 'client.ts'), // the WL data path - owns the status check
     join('src', 'wl', 'token.ts'), // the WL oauth2 path - no envelope to check
     join('src', 'supabase', 'health.ts'), // Supabase REST, not WL
     join('src', 'supabase', 'client.ts'), // Supabase REST writes/reads, not WL
+    join('src', 'ghl', 'client.ts'), // GoHighLevel REST, not WL
   ]);
 
   /** An actual call site, not a `typeof globalThis.fetch` type annotation. */

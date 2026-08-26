@@ -92,6 +92,9 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
       serviceRoleKey: s.SUPABASE_SERVICE_ROLE_KEY,
     }),
     ghl: Object.freeze({
+      host: s.GHL_API_HOST,
+      baseUrl: `https://${s.GHL_API_HOST}`,
+      version: s.GHL_API_VERSION,
       apiToken: s.GHL_API_TOKEN,
       locationId: s.GHL_LOCATION_ID,
     }),

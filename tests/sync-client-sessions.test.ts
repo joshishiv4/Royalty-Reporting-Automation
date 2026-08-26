@@ -30,6 +30,15 @@ function appointment(overrides: Record<string, unknown> = {}): unknown {
     // WL calls this dt_cancel; it is a DEADLINE, exactly 24h before the start.
     dt_cancel: '2026-08-24 17:00:00',
     a_staff: [{ k_staff: '344486', s_name: 'Jared', s_name_full: 'Jared Feldman' }],
+    // Booking-request state, nested exactly as WL sends it. All three were false
+    // on 60 of 60 payloads measured.
+    a_appointment_visit_info: {
+      id_visit: 1,
+      is_request: false,
+      is_confirmed: false,
+      is_deny: false,
+      i_book_active: 1,
+    },
     ...overrides,
   };
 }
@@ -123,6 +132,49 @@ describe('parseVisitElement', () => {
     );
     expect(p?.session.session_kind).toBe('appointment');
     expect(p?.session.k_period).toBe('132190448');
+  });
+
+  // PRD 7.5. WL nests these under a_appointment_visit_info, not at the top level -
+  // reading them from the root would silently give false for every session.
+  it('reads the booking-request state from where WL actually nests it', () => {
+    const p = parseVisitElement(
+      appointment({
+        a_appointment_visit_info: { is_request: true, is_confirmed: false, is_deny: false },
+      }),
+      K_BUSINESS,
+    );
+    expect(p?.session).toMatchObject({
+      is_request: true,
+      is_confirmed: false,
+      is_denied: false,
+    });
+  });
+
+  it('maps is_deny onto is_denied', () => {
+    const p = parseVisitElement(
+      appointment({ a_appointment_visit_info: { is_deny: true } }),
+      K_BUSINESS,
+    );
+    expect(p?.session.is_denied).toBe(true);
+  });
+
+  // The trap 0021 exists around: is_confirmed is false on every live payload.
+  // If it were treated as "not confirmed" the whole business would be excluded,
+  // so the parser must record it faithfully and leave the judgement to the view.
+  it('records is_confirmed as false WITHOUT that meaning anything is wrong', () => {
+    const p = parseVisitElement(appointment(), K_BUSINESS);
+    expect(p?.session.is_confirmed).toBe(false);
+    expect(p?.session.is_request).toBe(false);
+    expect(p?.session.is_denied).toBe(false);
+  });
+
+  it('defaults all three to false when WL omits the block entirely', () => {
+    const p = parseVisitElement(appointment({ a_appointment_visit_info: undefined }), K_BUSINESS);
+    expect(p?.session).toMatchObject({
+      is_request: false,
+      is_confirmed: false,
+      is_denied: false,
+    });
   });
 
   it('refuses a visit with neither key, because the key IS its identity', () => {

@@ -1,4 +1,5 @@
 import type { AppConfig } from '../config/schema.js';
+import { checkGhlAuth } from '../ghl/health.js';
 import { checkSupabaseReachable } from '../supabase/health.js';
 import { checkWlAuth } from '../wl/health.js';
 import type { HealthCheckResult, HealthProbeDeps } from './types.js';
@@ -25,5 +26,6 @@ export async function checkAll(
   return Promise.all([
     checkSupabaseReachable(config.supabase, withTimeout),
     checkWlAuth(config.wl, { ...withTimeout, env: config.env }),
+    checkGhlAuth(config.ghl, { ...withTimeout, env: config.env }),
   ]);
 }

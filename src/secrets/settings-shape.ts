@@ -16,6 +16,8 @@ export const SETTINGS_PATHS = {
   'wellnessliving.clientSecret': 'WL_CLIENT_SECRET',
   'supabase.url': 'SUPABASE_URL',
   'supabase.serviceRoleKey': 'SUPABASE_SERVICE_ROLE_KEY',
+  'gohighlevel.host': 'GHL_API_HOST',
+  'gohighlevel.version': 'GHL_API_VERSION',
   'gohighlevel.apiToken': 'GHL_API_TOKEN',
   'gohighlevel.locationId': 'GHL_LOCATION_ID',
 } as const satisfies Record<string, SecretKey>;

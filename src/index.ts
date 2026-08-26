@@ -67,3 +67,15 @@ export {
   type WlTokenClientDeps,
   type WlTokenStatus,
 } from './wl/token.js';
+export {
+  GhlClient,
+  GhlRequestError,
+  type ContactSearchFilters,
+  type GhlClientDeps,
+  type GhlContact,
+  type GhlErrorDetails,
+  type GhlFailureKind,
+  type GhlSearchResponse,
+} from './ghl/client.js';
+export { buildGhlUrl, GHL_PATHS, type GhlPathName } from './ghl/endpoint.js';
+export { checkGhlAuth, type GhlHealthDeps } from './ghl/health.js';

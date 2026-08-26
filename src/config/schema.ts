@@ -98,6 +98,20 @@ const opaqueSecret = filledIn.refine((v) => v.length >= 8, {
   message: 'is too short to be a real credential',
 });
 
+/**
+ * GoHighLevel's date-stamped API version, e.g. 2021-07-28.
+ *
+ * Shape-checked, not value-checked: a typo like "2021-7-28" (single-digit month)
+ * fails here rather than at the first live call, where it comes back as an
+ * uninformative 400. The value itself is intentionally not pinned - a rollout of
+ * a new supported version must be a coordinated code + config bump, and pinning
+ * the accepted list here would defeat the whole point of putting the version in
+ * the bundle.
+ */
+const apiVersionDate = filledIn.refine((v) => /^\d{4}-\d{2}-\d{2}$/.test(v), {
+  message: "must be an ISO date (YYYY-MM-DD), matching GoHighLevel's version scheme",
+});
+
 /** Shape of the resolved secret bundle, after validation and coercion. */
 export const secretBundleSchema = z.object({
   WL_API_HOST: bareHost,
@@ -108,6 +122,8 @@ export const secretBundleSchema = z.object({
   WL_CLIENT_SECRET: opaqueSecret,
   SUPABASE_URL: httpsUrl,
   SUPABASE_SERVICE_ROLE_KEY: opaqueSecret,
+  GHL_API_HOST: bareHost,
+  GHL_API_VERSION: apiVersionDate,
   GHL_API_TOKEN: opaqueSecret,
   GHL_LOCATION_ID: filledIn,
 });
@@ -152,6 +168,18 @@ export interface SupabaseConfig {
 }
 
 export interface GhlConfig {
+  /** Bare host, e.g. the value of GHL_API_HOST for this environment. */
+  readonly host: string;
+  /** `https://<host>` with no trailing slash. */
+  readonly baseUrl: string;
+  /**
+   * Date-stamped API contract this build parses, sent as the `Version` header
+   * on every call. Kept beside the host in the same bundle because the parsers
+   * in this build are pinned to it: bumping this without a code change is a
+   * silent shape drift, and pinning it without a config change would freeze the
+   * whole fleet at whatever version was hardcoded.
+   */
+  readonly version: string;
   readonly apiToken: string;
   readonly locationId: string;
 }

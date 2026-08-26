@@ -50,6 +50,7 @@ describe('runFullSyncPass', () => {
       'schedule_sync',
       'client_session_sync',
       'attendance_sync',
+      'ghl_match_sync',
       'service_sync',
     ]);
     expect(summary.passes.every((p) => p.ran)).toBe(true);

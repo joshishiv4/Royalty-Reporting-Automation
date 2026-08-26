@@ -24,7 +24,12 @@ const FILES: Record<string, string> = {
       url: 'https://dev-project.supabase.example.test',
       serviceRoleKey: 'dev-service-role-key-0000',
     },
-    gohighlevel: { apiToken: 'dev-ghl-token-0000', locationId: 'dev-location' },
+    gohighlevel: {
+      host: 'ghl-dev.example.test',
+      version: '2021-07-28',
+      apiToken: 'dev-ghl-token-0000',
+      locationId: 'dev-location',
+    },
   }),
   prod: JSON.stringify({
     environment: 'prod',
@@ -40,7 +45,12 @@ const FILES: Record<string, string> = {
       url: 'https://prod-project.supabase.example.test',
       serviceRoleKey: 'prod-service-role-key-0000',
     },
-    gohighlevel: { apiToken: 'prod-ghl-token-0000', locationId: 'prod-location' },
+    gohighlevel: {
+      host: 'ghl-live.example.test',
+      version: '2021-07-28',
+      apiToken: 'prod-ghl-token-0000',
+      locationId: 'prod-location',
+    },
   }),
 };
 
