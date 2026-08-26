@@ -1,6 +1,6 @@
 # Status and plan
 
-Last updated **24 Aug 2026**. Keep the date honest — a stale status file is worse
+Last updated **26 Aug 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed.
 
 ## The plan
@@ -189,6 +189,24 @@ dev — every sample is a self-purchase — so that path is mock-verified only
 (task 008).
 
 ## Decisions waiting on someone
+
+**Which GoHighLevel fields and tags to copy — blocks half of M06 (26 Aug 2026).**
+The plumbing is done and live: every search is now stored verbatim in `raw_ghl`,
+and a GoHighLevel outage requeues instead of failing the run. What cannot be
+built is the part that needs a list — **which** agreed fields and tags land on
+the client record, the fetch timestamp that goes with them, and the staleness
+check in `data_health` that reads it.
+
+Guessing the columns would be worse than leaving them out: they would have to be
+migrated again once the real list arrives, and a half-right field on a client
+record gets believed. Nothing is lost by waiting — the payloads are being kept
+from today, so when the list is confirmed the fields are parsed out of stored
+responses rather than re-pulled from GoHighLevel. A re-parse is a query; a
+re-pull is hours.
+
+**Needed from the client:** the field and tag list, and whether a tag set should
+replace or merge on each fetch.
+
 
 **Raw payload retention — now measured (24 Aug 2026, task 024).** `raw_wl` and
 `raw_ghl` will outgrow every other table and hold the most personal data in the

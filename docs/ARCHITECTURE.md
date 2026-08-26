@@ -70,6 +70,7 @@ correctly does not start.
 | One sync pass | [`src/wl/sync.ts`](../src/wl/sync.ts) |
 | Auth reachability probe | [`src/wl/health.ts`](../src/wl/health.ts) |
 | Writing WL responses to Supabase (raw_wl → typed rows → raw_link) | [`src/sync/writer.ts`](../src/sync/writer.ts) |
+| Writing GHL responses to Supabase (raw_ghl), and the recorder that makes every search store itself | [`src/sync/ghl-writer.ts`](../src/sync/ghl-writer.ts) |
 | Writing purchases (list → purchase + purchase_item, stub FKs) | [`src/sync/purchases.ts`](../src/sync/purchases.ts) |
 | Enriching purchases with money (receipt → totals, payments, credit) | [`src/sync/receipts.ts`](../src/sync/receipts.ts) |
 | Enriching purchases with the recipient (purchase/list/element → uid_recipient, person stub, conflict on disagreement) | [`src/sync/recipients.ts`](../src/sync/recipients.ts) |
@@ -209,6 +210,7 @@ to re-run.
 | `0021` | `session.is_request` / `is_confirmed` / `is_denied`; `is_countable` on the outcome view; two new health issues |
 | `0022` | `person.ghl_match_attempted_at` — separates "never searched" from "searched, not found" |
 | `0023` | `person.ghl_unresolved_since` — a clock retries do not reset; the 48-hour GHL alert; `ghl_contact_id` documented as deliberately non-unique |
+| `0024` | `raw_ghl.person_uid` — which client a stored GoHighLevel response was fetched for, so "stored alongside" is a link and not a grep |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs, plus case tables for rules that live in SQL. They are not migrations and

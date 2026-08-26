@@ -1,8 +1,12 @@
 import type { AppConfig } from '../config/schema.js';
+import type { GhlSearchResponse } from '../ghl/client.js';
+import { GhlRequestError } from '../ghl/client.js';
+import { GHL_PATHS } from '../ghl/endpoint.js';
 import { SupabaseClient } from '../supabase/client.js';
 import { WlClient, WlRequestError } from '../wl/client.js';
 import { WL_PATHS } from '../wl/endpoint.js';
 import { WlTokenClient } from '../wl/token.js';
+import { recordingGhl, storeRawGhl } from './ghl-writer.js';
 import { closeJobState, openJobState } from './job-state.js';
 import { writeLocationList } from './locations.js';
 import { writeLoginTypeList } from './login-types.js';
@@ -12,6 +16,7 @@ import { writePurchaseList } from './purchases.js';
 import {
   enqueue,
   type FailureInfo,
+  outcomeFromGhlError,
   outcomeFromWlError,
   type QueueHandler,
   runQueue,
@@ -625,6 +630,15 @@ export function runAttendanceSyncPass(
  * settled long before a week is out. A constant, not a column - tuning this
  * should not need a migration.
  */
+/**
+ * How long to wait before retrying a client after GoHighLevel failed.
+ *
+ * Five minutes rather than the WL ladder's seconds: an outage at a supplementary
+ * service is not worth hammering, and the run that requeues is not blocked by
+ * the wait - it moves on and comes back.
+ */
+const GHL_REQUEUE_AFTER_MS = 300_000;
+
 const SESSION_IMMUTABLE_AFTER_DAYS = 7;
 /** Once on discovery, once after it has happened. A third read learns nothing. */
 const MAX_DETAIL_FETCHES = 2;
@@ -853,7 +867,25 @@ export function runGhlMatchSyncPass(
           // Only the three fields the matcher is allowed to see. The unresolved
           // clock is ours, not evidence about who this person is.
           const subject = { uid: row.uid, phone: row.phone, email: row.email };
-          const outcome = await matchPerson(ghl, subject);
+
+          // Every search the matcher makes is kept, one raw_ghl row each. It
+          // calls once or twice depending on whether phone found anything, and
+          // the recorder means it does not have to know that.
+          const searches: GhlSearchResponse[] = [];
+          const outcome = await matchPerson(
+            recordingGhl(ghl, (r) => searches.push(r)),
+            subject,
+          );
+
+          for (const response of searches) {
+            await storeRawGhl(db, {
+              locationId: config.ghl.locationId,
+              sourceEndpoint: GHL_PATHS.contactsSearch,
+              response,
+              runId,
+              personUid: subject.uid,
+            });
+          }
 
           // Set on the first non-matching outcome and left alone thereafter, so
           // a deliberate retry does not restart the 48-hour clock on a record
@@ -879,6 +911,12 @@ export function runGhlMatchSyncPass(
           return { kind: 'done' };
         } catch (error) {
           if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          // GoHighLevel is supplementary; WellnessLiving is the system of
+          // record. An outage here must degrade to stale data, never take the
+          // run down with it - so it becomes an outcome, not a throw.
+          if (error instanceof GhlRequestError) {
+            return outcomeFromGhlError(error, GHL_REQUEUE_AFTER_MS);
+          }
           throw error;
         }
       },

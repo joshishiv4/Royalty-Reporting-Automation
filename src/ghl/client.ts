@@ -107,6 +107,22 @@ export interface GhlSearchResponse {
   /** Milliseconds spent on the successful call. */
   readonly latencyMs: number;
   readonly httpStatus: number;
+  /**
+   * The whole response, exactly as GoHighLevel sent it, for raw_ghl (PRD M06).
+   *
+   * Kept separately from `contacts` because the typed view is lossy on purpose -
+   * mapContact drops any contact with no id, and every field outside the six we
+   * name survives only inside `raw`. A re-parse has to work from what arrived,
+   * not from what we understood at the time.
+   */
+  readonly body: Readonly<Record<string, unknown>>;
+  /**
+   * GHL's own trace id, returned on EVERY response. Quote it on a support
+   * ticket. Null only if a response somehow arrived without one.
+   */
+  readonly ghlTraceId: string | null;
+  /** What was asked, so a stored payload can be read without guessing. */
+  readonly requestParams: Readonly<Record<string, unknown>>;
 }
 
 export interface GhlClientDeps {
@@ -231,7 +247,7 @@ export class GhlClient {
       const latencyMs = this.now() - startedAt;
 
       if (response.ok) {
-        return parseSearchResponse(raw, response.status, latencyMs, path);
+        return parseSearchResponse(raw, response.status, latencyMs, path, body);
       }
 
       const kind = classifyHttpStatus(response.status);
@@ -309,6 +325,7 @@ function parseSearchResponse(
   httpStatus: number,
   latencyMs: number,
   path: string,
+  requestParams: Readonly<Record<string, unknown>>,
 ): GhlSearchResponse {
   let body: unknown;
   try {
@@ -330,7 +347,15 @@ function parseSearchResponse(
   const total =
     record !== null && typeof record.total === 'number' ? record.total : contacts.length;
 
-  return { contacts, total, latencyMs, httpStatus };
+  return {
+    contacts,
+    total,
+    latencyMs,
+    httpStatus,
+    body: record ?? {},
+    ghlTraceId: record !== null && typeof record.traceId === 'string' ? record.traceId : null,
+    requestParams,
+  };
 }
 
 function mapContact(value: unknown): GhlContact | null {

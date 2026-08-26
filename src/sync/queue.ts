@@ -1,3 +1,4 @@
+import type { GhlRequestError } from '../ghl/client.js';
 import type { SupabaseClient } from '../supabase/client.js';
 import type { WlRequestError } from '../wl/client.js';
 
@@ -90,6 +91,40 @@ export function outcomeFromWlError(
   return error.details.requeueAfterMs === null
     ? { kind: 'dead', failure }
     : { kind: 'requeue', requeueAfterMs: error.details.requeueAfterMs, failure };
+}
+
+/**
+ * The same mapping for GoHighLevel, and the reason it exists at all.
+ *
+ * GoHighLevel is SUPPLEMENTARY - WellnessLiving is the system of record. So an
+ * outage there must degrade to stale data, never to a failed sync run. Before
+ * this existed a GHL error was rethrown, runQueue does not catch a handler, and
+ * the throw reached runPass's outer catch: the whole pass came back 'failed' and
+ * the drain loop stopped, so an outage at a supplementary service could halt
+ * work that had nothing to do with it. Measured live on dev, not inferred.
+ *
+ * 'auth' requeues rather than dying. A token blip would otherwise dead-letter
+ * every client at once, and the queue's own attempt ladder is what should decide
+ * when to give up - not the first bad response.
+ */
+export function outcomeFromGhlError(
+  error: GhlRequestError,
+  requeueAfterMs: number,
+): Extract<Outcome, { kind: 'requeue' | 'dead' }> {
+  const failure: FailureInfo = {
+    message: error.message,
+    sid: null,
+    httpStatus: error.details.httpStatus,
+    // GHL has no k_log; its own trace id is carried in the message the client
+    // built, and the queue's traceId column is ours.
+    traceId: error.details.path,
+    kLog: null,
+  };
+  // 'permanent' is about THIS request - a malformed filter, a 404 - so retrying
+  // it forever would be noise. Anything else is about the service.
+  return error.kind === 'permanent'
+    ? { kind: 'dead', failure }
+    : { kind: 'requeue', requeueAfterMs, failure };
 }
 
 /**

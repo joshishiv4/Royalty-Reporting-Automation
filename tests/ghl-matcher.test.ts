@@ -32,6 +32,9 @@ function fakeGhl(byPhone: GhlContact[] = [], byEmail: GhlContact[] = []) {
       total: contacts.length,
       latencyMs: 1,
       httpStatus: 200,
+      body: { contacts, traceId: 'trace-1' },
+      ghlTraceId: 'trace-1',
+      requestParams: { ...filters },
     });
   });
   return { ghl: { searchContacts }, searches };
