@@ -130,7 +130,7 @@ All GET unless noted. `id_region` and `k_business` are added by the client.
 |---|---|---|
 | `/v1/collector/debt/list` | `subscription-access` | not on this plan |
 | `/v1/collector/debt/transaction` | `subscription-access` | not on this plan |
-| `/v1/login/attendance/list` (APPOINTMENT k_period) | `id-nx` | **classes only** — see §"attendance is class-only" below |
+| `/v1/login/attendance/list` with an appointment key sent as `k_class_period` | `id-nx` | **Our bug, not a limit.** Send it as `k_appointment` and it works — see §"Attendance is NOT class-only" |
 | `/v1/report/query` | `method-nx` on GET | POST only |
 | `/v1/report/data` | `report-nx` | needs a report sid |
 | `POST` on most read endpoints | `method-nx` | GET only |
@@ -355,42 +355,66 @@ The StaffApp schedule list is worth reaching for three fields beyond
 | `a_staff_info[].is_staff_change` | *"true means staff is substituted"* | A royalty is paid to whoever taught. Nothing else in the API says a substitution happened |
 | `dt_confirm` | *"Will be zero date + time in case appointment is not yet confirmed by client"* | Confirmation is a client act with a time on it |
 
-### Attendance: class-only as we call it — but the docs disagree, and we never tested them
+### Attendance is NOT class-only — that was our parameter bug (settled live 27 Aug 2026)
 
 `/v1/login/attendance/list` rejects an appointment key with sid `id-nx` — "The ID
-value for `k_class_period` that you have specified does not exist". Measured on
-live dev, 21 Aug 2026 → 27 Aug 2026: **681 dead attendance rows out of 1,018**,
-every one for a session whose kind is `appointment`. Not an outage — WL is
-returning a correct answer.
+value for `k_class_period` that you have specified does not exist". Measured
+21 Aug → 27 Aug 2026: **681 dead attendance rows out of 1,018**, every one for an
+appointment. That was recorded here as "the endpoint is class-only".
 
-Consequence, and it still stands: `session.k_period` holds `k_appointment` for
-appointment rows (see `src/sync/client-sessions.ts:93`), so the attendance seed
-MUST filter to `session_kind = 'class'`. Appointments have exactly one attendee
-already (the payer is the client), and that record is written by the
-client-session sync.
-
-**But "class-only" is our conclusion, not WL's.** Reviewing the spec on 27 Aug
-2026, `AttendanceListModel` is summarised as *"Retrieves information about
-clients attending a class, **appointment**, or event session"* and documents two
-mutually exclusive parameters:
+**It is not.** WL's spec summarises the endpoint as *"clients attending a class,
+**appointment**, or event session"* and documents two mutually exclusive
+parameters:
 
 | Parameter | Docs say |
 |---|---|
 | `k_class_period` | *"The class period key. **Not used if requesting information for an appointment.**"* |
 | `k_appointment` | *"The appointment key. **Not used if requesting information for a class or event session.**"* |
 
-We only ever sent the appointment key **as `k_class_period`** — so `id-nx` was a
-correct answer to a question we asked wrongly, and it says nothing about whether
-`k_appointment=` works. This is the same shape of mistake as `dt_date` versus
-`dt_date_local` above: a parameter name recorded as a WellnessLiving limitation.
+`session.k_period` holds a `k_appointment` for appointment rows (see
+`src/sync/client-sessions.ts:93`), and we only ever sent it **as
+`k_class_period`**. So `id-nx` was a correct answer to a question asked wrongly —
+the same shape of mistake as `dt_date` versus `dt_date_local`, which had this same
+endpoint recorded as blocked for days.
 
-**Not yet retested, and it cannot be settled from stored data** — `raw_wl`
-recorded `request_params` as `{}` on all 29 stored attendance payloads, so what
-we sent was never captured. It needs one live call with `k_appointment=`.
+**Probed live, one past and one upcoming appointment:**
 
-`request_params` being empty is its own small defect: the column exists so a
-stored payload can be re-read without guessing what produced it, and for this
-endpoint it holds nothing.
+| Sent as | Result |
+|---|---|
+| `k_class_period=<appointment key>` | `id-nx`, both |
+| **`k_appointment=<appointment key>`** | **200, one attendee, both** |
+| `k_appointment=` with no `dt_date_local` | **also 200** — a `k_appointment` names one occurrence, unlike a class period, which repeats weekly |
+
+And the outcome is real: `id_visit` **3 ATTEND** on the past appointment,
+**1 BOOK** on the upcoming one.
+
+**Why this mattered more than a tidy-up.** 4,412 of 4,423 sessions are
+appointments, and their only outcome source was `page/element` — read once while a
+visit is still upcoming, so it records BOOK indefinitely. That is why the table
+held 4,425 BOOK against 3 ATTEND. Appointment outcomes were not merely awkward to
+reach; they were not being read at all.
+
+**THE APPOINTMENT RECORD IS A DIFFERENT SHAPE.** It is not the class record minus
+a few fields:
+
+| | class record | appointment record |
+|---|---|---|
+| `id_visit` | yes | **yes** |
+| `k_visit`, `uid` | yes | yes |
+| `is_attend` / `is_visit` / `is_truancy` / `is_penalty` | yes | **absent** |
+| **`dt_register`** (check-in time) | yes | **absent** |
+| `is_unpaid`, `is_free`, `is_deposit` | partly | yes |
+| names | `s_firstname` / `s_lastname` | `text_firstname` / `text_lastname` / `s_name` |
+
+Two consequences worth stating plainly:
+
+1. **`id_visit` is the only outcome field common to both**, which is another
+   reason the derivation belongs in one place reading that field —
+   `src/sync/visit-outcome.ts`.
+2. **`dt_register` is class-only, so it does NOT answer Q9.** Counting check-in
+   nulls tells you nothing about private lessons if the endpoint never sends the
+   field for them. Q9 still needs `is_arrive` from the StaffApp schedule list
+   ("For appointments: true if user has checked-in"), which remains unreached.
 
 ### `attendance/list` already carries the outcome — measured, not read off the spec
 

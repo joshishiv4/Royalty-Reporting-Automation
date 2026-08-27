@@ -762,22 +762,36 @@ export function runAttendanceSyncPass(
     jobName: 'attendance_sync',
     workType: 'session_attendance',
     seed: async ({ db, kBusiness, nowIso }) => {
-      // CLASSES ONLY. /v1/login/attendance/list is documented as a class-period
-      // lookup (see Postman collection and WL-API-NOTES.md), and WL answers
-      // 200 `id-nx` for anything that is not a k_class_period. An
-      // appointment's `k_period` in the session table is really a
-      // k_appointment (see client-sessions.ts:93), and passing it here dies
-      // with "The ID value for k_class_period that you have specified does not
-      // exist" - measured on live dev, 681 dead rows out of 1,018 all with
-      // exactly that sid. Appointments do not need this call: a private
-      // session has one payer who IS the attendee, and that is already written
-      // by client-sessions.ts. Filter at the seed so it never even hits the
-      // queue.
-      // Eleven class rows of 4,423 sessions today - which is exactly why this one
-      // would be forgotten. It grows with the schedule, not with the backfill.
-      const sessions = await db.selectAll<{ k_period: string; dt_start_utc: string }>(
+      // CLASSES *AND* APPOINTMENTS. This used to be classes only, and the
+      // reasoning was wrong in a way worth keeping written down.
+      //
+      // WL answers `id-nx` - "The ID value for k_class_period that you have
+      // specified does not exist" - for an appointment key, measured as 681 dead
+      // rows out of 1,018. That was read as "the endpoint is class-only". It is
+      // not. WL's own spec summarises it as "clients attending a class,
+      // APPOINTMENT, or event session" and documents two mutually exclusive
+      // parameters: k_class_period ("not used if requesting information for an
+      // appointment") and k_appointment ("not used if requesting information for
+      // a class"). We only ever sent the appointment key AS k_class_period, so
+      // id-nx was a correct answer to a question asked wrongly - the same shape
+      // of mistake as dt_date versus dt_date_local (see attendance.ts).
+      //
+      // Probed live 27 Aug 2026 on one past and one upcoming appointment:
+      // k_appointment= is accepted and returns the attendee with id_visit - 3
+      // ATTEND on the past one, 1 BOOK on the upcoming one - while the same key
+      // as k_class_period still fails with id-nx. So appointment OUTCOMES are
+      // reachable, and they were not before.
+      //
+      // This matters beyond tidiness. 4,412 of 4,423 sessions are appointments,
+      // and their only outcome source was page/element, which is read once when a
+      // visit is still upcoming and therefore records BOOK forever. That is why
+      // the table holds 4,425 BOOK against 3 ATTEND.
+      const sessions = await db.selectAll<{
+        k_period: string;
+        dt_start_utc: string;
+      }>(
         'session',
-        `k_business=eq.${kBusiness}&session_kind=eq.class` +
+        `k_business=eq.${kBusiness}` +
           `&order=k_period.asc&order=dt_start_utc.asc&select=k_period,dt_start_utc`,
       );
       await enqueue(
@@ -810,12 +824,13 @@ export function runAttendanceSyncPass(
 
           // The endpoint needs LOCAL time; the session row is where it lives,
           // stored exactly as WL sent it rather than converted from the UTC one.
-          const rows = await db.select<{ dtl_start_local: string }>(
+          const rows = await db.select<{ dtl_start_local: string; session_kind: string }>(
             'session',
             `k_period=eq.${kPeriod}&dt_start_utc=eq.${encodeURIComponent(dtStartUtc)}` +
-              `&limit=1&select=dtl_start_local`,
+              `&limit=1&select=dtl_start_local,session_kind`,
           );
           const local = rows[0]?.dtl_start_local;
+          const kind = rows[0]?.session_kind;
           if (local === undefined) {
             // The session was deleted between seeding and claiming. Retrying
             // cannot help, and the local start time is the one thing this call
@@ -829,10 +844,21 @@ export function runAttendanceSyncPass(
             };
           }
 
+          // THE KEY GOES IN THE PARAMETER THAT MATCHES ITS KIND. WL documents
+          // the two as mutually exclusive, and sending an appointment key as
+          // k_class_period is what produced 681 dead rows. `session.k_period`
+          // holds a k_appointment for appointment rows - see
+          // client-sessions.ts - so the kind decides the parameter name.
+          const keyParam =
+            kind === 'appointment' ? { k_appointment: kPeriod } : { k_class_period: kPeriod };
           const response = await wl.request(WL_PATHS.loginAttendanceList, {
             query: {
+              // Kept for appointments too. Measured, it is not required there - a
+              // k_appointment names one occurrence, unlike a class period, which
+              // repeats weekly - but it is accepted, and sending it keeps one
+              // code path instead of two.
               dt_date_local: local.replace('T', ' ').slice(0, 19),
-              k_class_period: kPeriod,
+              ...keyParam,
             },
             priorAttempt: item.attempt_count,
           });

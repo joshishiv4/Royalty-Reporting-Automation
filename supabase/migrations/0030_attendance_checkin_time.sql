@@ -22,10 +22,17 @@
 -- WHY IT IS WORTH STORING WHEN id_visit ALREADY SAYS "ATTEND". Two reasons, both
 -- about questions id_visit cannot answer:
 --
---   1. Q9 to the client - "is check-in used consistently for private lessons" -
---      becomes MEASURABLE instead of a question. A studio that checks people in
---      produces timestamps; one that does not produces nulls. Counting nulls per
---      service type answers it without asking anybody.
+--   1. For CLASSES it makes "was anyone actually checked in" a count rather than
+--      a guess. A studio that checks people in produces timestamps; one that does
+--      not produces nulls on sessions that demonstrably ran.
+--
+--      IT DOES NOT ANSWER Q9. Q9 asks whether check-in is used consistently for
+--      PRIVATE LESSONS, and dt_register is class-only: probed live 27 Aug 2026,
+--      the appointment record from this endpoint carries id_visit, k_visit and
+--      uid but NOT dt_register, is_attend, is_visit or is_truancy. Counting nulls
+--      cannot answer a question about a field the endpoint never sends. Q9 needs
+--      `is_arrive` from the StaffApp schedule list ("For appointments: true if
+--      user has checked-in"), which is still unreached.
 --   2. A royalty dispute is about a moment. "WL says they attended" is weaker
 --      evidence than "WL recorded a check-in at 18:57 on 19 Aug".
 --
@@ -69,12 +76,14 @@ comment on column public.attendance.dt_checkin_utc is
   'EVIDENCE, NOT VERDICT: attendance is id_visit = 3, and nothing derives from '
   'this column. Null means no check-in was recorded, which is NOT the same as '
   'not attending - a studio that does not use check-in produces nulls on '
-  'sessions that happened. Counting nulls per service type is how Q9 (is '
-  'check-in used consistently for private lessons) gets answered without asking. '
-  'UTC only, like every other dt_ column here.';
+  'sessions that happened. CLASS-ONLY: the appointment record from this endpoint '
+  'carries id_visit, k_visit and uid but not dt_register (probed 27 Aug 2026), so '
+  'this is always null for private lessons and does NOT answer Q9 - that needs '
+  'is_arrive from the StaffApp schedule list. UTC only, like every other dt_ '
+  'column here.';
 
--- The Q9 question is "how many visits have no check-in", so the useful index is
--- on the rows that DO carry one.
+-- The useful question is "how many visits have no check-in", so index the rows
+-- that DO carry one.
 create index if not exists attendance_checkin_idx
   on public.attendance (k_business, dt_checkin_utc)
   where dt_checkin_utc is not null;
