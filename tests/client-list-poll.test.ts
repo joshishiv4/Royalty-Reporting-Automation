@@ -11,8 +11,39 @@ import { clientListReportStep, type ClientListStepDeps } from '../src/sync/pass.
  */
 
 const K = '334942';
-const FIELDS = ['uid', 'field-general-2.text_name', 'text_client_type'];
-const ROW = ['33793232', 'Jared', 'Staff Client Profile'];
+/**
+ * Every field id this sync maps. It has to be all of them: writeClientList now
+ * refuses a page whose field list has dropped one, because the report is
+ * configured in the WL portal and a removed column would otherwise stop writing
+ * that person column with no error (see assertReportFields). This fixture named
+ * three, which is the exact state the guard rejects.
+ */
+const FIELDS = [
+  'uid',
+  'k_login_type',
+  'field-general-2.text_name',
+  'field-general-1',
+  'field-general-3',
+  'field-general-4',
+  'field-general-5',
+  'field-general-6',
+  'field-general-7.dl_date',
+  'field-general-11',
+  'text_client_type',
+];
+const ROW = [
+  '33793232',
+  '1260510',
+  'Jared',
+  'Feldman',
+  'jared@spindjacademy.com',
+  '+15162720782',
+  '',
+  '',
+  '1985-04-11',
+  'MEM-4471',
+  'Staff Client Profile',
+];
 
 /**
  * An in-memory sync_job_state so readReportState sees what the previous step

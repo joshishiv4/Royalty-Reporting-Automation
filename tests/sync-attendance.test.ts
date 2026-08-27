@@ -56,8 +56,13 @@ describe('parseAttendanceList', () => {
       k_business: K_BUSINESS,
       k_visit: '754626261',
       dt_booked_utc: '2026-07-10 20:20:04',
+      // Null, not '3': this fixture carries no id_visit, and inferring the
+      // attendance from is_visit must not invent a status WL never sent.
+      id_visit: null,
       is_attended: true,
       is_no_show: false,
+      is_cancelled_client: false,
+      is_late_cancel: false,
       is_waitlisted: false,
       is_unpaid: false,
       uid_book: '58341479',
@@ -80,7 +85,10 @@ describe('parseAttendanceList', () => {
       }),
     ).rows;
     expect(r?.is_unpaid).toBe(true);
-    expect(r?.is_attended).toBe(false);
+    // NULL, not false. WL sent no status and no attendance flag, so nothing here
+    // says the client failed to turn up - only that we do not know yet. false is
+    // a claim, and this is the column a royalty is paid from (migration 0029).
+    expect(r?.is_attended).toBeNull();
   });
 
   it("reads WL's is_truancy as a no-show", () => {
@@ -214,5 +222,88 @@ describe('writeAttendanceList', () => {
     expect(result.count).toBe(0);
     expect(calls.some((c) => c.table === 'raw_wl')).toBe(true);
     expect(calls.some((c) => c.op === 'upsert')).toBe(false);
+  });
+});
+
+describe("WL's own visit status is what gets stored", () => {
+  // The bug this covers: the parser derived attendance from is_visit/is_attend
+  // and never wrote id_visit, so every row it produced left the column
+  // session_outcome.is_countable depends on null - 4,431 of 4,431 on live dev.
+  it('stores id_visit and derives the outcome from it', () => {
+    const [row] = parse(body({ a_list_active: [attendee({ id_visit: 3 })] })).rows;
+    expect(row?.id_visit).toBe('3');
+    expect(row?.is_attended).toBe(true);
+  });
+
+  it('normalises the numeric code WL sends into text', () => {
+    // A code is not arithmetic, and a leading zero is lost as an integer.
+    expect(parse(body({ a_list_active: [attendee({ id_visit: 5 })] })).rows[0]?.id_visit).toBe('5');
+  });
+
+  it('reads TRUANCY as a no-show rather than a cancellation', () => {
+    const [row] = parse(body({ a_list_active: [attendee({ id_visit: 5 })] })).rows;
+    expect(row?.is_attended).toBe(false);
+    expect(row?.is_no_show).toBe(true);
+    expect(row?.is_cancelled_client).toBe(false);
+  });
+
+  it('reads PENALTY as a cancellation AND a late one', () => {
+    const [row] = parse(body({ a_list_active: [attendee({ id_visit: 4 })] })).rows;
+    expect(row?.is_cancelled_client).toBe(true);
+    expect(row?.is_late_cancel).toBe(true);
+    expect(row?.is_no_show).toBe(false);
+  });
+
+  it('reads CANCEL as a cancellation that was in time', () => {
+    const [row] = parse(body({ a_list_active: [attendee({ id_visit: 6 })] })).rows;
+    expect(row?.is_cancelled_client).toBe(true);
+    expect(row?.is_late_cancel).toBe(false);
+  });
+
+  it.each([1, 2, 7, 8])('leaves is_attended unknown for status %i', (code) => {
+    // BOOK, WAIT, PENDING and REMOVE carry no verdict. false would claim the
+    // client did not turn up, in the column a royalty is paid from.
+    const [row] = parse(body({ a_list_active: [attendee({ id_visit: code })] })).rows;
+    expect(row?.is_attended).toBeNull();
+    expect(row?.id_visit).toBe(String(code));
+  });
+
+  it('does not let the undocumented booleans override the status', () => {
+    // is_visit/is_attend are true on this fixture. WL says TRUANCY. WL wins:
+    // id_visit is the documented field, the booleans appear nowhere in the spec.
+    const [row] = parse(body({ a_list_active: [attendee({ id_visit: 5 })] })).rows;
+    expect(row?.is_attended).toBe(false);
+    expect(row?.is_no_show).toBe(true);
+  });
+
+  it('falls back to the booleans only when no status is sent', () => {
+    const [row] = parse(body({ a_list_active: [attendee()] })).rows;
+    expect(row?.id_visit).toBeNull();
+    expect(row?.is_attended).toBe(true);
+  });
+
+  it('reconstructs a late cancellation from is_penalty when the status is absent', () => {
+    const [row] = parse(
+      body({ a_list_active: [attendee({ is_penalty: true, is_visit: false, is_attend: false })] }),
+    ).rows;
+    expect(row?.is_cancelled_client).toBe(true);
+    expect(row?.is_late_cancel).toBe(true);
+  });
+
+  it('says "not known" rather than "did not attend" when nothing indicates either', () => {
+    const [row] = parse(
+      body({ a_list_active: [attendee({ is_visit: false, is_attend: false })] }),
+    ).rows;
+    expect(row?.id_visit).toBeNull();
+    expect(row?.is_attended).toBeNull();
+  });
+
+  it('treats id_visit 0 as absent and falls back, rather than storing "0"', () => {
+    // Zero is not a valid WlVisitSid value, so it is not a status. The fixture's
+    // is_visit still says they attended - and id_visit stays null, because WL
+    // never actually stated one.
+    const [row] = parse(body({ a_list_active: [attendee({ id_visit: 0 })] })).rows;
+    expect(row?.id_visit).toBeNull();
+    expect(row?.is_attended).toBe(true);
   });
 });

@@ -1,6 +1,8 @@
 import type { SupabaseClient } from '../supabase/client.js';
 import type { WlResponse } from '../wl/client.js';
 import { linkRows, storeRawWl } from './writer.js';
+import { readVisitCode, visitOutcome } from './visit-outcome.js';
+import type { VisitOutcome } from './visit-outcome.js';
 
 /**
  * The attendance writer: /v1/login/attendance/list -> attendance rows.
@@ -32,8 +34,12 @@ export type AttendanceRow = {
   readonly k_business: string;
   readonly k_visit: string | null;
   readonly dt_booked_utc: string | null;
-  readonly is_attended: boolean;
+  /** WL's own verdict (WlVisitSid). THE authoritative outcome - see visit-outcome.ts. */
+  readonly id_visit: string | null;
+  readonly is_attended: boolean | null;
   readonly is_no_show: boolean;
+  readonly is_cancelled_client: boolean;
+  readonly is_late_cancel: boolean;
   readonly is_waitlisted: boolean;
   readonly is_unpaid: boolean;
   readonly uid_book: string | null;
@@ -45,6 +51,48 @@ export interface ParsedAttendance {
   readonly uids: readonly string[];
   /** Entries WL returned with no uid, which cannot be keyed. */
   readonly skipped: number;
+}
+
+/**
+ * What this record says happened, preferring WL's own status.
+ *
+ * ID_VISIT FIRST. It is what the API documents as "the status of the visit", and
+ * it is what migration 0029 made `session_outcome.is_countable` depend on.
+ * Measured on live dev 27 Aug 2026 it is present on 55 of 55 sampled client
+ * records (BOOK 45, ATTEND 8, PENDING 2) - yet this parser used to ignore it and
+ * derive attendance from `is_visit`/`is_attend` instead, so every row it wrote
+ * left `id_visit` null and could never become countable.
+ *
+ * THE BOOLEANS ARE A FALLBACK, NOT AN OVERRIDE. `is_visit`, `is_attend`,
+ * `is_truancy`, `is_penalty` and `is_pending` arrive beside it and appear nowhere
+ * in WL's published spec, so they are undocumented and could stop arriving. They
+ * are read only when the status itself is missing, and they reconstruct the code
+ * rather than setting the columns directly - so there is still exactly one rule
+ * turning a status into an outcome.
+ *
+ * Order matters in the reconstruction: PENALTY is a cancellation AND a late one,
+ * so it must be tested before a bare cancellation would swallow it.
+ */
+function outcomeOf(rec: Record<string, unknown> | null): VisitOutcome {
+  const stated = readVisitCode(rec?.id_visit);
+  if (stated !== null) return visitOutcome(stated);
+
+  // No status in the payload. Rebuild the code the booleans imply and let the
+  // one rule map it - but do NOT keep the reconstructed code.
+  //
+  // id_visit is documented as WellnessLiving's own verdict, and migration 0029's
+  // comment calls it "THE authoritative outcome". Writing a code WL never sent
+  // would put our inference in the column that exists to hold their statement,
+  // and a later reader could not tell the two apart. So the booleans may decide
+  // the booleans; only WL may fill id_visit.
+  const inferred = (): VisitOutcome | null => {
+    if (wlBool(rec?.is_penalty)) return visitOutcome('4');
+    if (wlBool(rec?.is_truancy)) return visitOutcome('5');
+    if (wlBool(rec?.is_visit) || wlBool(rec?.is_attend)) return visitOutcome('3');
+    return null;
+  };
+  const guess = inferred();
+  return guess === null ? visitOutcome(null) : { ...guess, id_visit: null };
 }
 
 export function parseAttendanceList(
@@ -74,10 +122,7 @@ export function parseAttendanceList(
         k_business: kBusiness,
         k_visit: readString(rec, 'k_visit'),
         dt_booked_utc: readString(rec, 'dt_book'),
-        // WL sends both; is_visit is the one populated on every record observed.
-        is_attended: wlBool(rec?.is_visit) || wlBool(rec?.is_attend),
-        // WL's word for a no-show.
-        is_no_show: wlBool(rec?.is_truancy),
+        ...outcomeOf(rec),
         is_waitlisted: isWaitlisted,
         is_unpaid: wlBool(rec?.is_unpaid),
         uid_book: readString(rec, 'uid_book'),

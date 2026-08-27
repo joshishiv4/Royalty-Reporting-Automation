@@ -57,6 +57,47 @@ const FIELD_TO_COLUMN: Readonly<Record<string, string>> = {
 /** Columns that must never be overwritten with an absent value. */
 const REQUIRED = 'uid';
 
+/**
+ * Refuses a page whose field list has stopped carrying something we map.
+ *
+ * WHY THIS HAS TO THROW. `mapClientRow` looks every value up by field id and
+ * skips an id it does not recognise, which is right for the six
+ * `field-custom-*` columns we deliberately ignore - but it means the reverse
+ * failure is silent. If WL renames a field id, or a studio admin removes a
+ * column from the report in the portal (the report IS portal-configured - see
+ * the header), that column simply stops being written. Every client keeps its
+ * stale value, the pass reports `ok`, and nothing anywhere says a field went
+ * missing.
+ *
+ * Worse for `uid`: `mapClientRow` returns null without one, and `mapClientRows`
+ * drops those rows - so losing the uid field id writes ZERO clients and still
+ * reports success. That is the same shape as the queued-report bug in
+ * wl/report.ts and the 1,000-row PostgREST cap in supabase/client.ts: the run
+ * looks clean while the data is wrong. Both of those are defended against; this
+ * was not.
+ *
+ * Measured before adding it, so this is a no-op today rather than a new
+ * blocker: all 11 mapped ids are present on 20 of 20 stored report payloads
+ * (27 Aug 2026), out of 37 ids the report returns.
+ *
+ * Deliberately strict. Phone is the PRIMARY GoHighLevel match key, so a
+ * quietly-absent phone column degrades matching rather than breaking it, which
+ * is far harder to notice than a failed run. Whoever reconfigured the report
+ * should decide - not this parser.
+ */
+export function assertReportFields(fields: readonly string[]): void {
+  const present = new Set(fields);
+  const missing = Object.keys(FIELD_TO_COLUMN).filter((id) => !present.has(id));
+  if (missing.length === 0) return;
+  throw new Error(
+    `WL client-list report is missing ${String(missing.length)} field id(s) this ` +
+      `sync maps: ${missing.join(', ')}. The report is configured in the WL portal, ` +
+      `so a removed or renamed column stops that person column being written ` +
+      `without any other error. Refusing the page rather than storing clients ` +
+      `with silently absent fields.`,
+  );
+}
+
 export interface ClientRow {
   readonly uid: string;
   readonly [column: string]: unknown;
@@ -142,6 +183,10 @@ export async function writeClientList(
     runId: input.runId,
     response: input.page.response,
   });
+
+  // AFTER the raw store, deliberately: if the shape has changed, the payload
+  // that proves it is already in raw_wl to be read without another WL call.
+  assertReportFields(input.fields);
 
   const clients = mapClientRows(input.fields, input.page.rows);
   if (clients.length > 0) {

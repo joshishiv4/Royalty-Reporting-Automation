@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { visitOutcome } from '../src/sync/client-sessions.js';
+import { visitOutcome } from '../src/sync/visit-outcome.js';
 
 /**
  * The mapping royalty is paid from.

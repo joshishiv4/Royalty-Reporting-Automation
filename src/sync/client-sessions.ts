@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '../supabase/client.js';
 import type { WlResponse } from '../wl/client.js';
 import { linkRows, storeRawWl } from './writer.js';
+import { readVisitCode, visitOutcome } from './visit-outcome.js';
 
 /**
  * The per-client session writer: /v1/schedule/page/element -> session,
@@ -174,7 +175,7 @@ export function parseVisitElement(body: unknown, kBusiness: string): ParsedVisit
       //
       // Text, not a number: it is WL's code, and an integer invites arithmetic
       // on it. WL sends it as a number in JSON, so it is normalised here.
-      id_visit: readCode(visitInfo?.id_visit) ?? readCode(b?.id_visit),
+      id_visit: readVisitCode(visitInfo?.id_visit) ?? readVisitCode(b?.id_visit),
       // WL nests these under a_appointment_visit_info, not at the top level.
       is_request: wlBool(visitInfo?.is_request),
       is_confirmed: wlBool(visitInfo?.is_confirmed),
@@ -303,71 +304,6 @@ function collection(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
   const rec = asRecord(value);
   return rec === null ? [] : Object.values(rec);
-}
-
-/**
- * Turns WL's visit status into the outcome columns.
- *
- * ONE PLACE, and it must agree with migration 0029's backfill - the same
- * mapping is applied there so a re-parse and a fresh sync cannot disagree.
- *
- * is_attended is NULL for anything without a verdict. That is the whole point:
- * `false` would claim the client did not turn up, and for BOOK, WAIT, PENDING or
- * a status WL has not filled in yet, we simply do not know. It is the column a
- * royalty is calculated from, so it may not guess.
- *
- * A status we have never seen also lands as unknown rather than as "not
- * attended" - WL may add one, and a new code must not silently read as absence.
- *
- * Exported so the mapping is testable on a literal rather than only through a
- * fake database. It decides what a royalty is paid on; it should not be
- * reachable only by simulating a sync.
- */
-export function visitOutcome(idVisit: string | null): {
-  id_visit: string | null;
-  is_attended: boolean | null;
-  is_no_show: boolean;
-  is_cancelled_client: boolean;
-  is_late_cancel: boolean;
-} {
-  const unknown = {
-    id_visit: idVisit,
-    is_attended: null,
-    is_no_show: false,
-    is_cancelled_client: false,
-    is_late_cancel: false,
-  };
-
-  switch (idVisit) {
-    case '3': // ATTEND - client has attended the session
-      return { ...unknown, is_attended: true };
-    case '5': // TRUANCY - missed it, without cancelling
-      return { ...unknown, is_attended: false, is_no_show: true };
-    case '6': // CANCEL - cancelled in time, no penalty
-      return { ...unknown, is_attended: false, is_cancelled_client: true };
-    case '4': // PENALTY - cancelled too late. Still a cancellation, and late.
-      return { ...unknown, is_attended: false, is_cancelled_client: true, is_late_cancel: true };
-    case '1': // BOOK  - reserved, has not happened
-    case '2': // WAIT  - on the wait list
-    case '7': // PENDING - WL is waiting for staff to decide
-    case '8': // REMOVE  - hidden in WL, retained in their database
-    default:
-      return unknown;
-  }
-}
-
-/**
- * Reads a WL code as text.
- *
- * WL sends id_visit as a JSON number; every other WL key in this schema is text
- * because a leading zero is lost as an integer, and because a code should not be
- * arithmetic. Zero is not a valid WlVisitSid value, so a falsy number is treated
- * as absent rather than as `"0"`.
- */
-function readCode(value: unknown): string | null {
-  if (typeof value === 'number' && Number.isFinite(value) && value !== 0) return String(value);
-  if (typeof value === 'string' && value.length > 0 && value !== '0') return value;
-  return null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

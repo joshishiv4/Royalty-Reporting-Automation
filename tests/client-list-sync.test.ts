@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { groupByShape, mapClientRow, mapClientRows, writeClientList } from '../src/sync/clients.js';
+import {
+  assertReportFields,
+  groupByShape,
+  mapClientRow,
+  mapClientRows,
+  writeClientList,
+} from '../src/sync/clients.js';
 import type { SupabaseClient } from '../src/supabase/client.js';
 import {
   ALL_DATES,
@@ -22,6 +28,18 @@ import {
 const K_BUSINESS = '111111';
 
 /** The column ids this business's report actually returns, in order. */
+/**
+ * The field ids the live report returns, restricted to the ones that matter here.
+ *
+ * EVERY ID THIS SYNC MAPS MUST BE PRESENT. `writeClientList` now refuses a page
+ * whose field list has stopped carrying one (see assertReportFields), because the
+ * report is configured in the WL portal and a removed column would otherwise stop
+ * writing that person column with no error at all. This fixture used to omit four
+ * of them, which is exactly the state the guard exists to reject.
+ *
+ * `field-general-2.is_traveller` and `field-custom-378723` are deliberately kept:
+ * they are ids the sync maps nothing to, and they must stay harmless.
+ */
 const FIELDS = [
   'k_login_type',
   'uid',
@@ -31,6 +49,10 @@ const FIELDS = [
   'field-general-3',
   'field-custom-378723',
   'field-general-4',
+  'field-general-5',
+  'field-general-6',
+  'field-general-7.dl_date',
+  'field-general-11',
   'text_client_type',
 ];
 
@@ -43,6 +65,10 @@ const ROW: Array<string | boolean | null> = [
   'jared@spindjacademy.com',
   'secondary@example.com',
   '+15162720782',
+  '+15162720783',
+  '',
+  '1985-04-11',
+  'MEM-4471',
   'Staff Client Profile',
 ];
 
@@ -241,7 +267,13 @@ describe('columns are read by name, never by position', () => {
       last_name: 'Feldman',
       email: 'jared@spindjacademy.com',
       phone: '+15162720782',
+      phone_home: '+15162720783',
+      date_of_birth: '1985-04-11',
+      text_member: 'MEM-4471',
       text_login_type: 'Staff Client Profile',
+      // phone_work is ABSENT, not empty: the report sends '' for a field the
+      // client never filled in, and an empty string is the absence of evidence,
+      // not evidence the value was deleted. Merge, never clobber.
     });
   });
 
@@ -500,5 +532,67 @@ describe('writeClientList batches sparse people rather than failing', () => {
       const shapes = new Set(batch.map((r) => Object.keys(r).sort().join(',')));
       expect(shapes.size).toBe(1);
     }
+  });
+});
+
+describe('a field list that stopped carrying what we map fails the run', () => {
+  // The failure this prevents: mapClientRow skips an id it does not recognise,
+  // which is right for the field-custom-* columns nobody reads - but it makes
+  // the reverse silent. A column renamed by WL, or removed from the report in
+  // the portal, would simply stop being written while the pass reported ok.
+  it('accepts the field list the live report actually returns', () => {
+    expect(() => assertReportFields(FIELDS)).not.toThrow();
+  });
+
+  it('names every missing id, so the fix does not need a guess', () => {
+    const without = FIELDS.filter((f) => f !== 'field-general-3' && f !== 'field-general-4');
+    expect(() => assertReportFields(without)).toThrow(/field-general-3/);
+    expect(() => assertReportFields(without)).toThrow(/field-general-4/);
+  });
+
+  it('refuses a list with no uid rather than writing zero clients', () => {
+    // The worst case: without uid every row maps to null, mapClientRows drops
+    // them all, and the pass stores nobody and reports success.
+    expect(() => assertReportFields(FIELDS.filter((f) => f !== 'uid'))).toThrow(/uid/);
+  });
+
+  it('does not care about ids it maps nothing to', () => {
+    const noCustom = FIELDS.filter((f) => !f.startsWith('field-custom-'));
+    expect(() => assertReportFields(noCustom)).not.toThrow();
+  });
+
+  it('refuses the page before any client is written', async () => {
+    const calls: Array<{ op: string; table: string }> = [];
+    const stub = {
+      insert: vi.fn((table: string, _rows: unknown[]) => {
+        calls.push({ op: 'insert', table });
+        // storeRawWl needs the new payload's id back to link rows to it.
+        return Promise.resolve([{ id: 'raw-1' }]);
+      }),
+      upsert: vi.fn((table: string, rows: unknown[]) => {
+        calls.push({ op: 'upsert', table });
+        return Promise.resolve(rows);
+      }),
+    } as unknown as SupabaseClient;
+
+    await expect(
+      writeClientList(stub, {
+        kBusiness: K_BUSINESS,
+        runId: 'r1',
+        page: {
+          fields: FIELDS,
+          rows: [ROW],
+          response: { body: {}, traceId: 't', kLog: null, httpStatus: 200, latencyMs: 1 },
+        },
+        fields: FIELDS.filter((f) => f !== 'field-general-4'),
+        syncedAt: 'now',
+        activatedUids: new Set(['33793232']),
+      }),
+    ).rejects.toThrow(/field-general-4/);
+
+    // The payload is stored FIRST on purpose: whatever changed is then readable
+    // from raw_wl without another WL call. But no person is touched.
+    expect(calls.some((c) => c.table === 'raw_wl')).toBe(true);
+    expect(calls.filter((c) => c.table === 'person')).toHaveLength(0);
   });
 });
