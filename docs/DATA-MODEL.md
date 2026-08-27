@@ -458,6 +458,26 @@ repeats weekly — so it identifies the class, not the occurrence. See
 So today: "was it cancelled, and was it late" is answerable from `id_visit`; "at
 what moment" is not stored, and is no longer known to be unavailable.
 
+**The check-in MOMENT does exist, and it is not `is_checkin`** (0030).
+`attendance/list` returns `dt_register` — *"the date the client checked in for the
+visit, in UTC"* — on 55 of 55 sampled client records, and it was being discarded.
+Stored as `dt_checkin_utc`. It is **evidence beside the verdict, not a second
+verdict**: nothing derives from it and no view gates on it, because `id_visit` is
+the authority. Its nulls are the useful part — a studio that does not use check-in
+produces nulls on sessions that happened, which is how Q9 gets answered by
+counting rather than by asking.
+
+**Two writers, one row.** `attendance` is written by both
+[`client-sessions.ts`](../src/sync/client-sessions.ts) (per client, from
+`page/element`) and [`attendance.ts`](../src/sync/attendance.ts) (per class
+occurrence, from `attendance/list`), on the same primary key. Both upsert the
+outcome unconditionally, so the later pass wins regardless of which payload is
+fresher. Measured 27 Aug 2026: the two routes overlap on 5 (visit, client) pairs
+and **disagree on 0**, so this is a structural risk rather than an active fault —
+recorded because the day they disagree, nothing in the code decides who is right.
+The derivation itself cannot diverge: both import
+[`visit-outcome.ts`](../src/sync/visit-outcome.ts).
+
 **Open decision — is a late cancellation royalty-bearing?** `is_late_cancel`'s
 comment (0004) says such a cancellation is "usually still billable", but billable
 to the *client* is not the same as royalty-bearing to the *teacher*.

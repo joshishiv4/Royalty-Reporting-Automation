@@ -163,11 +163,58 @@ other 4,391 are upcoming. So `is_countable = 0` is mostly "almost nothing has
 happened yet", not "the data was lost". The defect is that the column is empty,
 not that a month of royalties is missing.
 
-**The cheap fix is a re-parse, not a re-sync.** Those 4,990 stored payloads each
-carry `id_visit` (200 of 200 sampled), and every attendance row has its `k_visit`,
-so the whole gap can be closed with **zero WellnessLiving calls**. This is exactly
-the re-parse path listed under "Decisions waiting on someone" as justified by 6.3
-and non-existent. It now has a second reason to exist and a measured size.
+**The cheap fix was a re-parse, not a re-sync — and it is done.** Those 4,990
+stored payloads each carry `id_visit` (200 of 200 sampled), and every attendance
+row has its `k_visit`, so the gap was closed with **zero WellnessLiving calls**.
+Re-parsed and applied 27 Aug 2026:
+
+| | before | after |
+|---|---|---|
+| `attendance` rows | 4,431 | 4,431 |
+| `id_visit` is null | **4,431** | **0** |
+| `is_attended = true` | 0 | 3 |
+| `session_outcome.is_countable` | 0 | 0 |
+
+### Why `is_countable` is still 0 — and why that is correct
+
+Measured the same day, each condition the view requires, counted separately:
+
+| Condition | Rows passing |
+|---|---|
+| `id_visit = '3'` (ATTEND) | 3 |
+| session has already started | 34 |
+| **`is_reviewed = true`** | **0** |
+| not a booking request / not studio-cancelled / not waitlisted | 4,431 each |
+
+**`is_reviewed` is the only thing standing in the way, and it is ours, not
+WellnessLiving's** (0010). It is studio-review workflow state, `not null default
+false`, set by whoever reviews — nothing in WL supplies it. So zero countable
+sessions is the schema doing exactly what M08 asked for: *"sessions not yet
+reviewed by the studio are stored and visible, but never counted as attended"*.
+Nothing is broken here; the pipeline is waiting on a human.
+
+Outcome distribution after the backfill: 4,396 `upcoming`, 29 `unknown`,
+3 `attended`, 3 `awaiting_staff`.
+
+**Those 29 are worth a look.** They are past sessions WellnessLiving still reports
+as BOOK — the session ran and no outcome was ever recorded. `visit_awaiting_staff`
+misses them because WL has not marked them PENDING either, so they read as
+`unknown` in a column nobody watches. 0030 adds `visit_unresolved_past` for them.
+
+### Coverage, measured 27 Aug 2026
+
+Everything below is read-only counting, no WellnessLiving calls:
+
+| | |
+|---|---|
+| `person` | 1,285, of which **517 `is_active`** — matches the portal's 517 exactly |
+| matched to a GoHighLevel contact | 317 |
+| `session` | 4,423 — 11 class, 4,412 appointment |
+| `session_staff` | 4,423 — **every session has a teacher attached** |
+| `purchase` / `purchase_item` | 20,347 / 20,561 |
+| `purchase_payment` | 19,975 |
+| `purchase_account_credit` | 19,438 — the prepaid-credit breakdown M06 requires |
+| `sync_queue` | every work type fully drained, 0 pending, 0 failed, 0 dead |
 
 ## Blocked, and what unblocks it
 
