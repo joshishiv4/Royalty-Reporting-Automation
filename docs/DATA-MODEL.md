@@ -435,12 +435,28 @@ from. Null now means "not known yet"; false means WL said they did not turn up.
 - The enum is linked as `Wl/Visit/VisitSid.php`, which **does not exist**. It is
   `Wl/Visit/WlVisitSid.php` — which is why the constants were unreachable and the
   field went unread.
-- `id_visit` is documented as a **top-level** response field. Real payloads put it
-  inside `a_appointment_visit_info`. The code reads both, nested first.
+- ~~`id_visit` is documented at the top level but real payloads nest it.~~
+  **Our error, not theirs.** Measured over 200 stored `page/element` payloads:
+  `id_visit` is present at the **top level and** inside
+  `a_appointment_visit_info`, 200 of 200 each. The code reads nested first and
+  falls back, which is correct either way. Only the first defect above is real.
 
-**A cancellation timestamp does not exist.** Nowhere in the 208-path spec. `dt_cancel`
-is the cancel-by deadline and is stored as `dt_cancel_by` (0017). So "was it
-cancelled, and was it late" is answerable; "at what moment" is not.
+**A cancellation timestamp is not on `/v1/schedule/page/element`.** Measured over
+200 stored payloads (27 Aug 2026): the only date-bearing key matching `cancel` is
+`dt_cancel`, the cancel-by deadline, stored as `dt_cancel_by` (0017).
+
+It **does** exist elsewhere in the API, on endpoints this project does not call
+yet — this section used to say "nowhere in the 208-path spec", which was wrong.
+`dt_date_cancel` sits on the StaffApp schedule list but is **session-level**, so
+it does not say whether the client dropped their place or the studio pulled the
+appointment. `Profile/Activity` is a per-client timestamped log whose
+`WlLoginActivityTypeSid` names `CLASS_CANCEL` and `APPOINTMENT_CANCEL` as client
+acts. Neither is measured, and the activity log's `k_id` is a class period, which
+repeats weekly — so it identifies the class, not the occurrence. See
+[WL-API-NOTES.md](WL-API-NOTES.md).
+
+So today: "was it cancelled, and was it late" is answerable from `id_visit`; "at
+what moment" is not stored, and is no longer known to be unavailable.
 
 **Open decision — is a late cancellation royalty-bearing?** `is_late_cancel`'s
 comment (0004) says such a cancellation is "usually still billable", but billable

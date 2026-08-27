@@ -48,6 +48,13 @@
 -- read the constants 404'd, so the endpoint's own field list said "one of the
 -- VisitSid constants" and the constants were unreachable.
 --
+-- CORRECTION, and it was ours: this header first claimed the docs also put
+-- id_visit at the wrong level. They do not. Measured over 200 stored
+-- page/element payloads, it is present BOTH at the top level and inside
+-- a_appointment_visit_info, 200 of 200 each. The parser reads nested first and
+-- falls back, which is right either way - but the docs were correct about the
+-- location and we were not.
+--
 -- SO CANCELLATION *IS* REPORTED - as a status (4 or 6), and a late cancellation
 -- is told apart from a timely one. What is genuinely NOT published anywhere in
 -- the 208-path spec is a cancellation TIMESTAMP. dt_cancel is the cancel-by

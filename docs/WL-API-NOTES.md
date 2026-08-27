@@ -237,32 +237,190 @@ one. Two doc defects hid it:
    it is `Wl/Visit/WlVisitSid.php`. Every attempt to read the constants 404s, so
    the field list says "one of the VisitSid constants" and the constants are
    unreachable.
-2. `id_visit` is documented at the **top level** of the response. Real payloads
-   put it inside **`a_appointment_visit_info`**, beside the request flags.
+2. `id_visit` is documented at the **top level** of the response, and the first
+   payloads read were parsed from `a_appointment_visit_info`, so the note here
+   used to say the docs were wrong about the location. **They are not.** Measured
+   over 200 stored `page/element` payloads on 27 Aug 2026, `id_visit` is present
+   in **both** places, 200 of 200 each. The code reads nested first and falls
+   back to top level, which is correct either way — but "the docs put it in the
+   wrong place" was our error, not theirs.
 
 **`is_checkin` is not attendance.** Docs: *"If true, then this visit is ready to
 be checked in. If false, then this visit can't be checked in."* It was true on
 **0 of 4,423** sessions, so reading it as attendance left the royalty signal
 empty.
 
-**No cancellation timestamp exists** anywhere in the 208-path spec. `dt_cancel`
-is the cancel-by deadline — confirmed by the docs, matching the earlier
-measurement of 24h before start on 40 of 40 visits.
+**`dt_cancel` is the cancel-by deadline, and now the docs say so in words.**
+*"The latest date and time for when the visit can be canceled without penalty."*
+That matches the earlier measurement of 24h before start on 40 of 40 visits
+exactly. Re-measured 27 Aug 2026 over 200 stored `page/element` payloads: the
+only key matching `/cancel/i` with a date in it is `dt_cancel`, every value in
+the future, one distinct value per occurrence. `is_enable_client_cancel` is true
+on 200 of 200 and is a **permission**, not an event.
 
-### Attendance is class-only
+### A cancellation timestamp DOES exist — twice — just not where we looked
 
-`/v1/login/attendance/list` accepts ONLY a class-period id. Feeding an
-appointment id (a `k_appointment`) yields sid `id-nx` — "The ID value for
-`k_class_period` that you have specified does not exist". Measured on live dev,
-21 Aug 2026 → 27 Aug 2026: **681 dead attendance rows out of 1,018**, every one
-of them for a session whose kind is `appointment`. Not an outage — WL is
+This section used to say *"no cancellation timestamp exists anywhere in the
+208-path spec"*. **That was wrong**, and it was wrong because the search stopped
+at the endpoints this project already calls. Reviewed against the published
+OpenAPI spec on 27 Aug 2026:
+
+**1. `dt_date_cancel`** — *"The date/time when the session was canceled in UTC.
+Only used for appointments."* It is on
+`Schedule/ScheduleList/StaffApp/ScheduleList{,ByToken}Model` — the same StaffApp
+endpoint recorded below as "the REST path is not published". So the field was
+one unreachable endpoint away, not absent.
+
+Read it carefully before trusting it: it is **session-level**, and the naming
+trap applies. "The session was canceled" does not say whether the client dropped
+their place or the studio pulled the appointment. For a 1:1 appointment those
+collapse to the same row, which is exactly how a studio cancellation would end
+up on a student's record. **Unmeasured — do not populate a client-cancellation
+column from it without proving which event it records.**
+
+**2. `Profile/Activity/{List,Element}Model`** — a per-client, timestamped event
+log, and the one route that is unambiguous about who acted:
+
+| Field | Meaning |
+|---|---|
+| `dt_date_gmt` / `dt_date_local` | when the activity happened |
+| `id_type` | one of `WlLoginActivityTypeSid` |
+| `k_id` | *"Object ID, for example, class period ID for books and visits"* |
+| `html_message` / `s_message` | *"Description of the action, who and what did"* |
+
+The constants say plainly what the visit statuses only imply:
+
+| Constant | Value | Docs say |
+|---|---|---|
+| `CLASS_CANCEL` | 3 | **"Client cancelled a class."** |
+| `APPOINTMENT_CANCEL` | 28 | **"Client cancels an appointment."** |
+| `ENROLLMENT_CANCEL` | 18 | Client cancels an enrolment |
+| `CLASS_VISIT` / `APPOINTMENT_VISIT` | 15 / 23 | Client attends |
+| `CLASS_BOOK` / `APPOINTMENT_BOOK` | 2 / 27 | Client books |
+
+**The same file-name defect hides these too.** The spec links the enum as
+`RsLoginActivityTypeSid` — **404**. It is `Wl/Login/WlLoginActivityTypeSid.php`.
+That is the second time an unreadable link hid the field that answers the
+question; `VisitSid` → `WlVisitSid` was the first. **When a constants link 404s,
+try the `Wl`-prefixed name before concluding the data is not published.**
+
+Three costs to weigh before building on route 2, none of them measured yet:
+
+- **N+1.** The list returns *"each activity as an ID number"* and nothing else,
+  so every activity needs its own `element` call.
+- **No date filter.** `List` takes only `k_business` and `uid`. There is no
+  window to narrow, which is the shape `selectAll` exists to defend against.
+- **`k_id` cannot identify an occurrence.** It is a class period, and a class
+  period **repeats weekly** (see the `k_class_period` trap below). Two
+  cancellations of the same weekly class produce two rows with the same `k_id`,
+  and the timestamp on the row is when the client *cancelled*, not when the
+  session *was*. Pinning an activity to one occurrence needs the booking, not
+  just this log.
+
+### The spec is a floor, not a contract
+
+Two reasons to keep measuring rather than reading:
+
+**It is dated.** The published file is `openapi-20241224.yaml` — December 2024,
+roughly twenty months stale as of August 2026.
+
+**It under-reports.** Live `attendance/list` records carry `is_visit`,
+`is_truancy`, `is_penalty`, `is_pending`, `url-cancel` and `url-cancel-admin`;
+**none of those appear in the spec at all**. So the spec listing a field is
+weak evidence it exists, and the spec omitting one is no evidence it does not.
+
+### Why four `/v1` path guesses all 404'd — the scheme was wrong, not the words
+
+`WlModelAbstract::resource()` in the public SDK builds its URL from the class
+name and nothing else:
+
+```
+namespace path after WellnessLiving\  +  class name minus the `Model` suffix  +  '.json'
+```
+
+PascalCase is **preserved**, and there is no `/v1`. So the SDK addresses
+`Wl/Schedule/ScheduleList/StaffApp/ScheduleList.json`, while this project talks
+to lowercase `/v1/...` paths that work fine. **Two addressing schemes exist for
+the same models.** Every guess recorded below was a guess inside the scheme that
+does not contain that endpoint, which is why all four failed the same way.
+
+Worth trying before asking WL anything: the SDK scheme is derived, not guessed.
+
+The StaffApp schedule list is worth reaching for three fields beyond
+`dt_date_cancel`:
+
+| Field | Docs say | Why it matters here |
+|---|---|---|
+| `is_arrive` | *"For appointments: true if user has checked-in; false otherwise. For classes always null."* | Makes Q9 — is check-in used consistently for private lessons — **measurable** instead of a question for the client |
+| `a_staff_info[].is_staff_change` | *"true means staff is substituted"* | A royalty is paid to whoever taught. Nothing else in the API says a substitution happened |
+| `dt_confirm` | *"Will be zero date + time in case appointment is not yet confirmed by client"* | Confirmation is a client act with a time on it |
+
+### Attendance: class-only as we call it — but the docs disagree, and we never tested them
+
+`/v1/login/attendance/list` rejects an appointment key with sid `id-nx` — "The ID
+value for `k_class_period` that you have specified does not exist". Measured on
+live dev, 21 Aug 2026 → 27 Aug 2026: **681 dead attendance rows out of 1,018**,
+every one for a session whose kind is `appointment`. Not an outage — WL is
 returning a correct answer.
 
-Consequence for this project: `session.k_period` holds `k_appointment` for
+Consequence, and it still stands: `session.k_period` holds `k_appointment` for
 appointment rows (see `src/sync/client-sessions.ts:93`), so the attendance seed
 MUST filter to `session_kind = 'class'`. Appointments have exactly one attendee
 already (the payer is the client), and that record is written by the
-client-session sync — no shared attendance call is needed for them.
+client-session sync.
+
+**But "class-only" is our conclusion, not WL's.** Reviewing the spec on 27 Aug
+2026, `AttendanceListModel` is summarised as *"Retrieves information about
+clients attending a class, **appointment**, or event session"* and documents two
+mutually exclusive parameters:
+
+| Parameter | Docs say |
+|---|---|
+| `k_class_period` | *"The class period key. **Not used if requesting information for an appointment.**"* |
+| `k_appointment` | *"The appointment key. **Not used if requesting information for a class or event session.**"* |
+
+We only ever sent the appointment key **as `k_class_period`** — so `id-nx` was a
+correct answer to a question we asked wrongly, and it says nothing about whether
+`k_appointment=` works. This is the same shape of mistake as `dt_date` versus
+`dt_date_local` above: a parameter name recorded as a WellnessLiving limitation.
+
+**Not yet retested, and it cannot be settled from stored data** — `raw_wl`
+recorded `request_params` as `{}` on all 29 stored attendance payloads, so what
+we sent was never captured. It needs one live call with `k_appointment=`.
+
+`request_params` being empty is its own small defect: the column exists so a
+stored payload can be re-read without guessing what produced it, and for this
+endpoint it holds nothing.
+
+### `attendance/list` already carries the outcome — measured, not read off the spec
+
+Sampled 29 stored payloads / 55 client records on 27 Aug 2026. **Every field is
+present on 55 of 55:**
+
+| Field | What it is |
+|---|---|
+| `id_visit` | WL's own visit status, and here the spec links the **correct** `WlVisitSid` |
+| `dt_register` | *"The date the client checked in for the visit, in UTC"* — a real check-in **time**, which this project stores nowhere |
+| `is_attend` / `is_visit` | attended |
+| `is_truancy` / `is_penalty` / `is_pending` | booleans mirroring TRUANCY 5, PENALTY 4, PENDING 7 |
+| `dt_book`, `k_visit`, `uid_book` | already read |
+| `url-cancel`, `url-cancel-admin` | note the **hyphens** — not the usual `_` convention |
+
+Observed `id_visit` distribution: **1 BOOK 45 (81.8%), 3 ATTEND 8 (14.5%),
+7 PENDING 2 (3.6%)**. So real outcomes are arriving on a call this project
+already makes, and [`src/sync/attendance.ts`](../src/sync/attendance.ts) reads
+`is_visit`/`is_attend`/`is_truancy` but **not `id_visit`** — while migration 0029
+makes `id_visit` the authoritative field the whole royalty rule turns on.
+
+**Only `a_list_active` was ever populated** — 29 of 29 payloads; `a_list_confirm`
+and `a_list_wait` were empty every time.
+
+**There is no cancelled bucket, and that is a trap.** The spec defines
+`a_list_active` as *"clients ... who haven't confirmed or **canceled**"*. A client
+who cancels therefore **disappears from the response** rather than appearing with
+a cancelled status. Absence from an attendance list is not evidence they never
+booked, and a class cancellation cannot be counted from this endpoint at all —
+only from `id_visit` on a visit we already know about.
 
 ### `/v1/purchase/receipt` shape — where the money is
 

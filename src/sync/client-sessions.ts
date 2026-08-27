@@ -162,14 +162,15 @@ export function parseVisitElement(body: unknown, kBusiness: string): ParsedVisit
       is_checkin: wlBool(b?.is_checkin),
       // Named for what it is. See the header and migration 0017.
       dt_cancel_by: readString(b, 'dt_cancel'),
-      // READ FROM BOTH LEVELS, and that is not belt-and-braces. The API docs
-      // list id_visit as a top-level field of this response; the payloads we
-      // actually measured put it inside a_appointment_visit_info, alongside the
-      // request flags. Reading only the documented position returned null on
-      // every real visit - caught by the fixture in
-      // tests/sync-client-sessions.ts, which was built from 60 live payloads.
+      // READ FROM BOTH LEVELS. Measured over 200 stored page/element payloads:
+      // id_visit arrives at the top level AND inside a_appointment_visit_info,
+      // 200 of 200 each, so either position alone would have worked on real
+      // data. The fixture in tests/sync-client-sessions.ts carries only the
+      // nested one, which is why that is tried first - but neither is a
+      // fallback for a broken API, they are two places WL fills.
       //
-      // Nested wins when both are present: it is the one observed to be filled.
+      // (An earlier version of this comment claimed the docs put it in the
+      // wrong place. They do not; that was our misreading of a partial fixture.)
       //
       // Text, not a number: it is WL's code, and an integer invites arithmetic
       // on it. WL sends it as a number in JSON, so it is normalised here.
