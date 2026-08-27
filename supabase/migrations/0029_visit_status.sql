@@ -56,9 +56,27 @@
 -- location and we were not.
 --
 -- SO CANCELLATION *IS* REPORTED - as a status (4 or 6), and a late cancellation
--- is told apart from a timely one. What is genuinely NOT published anywhere in
--- the 208-path spec is a cancellation TIMESTAMP. dt_cancel is the cancel-by
--- deadline and is already correctly named dt_cancel_by (0017).
+-- is told apart from a timely one. dt_cancel is the cancel-by deadline and is
+-- already correctly named dt_cancel_by (0017).
+--
+-- SECOND CORRECTION, also ours: this header first said a cancellation TIMESTAMP
+-- is "genuinely NOT published anywhere in the 208-path spec". Reviewed against
+-- the published spec on 27 Aug 2026, that is wrong - the search had only covered
+-- the endpoints this project already calls. Two routes publish one:
+--
+--   dt_date_cancel   on Schedule/ScheduleList/StaffApp - "the date/time when the
+--                    session was canceled". SESSION-level, so it does NOT say
+--                    whether the client dropped their place or the studio pulled
+--                    the appointment. Unmeasured. Do not populate a
+--                    client-cancellation column from it without proving which.
+--   Profile/Activity a per-client timestamped log whose WlLoginActivityTypeSid
+--                    names CLASS_CANCEL (3) and APPOINTMENT_CANCEL (28) as
+--                    client acts. Its k_id is a class PERIOD, which repeats
+--                    weekly, so it names the class and not the occurrence.
+--
+-- Neither changes this migration: id_visit remains the authoritative outcome and
+-- nothing here stores a moment. It changes what we may claim is impossible. See
+-- docs/WL-API-NOTES.md, which is the one place that reasoning lives.
 --
 -- -----------------------------------------------------------------------------
 -- WHY id_visit IS STORED RAW AS WELL AS DERIVED

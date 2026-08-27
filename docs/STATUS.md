@@ -1,6 +1,6 @@
 # Status and plan
 
-Last updated **26 Aug 2026**. Keep the date honest — a stale status file is worse
+Last updated **27 Aug 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed.
 
 ## The plan
@@ -139,6 +139,35 @@ What is missing is the writer.
 
 **M04**, GoHighLevel matching and royalty calculation. Credentials work; there is no
 `src/ghl/` yet.
+
+## Measured 27 Aug 2026 — `id_visit` is read by the view but written by nothing
+
+Migration 0029 made `attendance.id_visit` the field the royalty rule turns on.
+Measured on live dev the same day, read-only:
+
+| | |
+|---|---|
+| `attendance` rows | 4,431 |
+| `id_visit` **is null** | **4,431 — every row** |
+| `session_outcome.is_countable = true` | **0** |
+| stored `/v1/schedule/page/element` payloads in `raw_wl` | **4,990** |
+| `attendance.k_visit` present | 4,431 — every row |
+
+0029 added the column and rebuilt the view to require `id_visit = '3'`, but the
+column starts empty and no pass has run since. `client-sessions.ts` does write it;
+`attendance.ts` does not, even though `id_visit` is in the payload it already
+receives (55 of 55 client records — see WL-API-NOTES.md).
+
+**Keep this in proportion.** Only **32 of 4,423** sessions are in the past — the
+other 4,391 are upcoming. So `is_countable = 0` is mostly "almost nothing has
+happened yet", not "the data was lost". The defect is that the column is empty,
+not that a month of royalties is missing.
+
+**The cheap fix is a re-parse, not a re-sync.** Those 4,990 stored payloads each
+carry `id_visit` (200 of 200 sampled), and every attendance row has its `k_visit`,
+so the whole gap can be closed with **zero WellnessLiving calls**. This is exactly
+the re-parse path listed under "Decisions waiting on someone" as justified by 6.3
+and non-existent. It now has a second reason to exist and a measured size.
 
 ## Blocked, and what unblocks it
 
