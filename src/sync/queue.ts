@@ -1,6 +1,7 @@
 import type { GhlRequestError } from '../ghl/client.js';
-import type { SupabaseClient } from '../supabase/client.js';
-import type { WlRequestError } from '../wl/client.js';
+import { SupabaseError, type SupabaseClient } from '../supabase/client.js';
+import { runBatch } from '../wl/batch.js';
+import { WlRequestError } from '../wl/client.js';
 
 /**
  * The durable work loop over `sync_queue`.
@@ -14,6 +15,14 @@ import type { WlRequestError } from '../wl/client.js';
  * decision), so the only race is between overlapping invocations. Each claim is a
  * conditional PATCH - `id=X AND state=pending` - and an empty result means another
  * worker got there first. No SELECT FOR UPDATE, no RPC, no migration.
+ *
+ * THE CLAIMED BATCH IS CLAIMED AND PROCESSED CONCURRENTLY (opts.concurrency). One
+ * invocation is still one worker; within it, the items are independent (one WL
+ * call plus a few DB writes each), so a serial loop idled the network the whole
+ * time - measured ~2.35s/item, ~7 hours for a 10k receipt backfill. A bounded
+ * pool takes that to ~7x. WL publishes no rate limit; the ceiling is the database,
+ * and a transient DB error requeues one item (see outcomeFromError) rather than
+ * failing the pass, so raising concurrency is safe.
  *
  * THE LADDER IS THE CLIENT'S. `attempt_count` is passed to the WL client as
  * `priorAttempt`, which picks the 1 / 5 / 25 minute requeue rung; on requeue the
@@ -43,7 +52,16 @@ export interface FailureInfo {
 export type Outcome =
   | { readonly kind: 'done' }
   | { readonly kind: 'requeue'; readonly requeueAfterMs: number; readonly failure: FailureInfo }
-  | { readonly kind: 'dead'; readonly failure: FailureInfo };
+  | { readonly kind: 'dead'; readonly failure: FailureInfo }
+  /**
+   * Not done, not failed - come back later. Used by an async job that is WAITING
+   * on something out of its hands (a WellnessLiving report still building), so it
+   * must release the worker rather than sit in a poll loop and burn the 60s
+   * function budget. Unlike 'requeue' it records NO error and does NOT advance
+   * attempt_count: waiting is not failing, and the wait is bounded by the job's
+   * own deadline, not by the dead-letter ladder.
+   */
+  | { readonly kind: 'defer'; readonly requeueAfterMs: number };
 
 export type QueueHandler = (item: QueueItem, db: SupabaseClient) => Promise<Outcome>;
 
@@ -63,6 +81,16 @@ export interface RunQueueOptions {
    * as a uid.
    */
   readonly workTypes: readonly string[];
+  /**
+   * How many claimed items to claim and process AT ONCE. Each item is one WL call
+   * plus several DB writes, all independent between items, so a serial loop idles
+   * the network the whole time - measured 27 Aug 2026 at ~2.35s/item, ~7 hours for
+   * a 10k receipt backfill. A bounded pool processes N at a time. Defaults to 1
+   * (unchanged, serial) so existing callers and tests are untouched; the pass sets
+   * it. WL publishes no rate limit; the real ceiling is the database, and a
+   * transient DB error now requeues one item rather than failing the pass.
+   */
+  readonly concurrency?: number;
 }
 
 export interface QueueSummary {
@@ -70,6 +98,8 @@ export interface QueueSummary {
   readonly done: number;
   readonly requeued: number;
   readonly dead: number;
+  /** Items that asked to be polled again later (see Outcome 'defer'). */
+  readonly deferred: number;
   readonly reclaimed: number;
 }
 
@@ -91,6 +121,54 @@ export function outcomeFromWlError(
   return error.details.requeueAfterMs === null
     ? { kind: 'dead', failure }
     : { kind: 'requeue', requeueAfterMs: error.details.requeueAfterMs, failure };
+}
+
+/**
+ * How long to wait before retrying an item whose DATABASE write hit a transient
+ * error. Short and fixed: unlike WellnessLiving, Supabase is not rate-limiting us
+ * on a ladder - it is momentarily unavailable under concurrent load - so a brief
+ * spacing is enough, and `attempt_count` still widens it if the pressure persists.
+ */
+export const SUPABASE_TRANSIENT_REQUEUE_MS = 30_000;
+
+/**
+ * The one place a handler turns a thrown error into a queue outcome, so a single
+ * failure requeues ONE item instead of aborting a whole pass.
+ *
+ * WHY THIS EXISTS. A handler's catch used to be `if (WlRequestError) ...; throw`.
+ * That threw for anything else - and a transient `SupabaseError` (a free-tier DB
+ * hiccup under the parallel run) is exactly "anything else". runQueue does not
+ * catch a handler, so the throw reached runPass's outer catch and the ENTIRE pass
+ * came back 'failed', its remaining thousands of items left pending. Measured
+ * live 27 Aug 2026: receipt_sync - the heaviest writer, ~9 DB calls per item -
+ * failed on a single DB blip with 10,938 purchases still unpriced, while lighter
+ * passes survived. This makes a transient DB error behave like a transient WL
+ * error: requeue the item, keep draining.
+ *
+ * Returns null for anything it does not own (a non-transient SupabaseError - a
+ * constraint or bad column - or an unexpected error), so the caller rethrows and
+ * a real bug still surfaces loudly rather than being requeued forever.
+ */
+export function outcomeFromError(
+  error: unknown,
+): Extract<Outcome, { kind: 'requeue' | 'dead' }> | null {
+  if (error instanceof WlRequestError) return outcomeFromWlError(error);
+  if (error instanceof SupabaseError && error.isTransient) {
+    return {
+      kind: 'requeue',
+      requeueAfterMs: SUPABASE_TRANSIENT_REQUEUE_MS,
+      failure: {
+        message: error.message,
+        sid: null,
+        httpStatus: error.httpStatus,
+        // The queue's traceId column is ours; a DB error has no WL/GHL trace, so
+        // name the table it failed on - enough to find it without a host.
+        traceId: `supabase:${error.table}`,
+        kLog: null,
+      },
+    };
+  }
+  return null;
 }
 
 /**
@@ -280,22 +358,28 @@ export async function claimBatch(db: SupabaseClient, opts: RunQueueOptions): Pro
       `&order=next_attempt_at.asc&limit=${String(opts.limit)}&select=${ITEM_COLUMNS}`,
   );
 
-  const claimed: QueueItem[] = [];
-  for (const c of candidates) {
-    // Conditional on state=pending: an empty result means someone else claimed it.
-    const rows = await db.update<QueueItem>(
-      'sync_queue',
-      {
-        state: 'in_progress',
-        claimed_by: opts.workerId,
-        claimed_at: opts.now,
-        claim_expires_at: expiresAt,
-      },
-      `id=eq.${c.id}&state=eq.pending&select=${ITEM_COLUMNS}`,
-    );
-    if (rows.length === 1) claimed.push(rows[0]!);
-  }
-  return claimed;
+  // Each claim is an independent compare-and-swap on a distinct id, so they run
+  // concurrently: a serial claim loop would otherwise be the bottleneck once the
+  // batch size is raised. A CAS that loses the race returns nothing and is simply
+  // absent from the result (not a failure); order is preserved by runBatch.
+  const claim = await runBatch(
+    candidates,
+    async (c): Promise<QueueItem | null> => {
+      const rows = await db.update<QueueItem>(
+        'sync_queue',
+        {
+          state: 'in_progress',
+          claimed_by: opts.workerId,
+          claimed_at: opts.now,
+          claim_expires_at: expiresAt,
+        },
+        `id=eq.${c.id}&state=eq.pending&select=${ITEM_COLUMNS}`,
+      );
+      return rows.length === 1 ? rows[0]! : null;
+    },
+    { concurrency: Math.max(1, opts.concurrency ?? 1) },
+  );
+  return claim.results.filter((r): r is QueueItem => r !== null);
 }
 
 /** Applies a handler's outcome to the item's queue row. */
@@ -307,6 +391,24 @@ export async function settle(
 ): Promise<void> {
   if (outcome.kind === 'done') {
     await db.update('sync_queue', { state: 'done' }, `id=eq.${item.id}`);
+    return;
+  }
+
+  // Defer: back to pending for a later poll, but NOT a failure - no error columns,
+  // and attempt_count is untouched so a slow report never dead-letters itself.
+  if (outcome.kind === 'defer') {
+    const nextAttemptAt = new Date(Date.parse(now) + outcome.requeueAfterMs).toISOString();
+    await db.update(
+      'sync_queue',
+      {
+        state: 'pending',
+        next_attempt_at: nextAttemptAt,
+        claimed_by: null,
+        claimed_at: null,
+        claim_expires_at: null,
+      },
+      `id=eq.${item.id}`,
+    );
     return;
   }
 
@@ -350,18 +452,39 @@ export async function runQueue(
   const reclaimed = await reclaimExpired(db, opts.now);
   const items = await claimBatch(db, opts);
 
+  // Items are independent, so process a bounded pool of them at once instead of
+  // one-at-a-time. A handler returns an Outcome (it does not throw for a data
+  // reason - the pass handlers convert WL and transient-DB failures via
+  // outcomeFromError); settle applies it. runBatch isolates any UNEXPECTED throw
+  // as a failure so one does not lose the others.
+  const processed = await runBatch(
+    items,
+    async (item): Promise<Outcome['kind']> => {
+      const outcome = await handler(item, db);
+      await settle(db, item, outcome, opts.now);
+      return outcome.kind;
+    },
+    { concurrency: Math.max(1, opts.concurrency ?? 1) },
+  );
+
   let done = 0;
   let requeued = 0;
   let dead = 0;
-  for (const item of items) {
-    const outcome = await handler(item, db);
-    await settle(db, item, outcome, opts.now);
-    if (outcome.kind === 'done') done += 1;
-    else if (outcome.kind === 'requeue') requeued += 1;
+  let deferred = 0;
+  for (const kind of processed.results) {
+    if (kind === 'done') done += 1;
+    else if (kind === 'requeue') requeued += 1;
+    else if (kind === 'defer') deferred += 1;
     else dead += 1;
   }
 
-  return { claimed: items.length, done, requeued, dead, reclaimed };
+  // An unexpected error (not a handled Outcome) is a real bug, not transient
+  // pressure - surface it so the pass fails loudly rather than spinning on a
+  // reclaim-retry loop forever. The items it hit stay claimed and are reclaimed
+  // when their lease expires.
+  if (processed.failures.length > 0) throw processed.failures[0]!.error;
+
+  return { claimed: items.length, done, requeued, dead, deferred, reclaimed };
 }
 
 function targetKey(i: { work_type: string; target_key: string; k_business: string }): string {

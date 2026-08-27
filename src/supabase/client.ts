@@ -41,7 +41,40 @@ export class SupabaseError extends Error {
     super(message, options);
     this.name = 'SupabaseError';
   }
+
+  /**
+   * True when a retry could plausibly succeed: a network failure or timeout
+   * (`httpStatus` null), a 429, a 408, or any 5xx - the transient pressure a
+   * free-tier database shows under concurrent load. A 4xx (a constraint, a bad
+   * column) is a real bug that no amount of retrying fixes, so it stays fatal and
+   * surfaces rather than being quietly requeued forever.
+   */
+  get isTransient(): boolean {
+    return (
+      this.httpStatus === null ||
+      this.httpStatus === 408 ||
+      this.httpStatus === 429 ||
+      this.httpStatus >= 500
+    );
+  }
 }
+
+/**
+ * How many rows selectAll pulls per request.
+ *
+ * PostgREST's own default cap is 1,000 and asking for more in one request does
+ * not raise it, so this matches it rather than guessing higher.
+ */
+const SELECT_PAGE = 1000;
+
+/**
+ * How many rows go in one POST body.
+ *
+ * 500 rather than PostgREST's read cap: a write row is far wider than the one
+ * or two columns a seed reads back, and the limit that bites first is body size
+ * and statement time, not a row count.
+ */
+const WRITE_CHUNK = 500;
 
 export class SupabaseClient {
   private readonly doFetch: typeof globalThis.fetch;
@@ -123,6 +156,61 @@ export class SupabaseClient {
     return this.parse<T>(table, response);
   }
 
+  /**
+   * Selects EVERY matching row, paging until a short page comes back.
+   *
+   * WHY THIS EXISTS. PostgREST answers a query with no explicit limit by
+   * returning at most 1,000 rows, with HTTP 200 and no indication that anything
+   * was left behind. A caller that reads a growing table and believes it got
+   * everything therefore fails silently - which is the worst shape a failure can
+   * take, because the run reports success.
+   *
+   * This has cost this project twice, measured on live dev:
+   *
+   *   - receipt_sync seeded 1,000 of 14,148 unpriced purchases and reported 'ok'
+   *     with pricing coverage stalled near 30%.
+   *   - four person-driven seeds read 1,000 of 1,285 clients once the client list
+   *     began storing every status (0027), so 285 clients were invisible to
+   *     profile, purchase, visit and GoHighLevel-match seeding while
+   *     sync_queue_progress showed every work type at 100%.
+   *
+   * AN ORDER IS REQUIRED, NOT OPTIONAL. Offset paging over an unordered result
+   * is undefined: Postgres may return rows in a different order between pages,
+   * so a row can be visited twice or skipped entirely. Demanding `order=` makes
+   * that a startup error rather than a wrong answer that looks right. Order by
+   * something unique - a primary key - because a non-unique sort key has the same
+   * problem within a tie.
+   */
+  async selectAll<T = Record<string, unknown>>(table: string, query: string): Promise<T[]> {
+    if (!query.includes('order=')) {
+      throw new SupabaseError(
+        table,
+        null,
+        'selectAll requires an order= in the query: offset paging over an ' +
+          'unordered result can skip or repeat rows',
+      );
+    }
+    if (/(?:^|&)limit=/.test(query)) {
+      throw new SupabaseError(
+        table,
+        null,
+        'selectAll sets its own limit and offset; remove them from the query',
+      );
+    }
+
+    const out: T[] = [];
+    for (let offset = 0; ; offset += SELECT_PAGE) {
+      const page = await this.select<T>(
+        table,
+        `${query}&limit=${String(SELECT_PAGE)}&offset=${String(offset)}`,
+      );
+      out.push(...page);
+      // A short page is the only reliable end marker: PostgREST sends no total
+      // unless asked, and asking costs a count over the whole table.
+      if (page.length < SELECT_PAGE) return out;
+    }
+  }
+
   private async write<T>(
     table: string,
     rows: ReadonlyArray<Record<string, unknown>>,
@@ -131,12 +219,24 @@ export class SupabaseClient {
   ): Promise<T[]> {
     // Nothing to write is not an error, and an empty POST is a wasted round trip.
     if (rows.length === 0) return [];
-    const response = await this.send(table, `${this.base(table)}${querySuffix}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Prefer: prefer },
-      body: JSON.stringify(rows),
-    });
-    return this.parse<T>(table, response);
+
+    // CHUNKED, because a caller cannot know how big its batch will get. The
+    // purchase-item element seed enqueues one row per item - 20,561 on live dev -
+    // and a single POST of that many JSON objects is a multi-megabyte body
+    // against a statement timeout. Splitting it turns a request that fails whole
+    // into requests that succeed in sequence, and the failure mode of a partial
+    // run is already handled: every write here is an insert of fresh rows or an
+    // upsert on a natural key, so a re-run finishes what a broken one started.
+    const out: T[] = [];
+    for (let start = 0; start < rows.length; start += WRITE_CHUNK) {
+      const response = await this.send(table, `${this.base(table)}${querySuffix}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Prefer: prefer },
+        body: JSON.stringify(rows.slice(start, start + WRITE_CHUNK)),
+      });
+      out.push(...(await this.parse<T>(table, response)));
+    }
+    return out;
   }
 
   private base(table: string): string {

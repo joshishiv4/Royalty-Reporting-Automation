@@ -80,14 +80,14 @@ export async function writeRecipient(
   // The element does not echo k_purchase; the item row 014 wrote carries it.
   const items = await db.select<{ k_purchase: string }>(
     'purchase_item',
-    `k_purchase_item=eq.${input.kPurchaseItem}&select=k_purchase`,
+    `k_purchase_item=eq.${input.kPurchaseItem}&limit=1&select=k_purchase`,
   );
   const kPurchase = items[0]?.k_purchase;
   if (kPurchase === undefined) return { rawWlId, recipientSet: false, conflict: false };
 
   const purchases = await db.select<{ uid_recipient: string | null }>(
     'purchase',
-    `k_purchase=eq.${kPurchase}&select=uid_recipient`,
+    `k_purchase=eq.${kPurchase}&limit=1&select=uid_recipient`,
   );
   const existing = purchases[0]?.uid_recipient ?? null;
 
@@ -101,7 +101,7 @@ export async function writeRecipient(
     const open = await db.select<{ id: string }>(
       'sync_conflict',
       `table_name=eq.purchase&record_key=eq.${kPurchase}` +
-        `&reason=eq.recipient-differs-by-item&resolution_state=eq.open&select=id`,
+        `&reason=eq.recipient-differs-by-item&resolution_state=eq.open&limit=1&select=id`,
     );
     if (open.length === 0) {
       await db.insert('sync_conflict', [

@@ -14,13 +14,42 @@ import { linkRows, storeRawWl } from './writer.js';
  * are the main revenue line, so without this pass almost no teaching is
  * attributable to anyone.
  *
- * FUTURE ONLY. THIS IS NOT A HISTORICAL LOAD, AND CANNOT BE MADE INTO ONE.
- * /v1/schedule/page/list returns upcoming visits and ignores date parameters
- * entirely - there is no window to widen. That is survivable for ongoing sync,
- * because a session is captured while it is still upcoming and its outcome is
- * filled in afterwards. It is NOT survivable for backfill: anything that already
- * happened before this pass first ran is simply not reachable here. The
- * historical load is a separate problem (P9). Do not assume this covers history.
+ * HISTORY IS REACHABLE. `is_past` DOES IT. THE OPPOSITE USED TO BE WRITTEN HERE.
+ *
+ * This comment said "future only, and cannot be made into one - the endpoint
+ * ignores date parameters, there is no window to widen". That was wrong, and
+ * wrong in the expensive direction: it closed off a solution and pushed the
+ * historical load into a separate blocked task.
+ *
+ * What was actually true is narrower. The pass sends only `{ uid }`, and in that
+ * shape the endpoint answers with upcoming visits. It also accepts:
+ *
+ *   is_past=1               all of the client's PREVIOUS visits
+ *   dtu_start / dtu_end     a window - note dtu_, not dt_
+ *
+ * Measured live 27 Aug 2026, same uid, same endpoint:
+ *
+ *   { uid }                                  ->   0 visits
+ *   { uid, is_past: 1 }                      -> 402 visits, 2021-01-30 .. 2025-02-20
+ *   { uid, dtu_start, dtu_end } (2025)       ->   0 visits   (no is_past: future list)
+ *   { uid, is_past, dtu_start, dtu_end }     ->   3 visits   (the window NARROWS)
+ *
+ * So the dates are not ignored either - they were being sent under the wrong
+ * names, and without the flag that selects the past half.
+ *
+ * AND is_past ALONE IS COMPLETE. Widening the window to 1990-01-01 .. 2030-12-31
+ * returned the same 402 rows over the same range, and dropping the window
+ * entirely returned them too. 402 is not a page and not a cap - it is everything
+ * WL holds for that client. A historical backfill therefore needs NO date paging
+ * at all: one call per client with is_past=1.
+ *
+ * Sampled across ten clients: 10.6 past visits each, half with none, which puts
+ * a full historical backfill at roughly 13,600 element calls - under an hour.
+ *
+ * This pass still runs FORWARD ONLY, deliberately - ongoing sync wants upcoming
+ * sessions so a visit is caught before it happens and finalised by the 7.3
+ * re-read. The historical load remains P9's job. What has changed is that P9 is
+ * no longer blocked on WellnessLiving: it is one parameter.
  *
  * TWO SHAPES, TOLD APART BY WHICH KEY WL FILLS.
  *   appointment   k_appointment set, k_class_period null, k_service set
@@ -64,6 +93,16 @@ export type ClientSessionRow = {
   readonly is_virtual: boolean;
   readonly is_checkin: boolean;
   readonly dt_cancel_by: string | null;
+  /**
+   * WL's own verdict on the visit (WlVisitSid) - 3 ATTEND, 4 PENALTY,
+   * 5 TRUANCY, 6 CANCEL, 7 PENDING, 1 BOOK, 2 WAIT, 8 REMOVE.
+   *
+   * THE ONLY FIELD THAT SAYS WHAT HAPPENED. is_checkin does not: the API
+   * documents it as "ready to be checked in", a capability, and it was true on
+   * 0 of 4,423 sessions on live dev. Reading it as attendance left the royalty
+   * signal empty - see migration 0029.
+   */
+  readonly id_visit: string | null;
   // Booking-request state (PRD 7.5). See the header for why is_confirmed is
   // stored but never used as a gate.
   readonly is_request: boolean;
@@ -123,6 +162,18 @@ export function parseVisitElement(body: unknown, kBusiness: string): ParsedVisit
       is_checkin: wlBool(b?.is_checkin),
       // Named for what it is. See the header and migration 0017.
       dt_cancel_by: readString(b, 'dt_cancel'),
+      // READ FROM BOTH LEVELS, and that is not belt-and-braces. The API docs
+      // list id_visit as a top-level field of this response; the payloads we
+      // actually measured put it inside a_appointment_visit_info, alongside the
+      // request flags. Reading only the documented position returned null on
+      // every real visit - caught by the fixture in
+      // tests/sync-client-sessions.ts, which was built from 60 live payloads.
+      //
+      // Nested wins when both are present: it is the one observed to be filled.
+      //
+      // Text, not a number: it is WL's code, and an integer invites arithmetic
+      // on it. WL sends it as a number in JSON, so it is normalised here.
+      id_visit: readCode(visitInfo?.id_visit) ?? readCode(b?.id_visit),
       // WL nests these under a_appointment_visit_info, not at the top level.
       is_request: wlBool(visitInfo?.is_request),
       is_confirmed: wlBool(visitInfo?.is_confirmed),
@@ -238,7 +289,7 @@ export async function writeClientSession(
         uid: input.uid,
         k_business: input.kBusiness,
         k_visit: input.kVisit,
-        is_attended: session.is_checkin,
+        ...visitOutcome(session.id_visit),
       },
     ],
     { onConflict: 'k_period,dt_start_utc,uid' },
@@ -251,6 +302,71 @@ function collection(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
   const rec = asRecord(value);
   return rec === null ? [] : Object.values(rec);
+}
+
+/**
+ * Turns WL's visit status into the outcome columns.
+ *
+ * ONE PLACE, and it must agree with migration 0029's backfill - the same
+ * mapping is applied there so a re-parse and a fresh sync cannot disagree.
+ *
+ * is_attended is NULL for anything without a verdict. That is the whole point:
+ * `false` would claim the client did not turn up, and for BOOK, WAIT, PENDING or
+ * a status WL has not filled in yet, we simply do not know. It is the column a
+ * royalty is calculated from, so it may not guess.
+ *
+ * A status we have never seen also lands as unknown rather than as "not
+ * attended" - WL may add one, and a new code must not silently read as absence.
+ *
+ * Exported so the mapping is testable on a literal rather than only through a
+ * fake database. It decides what a royalty is paid on; it should not be
+ * reachable only by simulating a sync.
+ */
+export function visitOutcome(idVisit: string | null): {
+  id_visit: string | null;
+  is_attended: boolean | null;
+  is_no_show: boolean;
+  is_cancelled_client: boolean;
+  is_late_cancel: boolean;
+} {
+  const unknown = {
+    id_visit: idVisit,
+    is_attended: null,
+    is_no_show: false,
+    is_cancelled_client: false,
+    is_late_cancel: false,
+  };
+
+  switch (idVisit) {
+    case '3': // ATTEND - client has attended the session
+      return { ...unknown, is_attended: true };
+    case '5': // TRUANCY - missed it, without cancelling
+      return { ...unknown, is_attended: false, is_no_show: true };
+    case '6': // CANCEL - cancelled in time, no penalty
+      return { ...unknown, is_attended: false, is_cancelled_client: true };
+    case '4': // PENALTY - cancelled too late. Still a cancellation, and late.
+      return { ...unknown, is_attended: false, is_cancelled_client: true, is_late_cancel: true };
+    case '1': // BOOK  - reserved, has not happened
+    case '2': // WAIT  - on the wait list
+    case '7': // PENDING - WL is waiting for staff to decide
+    case '8': // REMOVE  - hidden in WL, retained in their database
+    default:
+      return unknown;
+  }
+}
+
+/**
+ * Reads a WL code as text.
+ *
+ * WL sends id_visit as a JSON number; every other WL key in this schema is text
+ * because a leading zero is lost as an integer, and because a code should not be
+ * arithmetic. Zero is not a valid WlVisitSid value, so a falsy number is treated
+ * as absent rather than as `"0"`.
+ */
+function readCode(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value !== 0) return String(value);
+  if (typeof value === 'string' && value.length > 0 && value !== '0') return value;
+  return null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

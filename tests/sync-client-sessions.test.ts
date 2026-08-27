@@ -240,14 +240,66 @@ describe('writeClientSession', () => {
   // Without this the session exists with nobody attached to it.
   it('attaches the client whose list produced the visit as its attendee', async () => {
     const { db, calls } = fakeDb();
-    await writeClientSession(db, input(appointment({ is_checkin: true })));
+    await writeClientSession(db, input(appointment()));
 
     const att = calls.find((c) => c.table === 'attendance');
     expect(att?.rows?.[0]).toMatchObject({
       uid: UID,
       k_visit: K_VISIT,
-      is_attended: true,
       k_period: '132190448',
+    });
+  });
+
+  /**
+   * This test used to pass `is_checkin: true` and assert `is_attended: true`,
+   * pinning the misread migration 0029 fixes: is_checkin means "ready to be
+   * checked in", not "attended". The fixture's own id_visit is 1 (BOOK) - a
+   * reservation that has not happened - so the honest answer is "not known".
+   */
+  it('does not claim attendance from a booking that has not happened', async () => {
+    const { db, calls } = fakeDb();
+    await writeClientSession(db, input(appointment({ is_checkin: true })));
+
+    const att = calls.find((c) => c.table === 'attendance');
+    expect(att?.rows?.[0]).toMatchObject({ id_visit: '1', is_attended: null });
+  });
+
+  // The nested position is the one WL actually fills - the docs put id_visit at
+  // the top level and it was null there on every measured payload.
+  it('reads the visit status from where WL actually puts it, and counts ATTEND', async () => {
+    const { db, calls } = fakeDb();
+    await writeClientSession(
+      db,
+      input(
+        appointment({
+          a_appointment_visit_info: {
+            id_visit: 3,
+            is_request: false,
+            is_confirmed: false,
+            is_deny: false,
+          },
+        }),
+      ),
+    );
+
+    const att = calls.find((c) => c.table === 'attendance');
+    expect(att?.rows?.[0]).toMatchObject({
+      id_visit: '3',
+      is_attended: true,
+      is_cancelled_client: false,
+    });
+  });
+
+  it('records a late cancellation as both cancelled and late', async () => {
+    const { db, calls } = fakeDb();
+    await writeClientSession(db, input(appointment({ a_appointment_visit_info: { id_visit: 4 } })));
+
+    const att = calls.find((c) => c.table === 'attendance');
+    expect(att?.rows?.[0]).toMatchObject({
+      id_visit: '4',
+      is_attended: false,
+      is_cancelled_client: true,
+      is_late_cancel: true,
     });
   });
 

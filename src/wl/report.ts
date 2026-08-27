@@ -203,6 +203,92 @@ export async function fetchAllReportRows(
   return { fields, pages, rowCount };
 }
 
+/**
+ * A single request against the report - no poll loop. This is the building block
+ * of the NON-BLOCKING flow: a worker must not sit sleeping while a report builds
+ * (that burns the 60s function budget for nothing), so the caller makes one call,
+ * decides from `status`, and defers to a later invocation if it is not ready.
+ */
+async function reportRequestOnce(
+  wl: Pick<WlClient, 'request'>,
+  kBusiness: string,
+  filter: ReportFilter,
+  offset: number,
+  refresh: boolean,
+  deps: ReportDeps = {},
+): Promise<{ status: number | null; page: ReportPage }> {
+  const body = buildReportBody(kBusiness, filter, offset, refresh);
+  const response = await wl.request<ReportBody>(WL_PATHS.reportQuery, {
+    method: 'POST',
+    json: body,
+    ...(deps.deadline === undefined ? {} : { deadline: deps.deadline }),
+    ...(deps.priorAttempt === undefined ? {} : { priorAttempt: deps.priorAttempt }),
+  });
+  return {
+    status: readInt(response.body.id_report_status),
+    page: {
+      fields: readFields(response.body.a_field),
+      rows: readRows(response.body.a_row),
+      response,
+    },
+  };
+}
+
+/**
+ * Asks WL to (re)build the report. `is_refresh: 1` starts a fresh build for this
+ * filter - call it ONCE, before polling, and save that you did (the queue item's
+ * job state) so a later poll reads the same build instead of restarting it.
+ */
+export async function requestReport(
+  wl: Pick<WlClient, 'request'>,
+  kBusiness: string,
+  filter: ReportFilter,
+  deps: ReportDeps = {},
+): Promise<void> {
+  await reportRequestOnce(wl, kBusiness, filter, 0, true, deps);
+}
+
+/**
+ * One status check with `is_refresh: 0` - reads the build already in flight, never
+ * restarts it. Returns whether it has finished; the caller defers and polls again
+ * later if not.
+ */
+export async function pollReport(
+  wl: Pick<WlClient, 'request'>,
+  kBusiness: string,
+  filter: ReportFilter,
+  deps: ReportDeps = {},
+): Promise<{ complete: boolean }> {
+  const { status } = await reportRequestOnce(wl, kBusiness, filter, 0, false, deps);
+  return { complete: status === REPORT_STATUS_COMPLETE };
+}
+
+/**
+ * Reads every page of an ALREADY-COMPLETE report, `is_refresh: 0` throughout so it
+ * never restarts the build. Fast (the rows exist); the slow part was the wait,
+ * which the caller has already cleared by polling to completion.
+ */
+export async function readAllReportRows(
+  wl: Pick<WlClient, 'request'>,
+  kBusiness: string,
+  filter: ReportFilter,
+  deps: ReportDeps = {},
+): Promise<{ fields: readonly string[]; pages: readonly ReportPage[]; rowCount: number }> {
+  const pages: ReportPage[] = [];
+  let offset = 0;
+  let fields: readonly string[] = [];
+  let rowCount = 0;
+  for (;;) {
+    const { page } = await reportRequestOnce(wl, kBusiness, filter, offset, false, deps);
+    if (fields.length === 0) fields = page.fields;
+    pages.push(page);
+    rowCount += page.rows.length;
+    if (page.rows.length < REPORT_PAGE_SIZE) break;
+    offset += REPORT_PAGE_SIZE;
+  }
+  return { fields, pages, rowCount };
+}
+
 function readInt(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
   if (typeof value === 'string' && /^-?\d+$/.test(value)) return Number.parseInt(value, 10);

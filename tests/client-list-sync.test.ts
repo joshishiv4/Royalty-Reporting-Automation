@@ -7,7 +7,10 @@ import {
   fetchAllReportRows,
   fetchReportPage,
   MEMBER_STATUS_ACTIVATED,
+  pollReport,
+  readAllReportRows,
   REPORT_PAGE_SIZE,
+  requestReport,
 } from '../src/wl/report.js';
 
 /**
@@ -167,6 +170,34 @@ describe('the date window is mandatory and it excludes silently', () => {
       .json_filter as Record<string, unknown>;
 
     expect(filter.o_member_status).toEqual([]);
+  });
+});
+
+describe('single-shot request / poll / read (the non-blocking building blocks)', () => {
+  it('requestReport starts a build with is_refresh=1 and does not loop', async () => {
+    const f = fakeWl([[ROW]], 5); // would be "queued" for 5 polls
+    await requestReport(f.wl, K_BUSINESS, {}, nosleep);
+    // Exactly one call, and it asked WL to (re)build.
+    expect(f.pollCount()).toBe(1);
+    expect(f.bodies[0]!.is_refresh).toBe(1);
+  });
+
+  it('pollReport reads with is_refresh=0 and reports completion', async () => {
+    const done = fakeWl([[ROW]], 0); // status 3 immediately
+    expect(await pollReport(done.wl, K_BUSINESS, {}, nosleep)).toEqual({ complete: true });
+    expect(done.bodies[0]!.is_refresh).toBe(0); // never restarts the build
+
+    const building = fakeWl([[ROW]], 5); // status 2
+    expect(await pollReport(building.wl, K_BUSINESS, {}, nosleep)).toEqual({ complete: false });
+  });
+
+  it('readAllReportRows walks every page with is_refresh=0 throughout', async () => {
+    const full = Array.from({ length: REPORT_PAGE_SIZE }, () => ROW);
+    const f = fakeWl([full, [ROW, ROW]]);
+    const out = await readAllReportRows(f.wl, K_BUSINESS, {}, nosleep);
+    expect(out.rowCount).toBe(REPORT_PAGE_SIZE + 2);
+    // Crucially, NOT one is_refresh=1 - reading a built report must not restart it.
+    expect(f.bodies.every((b) => b.is_refresh === 0)).toBe(true);
   });
 });
 

@@ -3,13 +3,25 @@ import type { GhlSearchResponse } from '../ghl/client.js';
 import { GhlRequestError } from '../ghl/client.js';
 import { GHL_PATHS } from '../ghl/endpoint.js';
 import { SupabaseClient } from '../supabase/client.js';
-import { WlClient, WlRequestError } from '../wl/client.js';
+import { WlClient } from '../wl/client.js';
 import { WL_PATHS } from '../wl/endpoint.js';
-import { fetchAllReportRows, MEMBER_STATUS_ACTIVATED } from '../wl/report.js';
+import {
+  MEMBER_STATUS_ACTIVATED,
+  pollReport,
+  readAllReportRows,
+  requestReport,
+} from '../wl/report.js';
 import { WlTokenClient } from '../wl/token.js';
 import { recordingGhl, storeRawGhl, upsertGhlContact } from './ghl-writer.js';
 import { contactSnapshot } from '../ghl/snapshot.js';
-import { closeJobState, openJobState } from './job-state.js';
+import {
+  bumpReportPoll,
+  clearReportState,
+  closeJobState,
+  openJobState,
+  readReportState,
+  saveReportRequested,
+} from './job-state.js';
 import { writeClientList } from './clients.js';
 import { writeLocationList } from './locations.js';
 import { writeLoginTypeList } from './login-types.js';
@@ -19,8 +31,9 @@ import { writePurchaseList } from './purchases.js';
 import {
   enqueue,
   type FailureInfo,
+  type Outcome,
+  outcomeFromError,
   outcomeFromGhlError,
-  outcomeFromWlError,
   type QueueHandler,
   runQueue,
 } from './queue.js';
@@ -58,6 +71,8 @@ export interface SyncPassDeps {
   budgetMs?: number;
   /** Items claimed per batch. */
   limit?: number;
+  /** How many claimed items to claim and process at once. Defaults to DEFAULT_QUEUE_CONCURRENCY. */
+  concurrency?: number;
   /** Claim lease length, kept above the step budget. */
   leaseMs?: number;
   /** Injected GoHighLevel client. Tests pass a fake; production builds one. */
@@ -82,7 +97,11 @@ export interface SyncPassSummary {
 }
 
 const DEFAULT_BUDGET_MS = 50_000;
-const DEFAULT_LIMIT = 10;
+// Claim a big batch so the pool has plenty to chew on and claim round-trips are
+// amortised; process DEFAULT_QUEUE_CONCURRENCY of them at once. Raised from 10
+// after the serial loop measured ~2.35s/item on receipt_sync (27 Aug 2026).
+const DEFAULT_LIMIT = 50;
+const DEFAULT_QUEUE_CONCURRENCY = 8;
 const DEFAULT_LEASE_MS = 55_000;
 
 /** What the passes share; only the job name, work type, seeding and handler differ. */
@@ -105,36 +124,50 @@ interface JobSpec {
   readonly makeHandler: (ctx: PassContext) => QueueHandler;
 }
 
+const CLIENT_LIST_JOB = 'client_list_sync';
+/** The client-list report's two filters: the activated set, and everyone. */
+const CLIENT_LIST_ACTIVATED = { memberStatuses: [MEMBER_STATUS_ACTIVATED] } as const;
+const CLIENT_LIST_ALL = { memberStatuses: [] } as const;
 /**
- * Runs the client-list sync: the report that enumerates every activated client.
+ * Wait between polls: 5, 10, 20, then 30 seconds, holding at 30. Each is a SEPARATE
+ * queue invocation, so the worker is free in between - it never sits sleeping.
+ */
+const REPORT_POLL_BACKOFF_MS = [5_000, 10_000, 20_000, 30_000] as const;
+/** Give up on a build that never finishes and start a fresh one. */
+const REPORT_HARD_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Runs the client-list sync: the report that enumerates every client.
  *
- * This is the pass that closes the enumeration blocker. Every other person-
- * producing pass learns about a client from something else - a purchase, a
- * staff list - so the database only ever held people who had already done
- * something. This one asks WL who exists.
+ * This is the pass that closes the enumeration blocker - the one job that asks WL
+ * who exists rather than learning about a client from a purchase or a staff list.
  *
- * EVERY STATUS, TAGGED. `o_member_status: []` returns all 1,285 clients (measured
- * 26 Aug 2026), against 517 for the activated filter [3]. We store all of them so
- * a cancelled client a purchase still points at resolves, and tag each with
- * `is_active` from membership of the activated set - because the report row itself
- * carries no status, only a client-type label (see clients.ts / migration 0027).
+ * EVERY STATUS, TAGGED. `o_member_status: []` returns all 1,285 clients, against
+ * 517 for [3]; we store all and tag `is_active` from membership of the activated
+ * set, because the report row carries no per-row status (clients.ts / 0027).
  *
- * TWO REPORT BUILDS, DELIBERATELY. The activated set is fetched first to learn
- * which uids are active, then the full set is fetched and written. WL exposes no
- * per-row status and its status filter only distinguishes [3] (the others are
- * ignored and return everyone), so this two-query split is the only way to know
- * each client's activation.
+ * ASYNCHRONOUS, AND POLLED WITHOUT TYING UP A WORKER. The report is built on WL's
+ * side and is not ready when requested. A worker must NOT sit in a sleep loop
+ * waiting - that burns the 60s function budget and a slow build takes the run down
+ * with it. So this is a state machine across queue invocations, its state in
+ * sync_job_state:
  *
- * ONE QUEUE ITEM, NOT ONE PER PAGE. The response carries no total, so the number
- * of pages is not known until the walk ends - there is nothing to fan out over
- * up front.
+ *   1. handle null      -> request BOTH builds (is_refresh=1), save the handle
+ *                          BEFORE polling, defer 5s.
+ *   2. past the deadline-> abandon the build, clear the handle, restart clean.
+ *   3. handle set        -> poll BOTH (is_refresh=0, no restart). Not ready: bump
+ *                          the attempt, defer on the 5/10/20/30s backoff. Ready:
+ *                          read every page and write, clear the handle, done.
+ *
+ * A crash mid-poll resumes from the saved handle - the next invocation polls the
+ * same build instead of paying to generate it again.
  */
 export function runClientListSyncPass(
   config: AppConfig,
   deps: SyncPassDeps = {},
 ): Promise<SyncPassSummary> {
   return runPass(config, deps, {
-    jobName: 'client_list_sync',
+    jobName: CLIENT_LIST_JOB,
     workType: 'client_list',
     seed: ({ db, kBusiness, nowIso }) =>
       enqueue(
@@ -146,43 +179,85 @@ export function runClientListSyncPass(
       ({ wl, db, kBusiness, runId, nowIso }) =>
       async (item) => {
         try {
-          // First: who is activated. Only [3] restricts; the report row has no
-          // status field, so this membership IS the status.
-          const activated = await fetchAllReportRows(
+          return await clientListReportStep({
             wl,
+            db,
             kBusiness,
-            { memberStatuses: [MEMBER_STATUS_ACTIVATED] },
-            { priorAttempt: item.attempt_count },
-          );
-          const activatedUids = collectUids(activated.fields, activated.pages);
-
-          // Then: everyone, tagged against that set.
-          const { fields, pages } = await fetchAllReportRows(
-            wl,
-            kBusiness,
-            { memberStatuses: [] },
-            { priorAttempt: item.attempt_count },
-          );
-          // Written page by page: one raw_wl row per payload, which is what
-          // raw_link points at. Batching them would lose which page a person
-          // came from.
-          for (const page of pages) {
-            await writeClientList(db, {
-              kBusiness,
-              runId,
-              page,
-              fields,
-              syncedAt: nowIso(),
-              activatedUids,
-            });
-          }
-          return { kind: 'done' };
+            runId,
+            nowIso,
+            priorAttempt: item.attempt_count,
+          });
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
   });
+}
+
+export interface ClientListStepDeps {
+  readonly wl: Pick<WlClient, 'request'>;
+  readonly db: SupabaseClient;
+  readonly kBusiness: string;
+  readonly runId: string;
+  readonly nowIso: () => string;
+  readonly priorAttempt: number;
+}
+
+/**
+ * ONE step of the client-list report state machine (see runClientListSyncPass).
+ * Extracted so the phases - request/save, timeout, poll/backoff, read/write - can
+ * be tested directly without standing up the whole queue.
+ */
+export async function clientListReportStep(deps: ClientListStepDeps): Promise<Outcome> {
+  const { wl, db, kBusiness, runId, nowIso, priorAttempt } = deps;
+  const at = { priorAttempt };
+  const st = await readReportState(db, CLIENT_LIST_JOB, kBusiness);
+
+  // 1. Not requested yet: start both builds and save the handle BEFORE any poll,
+  // so a crash resumes into polling instead of regenerating.
+  if (st.handle === null) {
+    await requestReport(wl, kBusiness, CLIENT_LIST_ACTIVATED, at);
+    await requestReport(wl, kBusiness, CLIENT_LIST_ALL, at);
+    const nowStr = nowIso();
+    const expiresAt = new Date(Date.parse(nowStr) + REPORT_HARD_TIMEOUT_MS).toISOString();
+    await saveReportRequested(db, CLIENT_LIST_JOB, kBusiness, nowStr, expiresAt, nowStr);
+    return { kind: 'defer', requeueAfterMs: REPORT_POLL_BACKOFF_MS[0] };
+  }
+
+  // 2. Hard timeout: the build is not coming. Clear and restart cleanly.
+  if (st.expiresAt !== null && nowIso() > st.expiresAt) {
+    await clearReportState(db, CLIENT_LIST_JOB, kBusiness, nowIso());
+    return { kind: 'defer', requeueAfterMs: 2_000 };
+  }
+
+  // 3. Poll both builds - is_refresh=0, so this reads them, never restarts.
+  const activated = await pollReport(wl, kBusiness, CLIENT_LIST_ACTIVATED, at);
+  const all = await pollReport(wl, kBusiness, CLIENT_LIST_ALL, at);
+  if (!(activated.complete && all.complete)) {
+    const attempt = st.pollAttempt + 1;
+    await bumpReportPoll(db, CLIENT_LIST_JOB, kBusiness, attempt, nowIso());
+    const rung = Math.min(attempt, REPORT_POLL_BACKOFF_MS.length - 1);
+    return { kind: 'defer', requeueAfterMs: REPORT_POLL_BACKOFF_MS[rung]! };
+  }
+
+  // Both ready: read every page (fast now) and write, tagging is_active.
+  const activatedRows = await readAllReportRows(wl, kBusiness, CLIENT_LIST_ACTIVATED);
+  const activatedUids = collectUids(activatedRows.fields, activatedRows.pages);
+  const { fields, pages } = await readAllReportRows(wl, kBusiness, CLIENT_LIST_ALL);
+  for (const page of pages) {
+    await writeClientList(db, {
+      kBusiness,
+      runId,
+      page,
+      fields,
+      syncedAt: nowIso(),
+      activatedUids,
+    });
+  }
+  await clearReportState(db, CLIENT_LIST_JOB, kBusiness, nowIso());
+  return { kind: 'done' };
 }
 
 /** The set of uids across every page, read by the `uid` column's name. */
@@ -227,7 +302,8 @@ export function runStaffSyncPass(
           await writeStaffList(db, { kBusiness, response, runId });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -261,7 +337,8 @@ export function runLocationSyncPass(
           await writeLocationList(db, { kBusiness, response, runId });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -284,9 +361,12 @@ export function runPurchaseSyncPass(
     jobName: 'purchase_sync',
     workType: 'purchase_list',
     seed: async ({ db, kBusiness, nowIso }) => {
-      const people = await db.select<{ uid: string }>(
+      // selectAll, not select: person crossed PostgREST's 1,000-row cap the
+      // moment the client list started storing every status (1,285 on live dev),
+      // and an unpaged read seeded 1,000 of them while reporting a clean run.
+      const people = await db.selectAll<{ uid: string }>(
         'person',
-        `k_business=eq.${kBusiness}&select=uid`,
+        `k_business=eq.${kBusiness}&order=uid.asc&select=uid`,
       );
       await enqueue(
         db,
@@ -314,7 +394,8 @@ export function runPurchaseSyncPass(
           });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -373,7 +454,8 @@ export function runReceiptSyncPass(
           await writeReceipt(db, { kBusiness, kPurchase: item.target_key, response, runId });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -454,7 +536,8 @@ export function runPurchaseElementSyncPass(
           });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -482,9 +565,12 @@ export function runProfileSyncPass(
     jobName: 'profile_sync',
     workType: 'user_profile',
     seed: async ({ db, kBusiness, nowIso }) => {
-      const people = await db.select<{ uid: string }>(
+      // selectAll, not select: person crossed PostgREST's 1,000-row cap the
+      // moment the client list started storing every status (1,285 on live dev),
+      // and an unpaged read seeded 1,000 of them while reporting a clean run.
+      const people = await db.selectAll<{ uid: string }>(
         'person',
-        `k_business=eq.${kBusiness}&select=uid`,
+        `k_business=eq.${kBusiness}&order=uid.asc&select=uid`,
       );
       await enqueue(
         db,
@@ -507,7 +593,8 @@ export function runProfileSyncPass(
           await writeProfile(db, { kBusiness, uid: item.target_key, response, runId });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -551,7 +638,8 @@ export function runLoginTypeSyncPass(
           await writeLoginTypeList(db, { kBusiness, response, runId });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -641,7 +729,8 @@ export function runScheduleSyncPass(
           });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -684,9 +773,12 @@ export function runAttendanceSyncPass(
       // session has one payer who IS the attendee, and that is already written
       // by client-sessions.ts. Filter at the seed so it never even hits the
       // queue.
-      const sessions = await db.select<{ k_period: string; dt_start_utc: string }>(
+      // Eleven class rows of 4,423 sessions today - which is exactly why this one
+      // would be forgotten. It grows with the schedule, not with the backfill.
+      const sessions = await db.selectAll<{ k_period: string; dt_start_utc: string }>(
         'session',
-        `k_business=eq.${kBusiness}&session_kind=eq.class&select=k_period,dt_start_utc`,
+        `k_business=eq.${kBusiness}&session_kind=eq.class` +
+          `&order=k_period.asc&order=dt_start_utc.asc&select=k_period,dt_start_utc`,
       );
       await enqueue(
         db,
@@ -721,7 +813,7 @@ export function runAttendanceSyncPass(
           const rows = await db.select<{ dtl_start_local: string }>(
             'session',
             `k_period=eq.${kPeriod}&dt_start_utc=eq.${encodeURIComponent(dtStartUtc)}` +
-              `&select=dtl_start_local`,
+              `&limit=1&select=dtl_start_local`,
           );
           const local = rows[0]?.dtl_start_local;
           if (local === undefined) {
@@ -753,7 +845,8 @@ export function runAttendanceSyncPass(
           });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -842,10 +935,15 @@ const MAX_DETAIL_FETCHES = 2;
  * seventeen teachers had no session we could see. Private lessons are the main
  * revenue line, so without this pass almost nothing is attributable.
  *
- * FUTURE ONLY, AND NO WINDOW TO WIDEN. /v1/schedule/page/list ignores date
- * parameters and returns upcoming visits. Fine for ongoing sync - a session is
- * caught while upcoming and its outcome filled in later - but it CANNOT
- * backfill. History is P9's problem, not this pass's.
+ * FORWARD ONLY BY CHOICE, NOT BY LIMITATION - and the comment here used to claim
+ * otherwise. Sending only `{ uid }` returns upcoming visits, which is what
+ * ongoing sync wants: a session is caught while upcoming and its outcome filled
+ * in later by the 7.3 re-read.
+ *
+ * But `is_past=1` returns the client's previous visits, and `dtu_start`/`dtu_end`
+ * window them. Measured live 27 Aug 2026: one uid answered 0 visits without the
+ * flag and 402 with it, spanning 2021 to 2025. History is still P9's job, but P9
+ * is not blocked - see client-sessions.ts for the full measurement.
  *
  * A client with nothing booked returns an empty list, which is a real answer:
  * the job completes rather than failing.
@@ -863,9 +961,12 @@ export function runClientSessionSyncPass(
     jobName: 'client_session_sync',
     workType: 'client_visits',
     seed: async ({ db, kBusiness, nowIso }) => {
-      const people = await db.select<{ uid: string }>(
+      // selectAll, not select: person crossed PostgREST's 1,000-row cap the
+      // moment the client list started storing every status (1,285 on live dev),
+      // and an unpaged read seeded 1,000 of them while reporting a clean run.
+      const people = await db.selectAll<{ uid: string }>(
         'person',
-        `k_business=eq.${kBusiness}&select=uid`,
+        `k_business=eq.${kBusiness}&order=uid.asc&select=uid`,
       );
       await enqueue(
         db,
@@ -891,13 +992,14 @@ export function runClientSessionSyncPass(
           // What we already know about these visits, so a settled one is not
           // read again (PRD 7.3). One query for the whole client, not one per
           // visit - the point of this rule is FEWER round trips, not more.
-          const known = await db.select<{
+          const known = await db.selectAll<{
             k_visit: string;
             detail_fetch_count: number;
             dt_start_utc: string;
           }>(
             'attendance',
             `k_business=eq.${kBusiness}&uid=eq.${uid}&k_visit=not.is.null` +
+              `&order=k_visit.asc` +
               `&select=k_visit,session!inner(detail_fetch_count,dt_start_utc)`,
           );
           const seen = new Map(
@@ -964,7 +1066,8 @@ export function runClientSessionSyncPass(
           void skipped;
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -1024,9 +1127,9 @@ export function runGhlMatchSyncPass(
             // resolved either, and excluding it would strand the row forever.
             `ghl_match_state=in.(unmatched,ambiguous,failed)`
           : `ghl_match_attempted_at=is.null`;
-      const people = await db.select<{ uid: string }>(
+      const people = await db.selectAll<{ uid: string }>(
         'person',
-        `k_business=eq.${kBusiness}&${filter}&select=uid`,
+        `k_business=eq.${kBusiness}&${filter}&order=uid.asc&select=uid`,
       );
       // retryUnresolved is an explicit human-initiated refresh - it must
       // override the fresh-done skip in enqueue, otherwise clients matched in
@@ -1052,7 +1155,10 @@ export function runGhlMatchSyncPass(
             phone: string | null;
             email: string | null;
             ghl_unresolved_since: string | null;
-          }>('person', `uid=eq.${item.target_key}&select=uid,phone,email,ghl_unresolved_since`);
+          }>(
+            'person',
+            `uid=eq.${item.target_key}&limit=1&select=uid,phone,email,ghl_unresolved_since`,
+          );
           const row = rows[0];
           if (row === undefined) {
             return {
@@ -1135,7 +1241,9 @@ export function runGhlMatchSyncPass(
           }
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          // Covers a WL error and a transient DB hiccup (see outcomeFromError).
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           // GoHighLevel is supplementary; WellnessLiving is the system of
           // record. An outage here must degrade to stale data, never take the
           // run down with it - so it becomes an outcome, not a throw.
@@ -1178,7 +1286,8 @@ export function runShopCategorySyncPass(
           await writeShopCategoryList(db, { kBusiness, response, runId });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -1203,9 +1312,9 @@ export function runPromotionSyncPass(
     jobName: 'promotion_sync',
     workType: 'promotion_list',
     seed: async ({ db, kBusiness, nowIso }) => {
-      const locations = await db.select<{ k_location: string }>(
+      const locations = await db.selectAll<{ k_location: string }>(
         'location',
-        `k_business=eq.${kBusiness}&select=k_location`,
+        `k_business=eq.${kBusiness}&order=k_location.asc&select=k_location`,
       );
       await enqueue(
         db,
@@ -1233,7 +1342,8 @@ export function runPromotionSyncPass(
           });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -1257,9 +1367,9 @@ export function runServiceCategorySyncPass(
     jobName: 'service_category_sync',
     workType: 'service_category_list',
     seed: async ({ db, kBusiness, nowIso }) => {
-      const locations = await db.select<{ k_location: string }>(
+      const locations = await db.selectAll<{ k_location: string }>(
         'location',
-        `k_business=eq.${kBusiness}&select=k_location`,
+        `k_business=eq.${kBusiness}&order=k_location.asc&select=k_location`,
       );
       await enqueue(
         db,
@@ -1287,7 +1397,8 @@ export function runServiceCategorySyncPass(
           });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -1313,9 +1424,9 @@ export function runServiceSyncPass(
     jobName: 'service_sync',
     workType: 'service_list',
     seed: async ({ db, kBusiness, nowIso }) => {
-      const locations = await db.select<{ k_location: string }>(
+      const locations = await db.selectAll<{ k_location: string }>(
         'location',
-        `k_business=eq.${kBusiness}&select=k_location`,
+        `k_business=eq.${kBusiness}&order=k_location.asc&select=k_location`,
       );
       await enqueue(
         db,
@@ -1343,7 +1454,8 @@ export function runServiceSyncPass(
           });
           return { kind: 'done' };
         } catch (error) {
-          if (error instanceof WlRequestError) return outcomeFromWlError(error);
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
           throw error;
         }
       },
@@ -1552,6 +1664,7 @@ async function runPass(
   const now = deps.now ?? (() => Date.now());
   const budgetMs = deps.budgetMs ?? DEFAULT_BUDGET_MS;
   const limit = deps.limit ?? DEFAULT_LIMIT;
+  const concurrency = deps.concurrency ?? DEFAULT_QUEUE_CONCURRENCY;
   const leaseMs = deps.leaseMs ?? DEFAULT_LEASE_MS;
   const startedAt = now();
 
@@ -1571,6 +1684,7 @@ async function runPass(
   await openJobState(db, spec.jobName, ctx.kBusiness, iso());
 
   const totals = { claimed: 0, done: 0, requeued: 0, dead: 0 };
+  let deferred = 0;
   let failure: string | null = null;
   try {
     await spec.seed(ctx);
@@ -1581,6 +1695,7 @@ async function runPass(
         now: iso(),
         workerId: ctx.runId,
         limit,
+        concurrency,
         leaseMs,
         workTypes: [spec.workType],
       });
@@ -1588,15 +1703,19 @@ async function runPass(
       totals.done += s.done;
       totals.requeued += s.requeued;
       totals.dead += s.dead;
+      deferred += s.deferred;
       if (s.claimed === 0) break; // nothing eligible: the queue is drained
     }
   } catch (error) {
     failure = error instanceof Error ? error.name : 'unknown error';
   }
 
+  // A deferred item sits pending with a future next_attempt_at, so countEligible
+  // does not see it - but it IS outstanding work (a report still building), so the
+  // pass is 'partial', not a clean 'ok' that would move the completion watermark.
   const itemsRemaining = await countEligible(db, iso(), spec.workType);
   const state: SyncPassSummary['state'] =
-    failure !== null ? 'failed' : itemsRemaining > 0 ? 'partial' : 'ok';
+    failure !== null ? 'failed' : itemsRemaining > 0 || deferred > 0 ? 'partial' : 'ok';
 
   await closeRun(db, ctx.runId, iso(), {
     state,

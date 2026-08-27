@@ -69,7 +69,7 @@ correctly does not start.
 | Trace ids | [`src/wl/trace.ts`](../src/wl/trace.ts) |
 | One sync pass | [`src/wl/sync.ts`](../src/wl/sync.ts) |
 | Auth reachability probe | [`src/wl/health.ts`](../src/wl/health.ts) |
-| The client-list report: async polling, the mandatory date window, paging | [`src/wl/report.ts`](../src/wl/report.ts) |
+| The client-list report: single-shot request / poll / read (non-blocking — the pass polls across queue invocations, not in a sleep loop), the mandatory date window, paging | [`src/wl/report.ts`](../src/wl/report.ts) |
 | Client-list rows → person (mapped by field NAME, never position) | [`src/sync/clients.ts`](../src/sync/clients.ts) |
 | Writing WL responses to Supabase (raw_wl → typed rows → raw_link) | [`src/sync/writer.ts`](../src/sync/writer.ts) |
 | Writing GHL responses to Supabase (raw_ghl), and the recorder that makes every search store itself | [`src/sync/ghl-writer.ts`](../src/sync/ghl-writer.ts) |
@@ -87,9 +87,9 @@ correctly does not start.
 | Who booked and who turned up (login/attendance/list → attendance, per occurrence) | [`src/sync/attendance.ts`](../src/sync/attendance.ts) |
 | Private appointments, per client (schedule/page/list + element → session, staff, attendance) | [`src/sync/client-sessions.ts`](../src/sync/client-sessions.ts) |
 | Service catalogue + categories (appointment/book/service/{list,category} → service, service_category; marks is_resolved) | [`src/sync/services.ts`](../src/sync/services.ts) |
-| The durable sync_queue loop (claim, settle, requeue, dead-letter) | [`src/sync/queue.ts`](../src/sync/queue.ts) |
+| The durable sync_queue loop (claim, settle, requeue, dead-letter; claims and processes the batch as a bounded concurrent pool; `outcomeFromError` requeues a transient DB error instead of failing the pass) | [`src/sync/queue.ts`](../src/sync/queue.ts) |
 | One bounded sync pass per job, `runFullSyncPass` (sequential FK order, one token, one budget), and `runFullSyncPassParallel` (three dependency waves, seed-once-per-pass, one shared token — the local backfill shape) | [`src/sync/pass.ts`](../src/sync/pass.ts) |
-| Per-job lifecycle + clean-completion watermark (sync_job_state) | [`src/sync/job-state.ts`](../src/sync/job-state.ts) |
+| Per-job lifecycle + clean-completion watermark, and the async-report cursor (handle/poll-attempt/deadline) the client-list poller resumes from (sync_job_state) | [`src/sync/job-state.ts`](../src/sync/job-state.ts) |
 
 Four things about this client are worth knowing before changing it:
 
@@ -217,6 +217,8 @@ to re-run.
 | `0025` | `sync_queue_progress` and `ghl_match_progress` views — per-stage "how many done, how many pending" queryable from SQL editor |
 | `0026` | `ghl_contact` + `ghl_custom_field` — GoHighLevel fields and tags keyed by **contact**, not person; the agreed field list as data (`is_reported`) rather than columns; `client_ghl` and `ghl_enrichment_missing` views; two new health issues; backfills 317 clients from stored `raw_ghl` payloads with no API call |
 | `0027` | `person.is_active` — whether WL lists a client as activated (report `o_member_status` 3). A boolean, because WL exposes no per-row status and only that one filter restricts; null until the client-list report has seen them. Not derived from `text_login_type` — type is not status |
+| `0028` | `purchase.m_refund` — the refund is a fact about the **purchase**, not the item; `purchase_item.m_refund` is an echo and must never be SUMmed (summing it inflated refunds up to 4× and made 38 purchases look over-refunded). Adds `purchase_net`, `revenue_month`, `active_client` and `purchase_over_refunded` views |
+| `0029` | `attendance.id_visit` — WL's own visit status (`WlVisitSid`), the only field that says what happened. `is_attended` was written from `is_checkin` ("ready to be checked in", true on 0 of 4,423 sessions) and is now derived from `id_visit` and **nullable**; `session_outcome` and `is_countable` read the status; adds `visit_awaiting_staff` |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs, plus case tables for rules that live in SQL. They are not migrations and

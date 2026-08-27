@@ -162,6 +162,93 @@ The parameters are `dt_date_local` (LOCAL time, `YYYY-MM-DD HH:MM:SS`) and
 apidoc.wellnessliving.io. The earlier `date-incorrect` was a wrong-key test; the
 key `dt_date` is not used — only `dt_date_local`.
 
+### `/v1/schedule/page/list` is NOT future-only — `is_past` was never sent
+
+Measured 27 Aug 2026. This corrects a claim that sat in the code for weeks and
+blocked the historical load.
+
+The sync sent only `{ uid }`, and in that shape the endpoint answers with
+**upcoming** visits. It also accepts `is_past`, and date bounds named
+**`dtu_start` / `dtu_end`** — not `dt_`, which is why an earlier probe concluded
+the dates were ignored.
+
+One uid, one endpoint, same session:
+
+| Query | Visits | Range |
+|---|---|---|
+| `{ uid }` | **0** | — |
+| `{ uid, is_past: 1 }` | **402** | 2021-01-30 .. 2025-02-20 |
+| `{ uid, dtu_start, dtu_end }` (2025) | 0 | no `is_past`, so still the future list |
+| `{ uid, is_past, dtu_start, dtu_end }` (2025) | 3 | the window **narrows** |
+| `{ uid, is_past, 1990 .. 2030 }` | **402** | identical — widening changes nothing |
+
+**`is_past=1` alone returns the client's complete past.** 402 is not a page and
+not a cap; widening the window to 1990–2030 returned the same rows over the same
+range, and the earliest visit did not move. So a historical backfill needs **no
+date paging** — one call per client.
+
+The list returns pointers only (`k_visit`, `dtu_date`, `id_visit`, `k_business`);
+appointment-vs-class is decided by `/v1/schedule/page/element`, exactly as the
+ongoing pass already does. So the existing two-step pipeline works unchanged.
+
+**Scale, sampled over ten clients:** 10.6 past visits each and half with none —
+about 13,600 element calls for all 1,285 clients, under an hour at 5 req/s.
+
+### Q8 — a business-wide session list exists in the platform, path unknown
+
+The OpenAPI spec (`openapi-20241224.yaml`, 208 paths) names
+`Wl/Schedule/ScheduleList/StaffApp/ScheduleListModel`:
+
+> "Gets information about sessions (both classes and appointments) at a business
+> on a given day"
+
+with `dl_start` / `dl_end` for a range, or `dt_date` for one day, plus
+`k_business`. That is exactly what Q8 asks for, so the capability is real.
+
+**But the REST path is not published.** The spec lists PHP model names, not `/v1`
+paths, and four guesses all returned HTTP 404:
+`/v1/schedule/schedule-list/staff-app/list`, `/v1/schedule/staff-app/list`,
+`/v1/schedule/list/staff-app/list`, `/v1/schedule/schedule/staff-app/list`.
+
+**What to ask WL:** the `/v1` path for `ScheduleList/StaffApp/ScheduleListModel`.
+It would cut the per-client fan-out to one call per day. Lower priority than it
+was, though — `is_past` already makes the per-client route cheap.
+
+### `id_visit` is the outcome — and the docs hide it twice
+
+Measured 27 Aug 2026. `/v1/schedule/page/element` returns `id_visit`, documented
+as *"the status of the visit"*, one of the `WlVisitSid` constants:
+
+| Code | Constant | Docs say |
+|---|---|---|
+| 1 | BOOK | Active reservation — the client is going to attend |
+| 2 | WAIT | On the wait list |
+| 3 | ATTEND | Client has attended the session |
+| 4 | PENALTY | Client has cancelled his reservation **too late** |
+| 5 | TRUANCY | Client has missed the session **without cancellation** |
+| 6 | CANCEL | Client has cancelled **in time and without penalty** |
+| 7 | PENDING | Registered, but ATTEND/TRUANCY/PENALTY undecided — *"must be set manually by staff"* |
+| 8 | REMOVE | Removed; hidden everywhere in WL but kept in their database |
+
+**So a cancellation IS reported**, and a late one is told apart from a timely
+one. Two doc defects hid it:
+
+1. The enum is linked as `Wl/Visit/VisitSid.php`. **That file does not exist** —
+   it is `Wl/Visit/WlVisitSid.php`. Every attempt to read the constants 404s, so
+   the field list says "one of the VisitSid constants" and the constants are
+   unreachable.
+2. `id_visit` is documented at the **top level** of the response. Real payloads
+   put it inside **`a_appointment_visit_info`**, beside the request flags.
+
+**`is_checkin` is not attendance.** Docs: *"If true, then this visit is ready to
+be checked in. If false, then this visit can't be checked in."* It was true on
+**0 of 4,423** sessions, so reading it as attendance left the royalty signal
+empty.
+
+**No cancellation timestamp exists** anywhere in the 208-path spec. `dt_cancel`
+is the cancel-by deadline — confirmed by the docs, matching the earlier
+measurement of 24h before start on 40 of 40 visits.
+
 ### Attendance is class-only
 
 `/v1/login/attendance/list` accepts ONLY a class-period id. Feeding an
@@ -584,6 +671,16 @@ starts a new report and its first call is always queued.
 
 Only the FIRST call may set `is_refresh: 1`. Setting it on every poll restarts
 the report and the loop never converges.
+
+**We poll ACROSS queue invocations, not in a sleep loop.** A build can take longer
+than the 60s function budget, and a worker sleeping through it is a worker doing
+nothing while the clock runs out. So the client-list pass is a state machine
+(`src/sync/pass.ts` `clientListReportStep`): it sends `is_refresh: 1` once, saves a
+handle in `sync_job_state` BEFORE polling, then each later invocation sends
+`is_refresh: 0` once and `defer`s on a 5/10/20/30s backoff if still building. A
+crash mid-poll resumes from the saved handle (the filter is deterministic, so the
+same build is read, not regenerated); a build past a 10-minute deadline is
+abandoned and restarted.
 
 ### `o_date` is mandatory, and it excludes without saying so
 

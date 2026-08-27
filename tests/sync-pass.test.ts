@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../src/config/schema.js';
-import type { SupabaseClient } from '../src/supabase/client.js';
+import { SupabaseError, type SupabaseClient } from '../src/supabase/client.js';
 import type { WlClient } from '../src/wl/client.js';
 import { runStaffSyncPass } from '../src/sync/pass.js';
 
@@ -52,6 +52,16 @@ function fakeDb(script: DbScript = {}) {
         return Promise.resolve(script.claimReturns ?? []);
       return Promise.resolve([]); // enqueue active-target lookup
     }),
+    // selectAll pages in production (PostgREST caps a read at 1,000 rows);
+    // a fake answers in one call, so it shares the select handler.
+    selectAll(table: string, query: string) {
+      // `this` is cast because several of these literals are inferred as {}
+      // before the outer `as unknown as SupabaseClient` is applied.
+      return (this as { select: (t: string, q: string) => Promise<unknown[]> }).select(
+        table,
+        query,
+      );
+    },
   } as unknown as SupabaseClient;
   return { db, calls };
 }
@@ -96,6 +106,66 @@ describe('runStaffSyncPass', () => {
     expect(summary.itemsRemaining).toBe(1);
     const close = calls.find((c) => c.op === 'update' && c.table === 'sync_run');
     expect(close!.patch).toMatchObject({ state: 'partial' });
+  });
+
+  // The bug fix: a transient DATABASE hiccup on one item must requeue that item
+  // and let the pass carry on - not abort the whole drain the way it did live on
+  // 27 Aug 2026, when one Supabase blip failed receipt_sync with 10,938 items
+  // still pending.
+  it('requeues the item and does NOT fail the pass when a DB write is transiently down', async () => {
+    const item = {
+      id: 'q1',
+      work_type: 'staff_list',
+      target_key: 'all',
+      k_business: '111111',
+      attempt_count: 0,
+    };
+    let claimed = false;
+    const calls: Array<{ op: string; table: string; patch?: Record<string, unknown> }> = [];
+    const db = {
+      // The first DB write the handler makes is raw_wl; make it transiently fail.
+      insert: vi.fn((table: string, rows: unknown[]) => {
+        calls.push({ op: 'insert', table });
+        if (table === 'raw_wl') throw new SupabaseError('raw_wl', 503, 'service unavailable');
+        return Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows);
+      }),
+      update: vi.fn((table: string, patch: Record<string, unknown>, query: string) => {
+        calls.push({ op: 'update', table, patch });
+        const isClaim = query.includes('id=eq.') && query.includes('select=');
+        if (isClaim && !claimed) {
+          claimed = true; // hand the item out exactly once
+          return Promise.resolve([item]);
+        }
+        return Promise.resolve([]);
+      }),
+      upsert: vi.fn((_table: string, rows: unknown[]) => Promise.resolve(rows)),
+      select: vi.fn((_table: string, query: string) => {
+        if (query.includes('order=next_attempt_at.asc'))
+          return Promise.resolve(claimed ? [] : [item]);
+        return Promise.resolve([]); // enqueue lookup + eligible-remaining
+      }),
+      // selectAll pages in production (PostgREST caps a read at 1,000 rows);
+      // a fake answers in one call, so it shares the select handler.
+      selectAll(table: string, query: string) {
+        // `this` is cast because several of these literals are inferred as {}
+        // before the outer `as unknown as SupabaseClient` is applied.
+        return (this as { select: (t: string, q: string) => Promise<unknown[]> }).select(
+          table,
+          query,
+        );
+      },
+    } as unknown as SupabaseClient;
+
+    const summary = await runStaffSyncPass(config, { wl: fakeWl(okResponse), db, now: () => 0 });
+
+    // Survives: not failed, and the item was requeued rather than swallowed.
+    expect(summary.state).not.toBe('failed');
+    expect(summary.requeued).toBe(1);
+    // The requeue settle puts it back to pending for a later attempt.
+    const requeue = calls.find(
+      (c) => c.op === 'update' && c.table === 'sync_queue' && c.patch?.state === 'pending',
+    );
+    expect(requeue).toBeDefined();
   });
 
   it('reports failed when the handler throws a non-WL error', async () => {

@@ -11,10 +11,13 @@ import type { SyncPassSummary } from './pass.js';
  * with nothing outstanding. A half-done run must not move it, or the next run skips
  * whatever it missed (the rule the 0007 schema spells out).
  *
- * NOT written here: the page cursor (page_number, report_handle, report_page). Those
- * are for a paged endpoint (/v1/report/data); nothing we sync paginates yet, so they
- * stay null until a paginated job needs them. Every upsert sends only the columns it
- * sets, so adding a cursor writer later cannot be clobbered by this one.
+ * THE REPORT CURSOR (report_handle, report_page, report_handle_expires_at) is
+ * written by the helpers below, and ONLY by the client-list report - the one job
+ * that waits on an asynchronous WellnessLiving report. report_handle non-null means
+ * "a build has been requested; poll it, do not restart"; report_page is the poll
+ * attempt (it picks the backoff delay); report_handle_expires_at is the hard
+ * deadline past which the build is abandoned and restarted. Every upsert sends only
+ * the columns it sets, so these never clobber the lifecycle fields above.
  */
 
 /** Marks a job running at the start of a pass. */
@@ -58,6 +61,102 @@ export async function closeJobState(
         // Only a clean drain advances the watermark. Omitted otherwise, so an
         // earlier clean completion survives a later partial/failed run.
         ...(passState === 'ok' ? { last_clean_completion_at: now } : {}),
+      },
+    ],
+    { onConflict: 'job_name,k_business' },
+  );
+}
+
+/** The persisted state of an async report build, for the client-list poller. */
+export interface ReportState {
+  /** Non-null once a build has been requested: poll it, do not restart. */
+  readonly handle: string | null;
+  /** Poll attempt so far - selects the backoff delay. */
+  readonly pollAttempt: number;
+  /** Hard deadline; past it the build is abandoned and restarted. */
+  readonly expiresAt: string | null;
+}
+
+/** Reads the report cursor. Absent row or null handle both mean "not requested". */
+export async function readReportState(
+  db: SupabaseClient,
+  jobName: string,
+  kBusiness: string,
+): Promise<ReportState> {
+  const rows = await db.select<{
+    report_handle: string | null;
+    report_page: number | null;
+    report_handle_expires_at: string | null;
+  }>(
+    'sync_job_state',
+    `job_name=eq.${jobName}&k_business=eq.${kBusiness}` +
+      `&select=report_handle,report_page,report_handle_expires_at&limit=1`,
+  );
+  const row = rows[0];
+  return {
+    handle: row?.report_handle ?? null,
+    pollAttempt: row?.report_page ?? 0,
+    expiresAt: row?.report_handle_expires_at ?? null,
+  };
+}
+
+/** Records that a build has been requested, BEFORE any polling (crash-safe resume). */
+export async function saveReportRequested(
+  db: SupabaseClient,
+  jobName: string,
+  kBusiness: string,
+  handle: string,
+  expiresAt: string,
+  now: string,
+): Promise<void> {
+  await db.upsert(
+    'sync_job_state',
+    [
+      {
+        job_name: jobName,
+        k_business: kBusiness,
+        report_handle: handle,
+        report_page: 0,
+        report_handle_expires_at: expiresAt,
+        last_seen_at: now,
+      },
+    ],
+    { onConflict: 'job_name,k_business' },
+  );
+}
+
+/** Advances the poll attempt so the next wait uses the next backoff rung. */
+export async function bumpReportPoll(
+  db: SupabaseClient,
+  jobName: string,
+  kBusiness: string,
+  pollAttempt: number,
+  now: string,
+): Promise<void> {
+  await db.upsert(
+    'sync_job_state',
+    [{ job_name: jobName, k_business: kBusiness, report_page: pollAttempt, last_seen_at: now }],
+    { onConflict: 'job_name,k_business' },
+  );
+}
+
+/** Clears the report cursor - on completion, or to abandon a timed-out build. */
+export async function clearReportState(
+  db: SupabaseClient,
+  jobName: string,
+  kBusiness: string,
+  now: string,
+): Promise<void> {
+  await db.upsert(
+    'sync_job_state',
+    [
+      {
+        job_name: jobName,
+        k_business: kBusiness,
+        report_handle: null,
+        report_page: null,
+        report_handle_expires_at: null,
+        last_seen_at: now,
       },
     ],
     { onConflict: 'job_name,k_business' },

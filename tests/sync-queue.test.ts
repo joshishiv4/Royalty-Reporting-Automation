@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { SupabaseClient } from '../src/supabase/client.js';
+import { SupabaseError, type SupabaseClient } from '../src/supabase/client.js';
 import { WlRequestError } from '../src/wl/client.js';
 import {
   claimBatch,
   enqueue,
+  outcomeFromError,
   outcomeFromWlError,
+  SUPABASE_TRANSIENT_REQUEUE_MS,
   type QueueHandler,
   type QueueItem,
   runQueue,
@@ -39,6 +41,16 @@ function fakeDb(responses: Responses = {}) {
       calls.push({ op: 'insert', table, rows });
       return Promise.resolve(rows);
     }),
+    // selectAll pages in production (PostgREST caps a read at 1,000 rows);
+    // a fake answers in one call, so it shares the select handler.
+    selectAll(table: string, query: string) {
+      // `this` is cast because several of these literals are inferred as {}
+      // before the outer `as unknown as SupabaseClient` is applied.
+      return (this as { select: (t: string, q: string) => Promise<unknown[]> }).select(
+        table,
+        query,
+      );
+    },
   } as unknown as SupabaseClient;
   return { db, calls };
 }
@@ -82,6 +94,61 @@ describe('outcomeFromWlError', () => {
   });
 });
 
+describe('SupabaseError.isTransient', () => {
+  const mk = (status: number | null) => new SupabaseError('purchase', status, 'x');
+  it('treats a network failure or timeout (null status) as transient', () => {
+    expect(mk(null).isTransient).toBe(true);
+  });
+  it('treats 429, 408 and any 5xx as transient', () => {
+    expect(mk(429).isTransient).toBe(true);
+    expect(mk(408).isTransient).toBe(true);
+    expect(mk(500).isTransient).toBe(true);
+    expect(mk(503).isTransient).toBe(true);
+  });
+  it('treats a 4xx (constraint, bad column) as NOT transient', () => {
+    expect(mk(400).isTransient).toBe(false);
+    expect(mk(404).isTransient).toBe(false);
+    expect(mk(409).isTransient).toBe(false);
+  });
+});
+
+describe('outcomeFromError', () => {
+  it('delegates a WL error to the WL mapping', () => {
+    const outcome = outcomeFromError(wlError(60_000));
+    expect(outcome).not.toBeNull();
+    expect(outcome?.kind).toBe('requeue');
+    if (outcome?.kind === 'requeue') expect(outcome.requeueAfterMs).toBe(60_000);
+  });
+
+  // The bug this whole change fixes: a transient DB hiccup must requeue ONE item,
+  // not escape the handler and abort the whole pass.
+  it('requeues a transient SupabaseError instead of letting it throw', () => {
+    const outcome = outcomeFromError(new SupabaseError('purchase', 503, 'unavailable'));
+    expect(outcome?.kind).toBe('requeue');
+    if (outcome?.kind === 'requeue') {
+      expect(outcome.requeueAfterMs).toBe(SUPABASE_TRANSIENT_REQUEUE_MS);
+      expect(outcome.failure.traceId).toBe('supabase:purchase');
+      expect(outcome.failure.httpStatus).toBe(503);
+    }
+  });
+
+  it('requeues a DB network failure (null status) too', () => {
+    expect(outcomeFromError(new SupabaseError('purchase', null, 'TypeError'))?.kind).toBe(
+      'requeue',
+    );
+  });
+
+  // A real bug (constraint, bad column) must still surface, not be requeued
+  // forever: outcomeFromError returns null so the caller rethrows.
+  it('returns null for a non-transient SupabaseError, so the caller rethrows', () => {
+    expect(outcomeFromError(new SupabaseError('purchase', 400, 'bad column'))).toBeNull();
+  });
+
+  it('returns null for an unrelated error', () => {
+    expect(outcomeFromError(new Error('boom'))).toBeNull();
+  });
+});
+
 describe('settle', () => {
   it('marks a done item done', async () => {
     const { db, calls } = fakeDb();
@@ -111,6 +178,19 @@ describe('settle', () => {
     const patch = calls[0]!.patch as Record<string, unknown>;
     expect(patch.state).toBe('dead');
     expect(patch.last_error).toBe('throttled');
+  });
+
+  // Defer is waiting, not failing: back to pending on a delay, but NO error and
+  // NO attempt_count bump - a slow report must never dead-letter itself.
+  it('defers back to pending without an error or an attempt bump', async () => {
+    const { db, calls } = fakeDb();
+    await settle(db, item, { kind: 'defer', requeueAfterMs: 5_000 }, NOW);
+    const patch = calls[0]!.patch as Record<string, unknown>;
+    expect(patch.state).toBe('pending');
+    expect(patch.next_attempt_at).toBe(new Date(Date.parse(NOW) + 5_000).toISOString());
+    expect('attempt_count' in patch).toBe(false);
+    expect('last_error' in patch).toBe(false);
+    expect(patch.claim_expires_at).toBeNull();
   });
 });
 

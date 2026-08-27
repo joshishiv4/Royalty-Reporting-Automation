@@ -78,6 +78,16 @@ function harness(
       }
       return Promise.resolve([]);
     }),
+    // selectAll pages in production (PostgREST caps a read at 1,000 rows);
+    // a fake answers in one call, so it shares the select handler.
+    selectAll(table: string, query: string) {
+      // `this` is cast because several of these literals are inferred as {}
+      // before the outer `as unknown as SupabaseClient` is applied.
+      return (this as { select: (t: string, q: string) => Promise<unknown[]> }).select(
+        table,
+        query,
+      );
+    },
   } as unknown as SupabaseClient;
 
   const ghl = {

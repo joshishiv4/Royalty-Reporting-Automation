@@ -135,7 +135,7 @@ export async function writeMembership(
   // unknown item is skipped rather than guessed at.
   const items = await db.select<{ k_purchase: string }>(
     'purchase_item',
-    `k_purchase_item=eq.${input.kPurchaseItem}&select=k_purchase`,
+    `k_purchase_item=eq.${input.kPurchaseItem}&limit=1&select=k_purchase`,
   );
   const kPurchase = items[0]?.k_purchase;
   if (kPurchase === undefined) return { written: false, isMembership: false, fieldsFilled: 0 };
@@ -147,6 +147,23 @@ export async function writeMembership(
 
   await db.upsert('purchase_item', [row], { onConflict: 'k_purchase_item' });
   await linkRows(db, input.rawWlId, 'purchase_item', [input.kPurchaseItem], 'membership');
+
+  // THE REFUND IS A FACT ABOUT THE PURCHASE, so it is also written there - see
+  // migration 0028. WL reports m_refund at purchase level and this call is made
+  // per ITEM, so every item of a refunded purchase echoes the same amount.
+  // Storing it only per item made SUM(purchase_item.m_refund) multiply the refund
+  // by the item count: measured 27 Aug 2026, a $475.00 purchase with five items
+  // summed to -$1,900.00, and 38 purchases ended up "refunded" for more than
+  // they charged.
+  //
+  // Written on EVERY echoing item rather than once, and that is deliberate: the
+  // items arrive on separate queue passes with no ordering between them, so there
+  // is no "first" one to be responsible. Each write sets the same value, which
+  // makes it idempotent rather than merely repeated - and a partial run leaves
+  // the purchase correct instead of unrefunded.
+  if (row.m_refund !== undefined) {
+    await db.update('purchase', { m_refund: row.m_refund }, `k_purchase=eq.${kPurchase}`);
+  }
 
   return {
     written: true,

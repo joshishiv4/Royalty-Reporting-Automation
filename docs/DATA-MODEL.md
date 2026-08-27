@@ -1,6 +1,6 @@
 # Data model
 
-26 tables and 12 views on Supabase — counted from a database with every migration
+26 tables and 16 views on Supabase — counted from a database with every migration
 applied, 27 Aug 2026, because the number here had drifted six tables behind. Every
 design decision below came from calling the live API, and the evidence is quoted so
 a future reader can check it rather than trust it.
@@ -11,9 +11,10 @@ API findings behind these choices: [WL-API-NOTES.md](WL-API-NOTES.md).
 ## Layout
 
 ```
-people      person, lead                     views: client, teacher
+people      person, lead                     views: client, active_client, teacher
 money       location, service, purchase, purchase_item,
             purchase_payment, purchase_account_credit
+                   views: purchase_net, revenue_month, purchase_over_refunded
 schedule    session, session_staff, attendance
                    view: session_outcome
 staff pay   staff_pay_rate, staff_service
@@ -226,6 +227,66 @@ One purchase carries several items. Keying on `k_purchase` would collapse them a
 lose the per-item price a royalty is calculated from. Verified: `k_purchase`
 143051749 holds `k_purchase_item` 147785701, and one client had 27 purchases.
 
+### The refund is a fact about the purchase, not the item (0028)
+
+`purchase.m_refund` is authoritative. `purchase_item.m_refund` still exists and
+records what arrived, but **nothing may SUM it** — and this is not a style rule,
+it was misstating revenue by five figures.
+
+WL reports `m_refund` on `/purchase/list/element`, which is called **per item**.
+Every item of a refunded purchase therefore comes back carrying the *same*
+refund, and storing it per item made a sum multiply it by the item count:
+
+```
+purchase 174396118   m_total $475.00   5 items x -$380.00 = -$1,900.00   (4x)
+purchase 174398437   m_total $285.00   3 items x -$190.00 =   -$570.00   (2x)
+```
+
+Measured 27 Aug 2026 across 381 refunded purchases. **52 have more than one
+refunding item and all 52 carry an identical amount on every one** — not a single
+case of two items differing. The test that settles it is "refund exceeds the
+purchase total", which should be nearly impossible:
+
+| | Purchases | Excess |
+|---|---|---|
+| Summing over items | 38 | $17,303.50 |
+| **One per purchase** | **3** | **$63.50** |
+
+A 273× reduction in the anomaly.
+
+**Net revenue is `m_total + m_refund` on `purchase`** — adding, because the sign
+is already negative. Read `purchase_net` or `revenue_month` and the convention is
+applied once instead of per report.
+
+Two limits worth knowing, neither fixable from what WL sends: `m_refund` carries
+**no date**, so a refund lands in the original purchase's month (`dt_cancel` is a
+separate fact); and `purchase.dt_add` is UTC with no local twin, so month
+boundaries are UTC.
+
+An **unpriced** purchase contributes `null`, never `0`. `purchase_net.is_priced`
+says which, because counting an unread receipt as a $0 sale understates a month
+without looking wrong.
+
+### Active is a status, and the type label is not it (0027, 0028)
+
+`person.is_active` — 517 of 1,285 clients, which agrees exactly with what the WL
+portal's "All Clients" report calls Activated (measured 27 Aug 2026). Read
+`active_client` for them.
+
+**Do not filter on `text_login_type`.** Nine types appear *both* active and
+inactive:
+
+| Type | Active | Not |
+|---|---|---|
+| Cancelled Client | **55** | 658 |
+| Inactive Client | **60** | 27 |
+| SDC Client | 200 | 7 |
+| Staff Client Profile | 25 | 22 |
+| Prospect | 13 | 17 |
+
+"Cancelled Client" holding 55 **active** clients is the whole point: the type is
+what the studio filed them under, not whether WL activates them today.
+
 ### Membership state lives on the item, not on the purchase
 
 A membership, a lesson package and a one-off appointment are all `purchase_item`
@@ -333,6 +394,60 @@ Two independent reasons the local value is stored rather than derived:
 
 Purchases keep UTC only, because a purchase is an *instant* and an instant is
 fully described by UTC.
+
+### What happened is `id_visit`, not `is_checkin` (0029)
+
+`attendance.id_visit` carries WellnessLiving's own verdict, and everything else
+about the outcome is derived from it.
+
+`is_attended` used to be written from `session.is_checkin`. The API documents
+`is_checkin` as *"ready to be checked in"* / *"can't be checked in"* — whether the
+check-in button is live, not whether anybody walked in. Measured 27 Aug 2026:
+
+| | |
+|---|---|
+| `session.is_checkin = true` | **0** of 4,423 |
+| `attendance.is_attended = true` | 4 of 4,431 |
+| `is_cancelled_client` / `is_cancelled_studio` | 0 / 0 |
+| `session_outcome` | 988 upcoming, 12 unknown, **0 countable** |
+
+So the royalty attendance signal was not merely wrong, it was **empty**.
+
+`WlVisitSid`, from `/v1/schedule/page/element`:
+
+| Code | Meaning | `is_attended` | Other |
+|---|---|---|---|
+| 1 BOOK | reserved, not yet | **null** | |
+| 2 WAIT | wait list | **null** | |
+| 3 ATTEND | attended | true | **the only countable one** |
+| 4 PENALTY | cancelled too late | false | `is_cancelled_client` + `is_late_cancel` |
+| 5 TRUANCY | missed, no cancellation | false | `is_no_show` |
+| 6 CANCEL | cancelled in time | false | `is_cancelled_client` |
+| 7 PENDING | staff must decide | **null** | `visit_awaiting_staff` |
+| 8 REMOVE | hidden in WL | **null** | |
+
+**`is_attended` is nullable on purpose.** `not null default false` claimed every
+visit was un-attended until proven otherwise — in the column royalty is paid
+from. Null now means "not known yet"; false means WL said they did not turn up.
+
+**Two things the docs got wrong, both measured:**
+
+- The enum is linked as `Wl/Visit/VisitSid.php`, which **does not exist**. It is
+  `Wl/Visit/WlVisitSid.php` — which is why the constants were unreachable and the
+  field went unread.
+- `id_visit` is documented as a **top-level** response field. Real payloads put it
+  inside `a_appointment_visit_info`. The code reads both, nested first.
+
+**A cancellation timestamp does not exist.** Nowhere in the 208-path spec. `dt_cancel`
+is the cancel-by deadline and is stored as `dt_cancel_by` (0017). So "was it
+cancelled, and was it late" is answerable; "at what moment" is not.
+
+**Open decision — is a late cancellation royalty-bearing?** `is_late_cancel`'s
+comment (0004) says such a cancellation is "usually still billable", but billable
+to the *client* is not the same as royalty-bearing to the *teacher*.
+`is_countable` currently says no, and `is_late_cancel` is exposed on
+`session_outcome` so the decision can be made in a `WHERE` clause rather than
+assumed in the view.
 
 ### Cancellation is two columns, not one flag
 

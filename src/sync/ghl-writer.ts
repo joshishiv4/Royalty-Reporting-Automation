@@ -146,9 +146,9 @@ export async function upsertGhlContact(
 async function registerCustomFields(db: SupabaseClient, ids: readonly string[]): Promise<void> {
   if (ids.length === 0) return;
 
-  const known = await db.select<{ ghl_field_id: string }>(
+  const known = await db.selectAll<{ ghl_field_id: string }>(
     'ghl_custom_field',
-    'select=ghl_field_id',
+    'order=ghl_field_id.asc&select=ghl_field_id',
   );
   const seen = new Set(known.map((row) => row.ghl_field_id));
   const unknown = ids.filter((id) => !seen.has(id));

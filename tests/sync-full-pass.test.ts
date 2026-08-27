@@ -29,6 +29,16 @@ function fakeDb() {
     update: vi.fn(() => Promise.resolve([])), // claim CAS finds nothing
     upsert: vi.fn((_table: string, rows: unknown[]) => Promise.resolve(rows)),
     select: vi.fn(() => Promise.resolve([])), // no seed rows, nothing eligible
+    // selectAll pages in production (PostgREST caps a read at 1,000 rows);
+    // a fake answers in one call, so it shares the select handler.
+    selectAll(table: string, query: string) {
+      // `this` is cast because several of these literals are inferred as {}
+      // before the outer `as unknown as SupabaseClient` is applied.
+      return (this as { select: (t: string, q: string) => Promise<unknown[]> }).select(
+        table,
+        query,
+      );
+    },
   } as unknown as SupabaseClient;
 }
 
@@ -112,6 +122,16 @@ describe('runFullSyncPass', () => {
             : [],
         ),
       ),
+      // selectAll pages in production (PostgREST caps a read at 1,000 rows);
+      // a fake answers in one call, so it shares the select handler.
+      selectAll(table: string, query: string) {
+        // `this` is cast because several of these literals are inferred as {}
+        // before the outer `as unknown as SupabaseClient` is applied.
+        return (this as { select: (t: string, q: string) => Promise<unknown[]> }).select(
+          table,
+          query,
+        );
+      },
     } as unknown as SupabaseClient;
     const wl = {
       runId: 'run-x',
@@ -213,6 +233,16 @@ describe('runFullSyncPassParallel', () => {
             : [],
         ),
       ),
+      // selectAll pages in production (PostgREST caps a read at 1,000 rows);
+      // a fake answers in one call, so it shares the select handler.
+      selectAll(table: string, query: string) {
+        // `this` is cast because several of these literals are inferred as {}
+        // before the outer `as unknown as SupabaseClient` is applied.
+        return (this as { select: (t: string, q: string) => Promise<unknown[]> }).select(
+          table,
+          query,
+        );
+      },
     } as unknown as SupabaseClient;
 
     const summary = await runFullSyncPassParallel(config, { wl, db, now: () => 0 });
@@ -249,6 +279,16 @@ describe('runFullSyncPassParallel', () => {
         // before the first resolves.
         return Promise.resolve([]);
       }),
+      // selectAll pages in production (PostgREST caps a read at 1,000 rows);
+      // a fake answers in one call, so it shares the select handler.
+      selectAll(table: string, query: string) {
+        // `this` is cast because several of these literals are inferred as {}
+        // before the outer `as unknown as SupabaseClient` is applied.
+        return (this as { select: (t: string, q: string) => Promise<unknown[]> }).select(
+          table,
+          query,
+        );
+      },
     } as unknown as SupabaseClient;
 
     await runFullSyncPassParallel(config, { wl: fakeWl(), db, now: () => 0 });
