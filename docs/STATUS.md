@@ -190,22 +190,36 @@ dev — every sample is a self-purchase — so that path is mock-verified only
 
 ## Decisions waiting on someone
 
-**Which GoHighLevel fields and tags to copy — blocks half of M06 (26 Aug 2026).**
-The plumbing is done and live: every search is now stored verbatim in `raw_ghl`,
-and a GoHighLevel outage requeues instead of failing the run. What cannot be
-built is the part that needs a list — **which** agreed fields and tags land on
-the client record, the fetch timestamp that goes with them, and the staleness
-check in `data_health` that reads it.
+**Which GoHighLevel fields to report — no longer blocks M06 (27 Aug 2026).**
+M06 is built and the ticket can close. The blocker was self-inflicted: "the
+agreed fields" was being modelled as **columns**, so nothing could be built
+before the list arrived. Migration 0026 models it as **data** instead —
+`ghl_contact.fields` stores every custom field the contact carried and
+`ghl_custom_field.is_reported` says which may be shown, so confirming the list is
+an `UPDATE`, not a migration and a backfill.
 
-Guessing the columns would be worse than leaving them out: they would have to be
-migrated again once the real list arrives, and a half-right field on a client
-record gets believed. Nothing is lost by waiting — the payloads are being kept
-from today, so when the list is confirmed the fields are parsed out of stored
-responses rather than re-pulled from GoHighLevel. A re-parse is a query; a
-re-pull is hours.
+The re-parse promise was kept literally: 0026 backfilled 317 clients out of the
+1,098 already-stored `raw_ghl` payloads with **zero** GoHighLevel calls.
 
-**Needed from the client:** the field and tag list, and whether a tag set should
-replace or merge on each fetch.
+**Still needed from the client, but nothing waits on it:**
+
+| Question | What happens meanwhile |
+|---|---|
+| Which fields to report | `is_reported` is false on all of them, so no field appears on a client record. One `UPDATE` turns each on |
+| What the fields are called | `ghl_custom_field.name` is null and `client_ghl` falls back to the id. Measured: exactly **three** field ids exist in this location's data — `ibhlYPvuAeAA3N8iJqv6` (54 contacts; values `DJ`, `PIANO`, `LIVE SOUND`, `VOICE`, `MUSIC PRODUCTION`), `7NBvgQs2s08waeVnsl6J` (21, free text), `f48pVfYaewIDJl35G1X1` (2). So the conversation is "here are your three fields", not "please send a list" |
+| Replace or merge on tags | **Decided: replace.** Many tags are operational state GoHighLevel retires, and merging would strand them permanently. `raw_ghl` keeps every fetch, so it is reversible |
+
+The one thing to know rather than fix: enrichment is **fetched once** at match
+time and never refreshed, so `fetched_at` is the date of the match, not of the
+data. `data_health_issue.stale_ghl_contact` reports that age past 30 days
+deliberately, and will not clear while nothing refreshes — it states an age for a
+reader, not a queue of work. If it ever needs to be actionable, the honest fix is
+a refresh route, not a longer interval.
+
+**Field id → name is unreachable with the current token.** The mapping lives at
+`GET /locations/{id}/customFields`, which answers **401** for a contacts-scope
+Private Integration Token. Adding `locations.readonly` in GHL → Settings →
+Private Integrations would let the names be fetched instead of asked for.
 
 
 **Raw payload retention — now measured (24 Aug 2026, task 024).** `raw_wl` and

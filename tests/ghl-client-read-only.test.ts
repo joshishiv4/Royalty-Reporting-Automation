@@ -53,13 +53,39 @@ describe('GhlClient is read-only by construction', () => {
     // incidental helper that starts drifting toward a write path. matcher.ts
     // was added for PRD M04; it decides WHICH contact a person is and calls
     // nothing but searchContacts, so it inherits the read-only guarantee rather
-    // than widening it.
+    // than widening it. snapshot.ts was added for PRD M06; it is a pure
+    // projection of a contact that has already been fetched and reaches nothing
+    // at all - enforced by the test below.
     const dir = fileURLToPath(new URL('../src/ghl/', import.meta.url));
     const entries = readdirSync(dir)
       .filter((f) => f.endsWith('.ts'))
       .sort();
-    expect(entries).toEqual(['client.ts', 'endpoint.ts', 'health.ts', 'matcher.ts', 'retry.ts']);
+    expect(entries).toEqual([
+      'client.ts',
+      'endpoint.ts',
+      'health.ts',
+      'matcher.ts',
+      'retry.ts',
+      'snapshot.ts',
+    ]);
     expect(ROOT).toBeTruthy();
+  });
+
+  /**
+   * The claim that let snapshot.ts into the list above, enforced.
+   *
+   * It projects a contact into the row `ghl_contact` stores, and the whole
+   * reason it may live beside a read-only client is that it touches no
+   * transport: no fetch, no HTTP verb, and no GoHighLevel path. A future edit
+   * that has it "just re-fetch the contact to fill a gap" would be the exact
+   * drift the file list is watching for.
+   */
+  it('the snapshot projection reaches nothing at all', () => {
+    const source = readSource('src/ghl/snapshot.ts');
+    expect(source).not.toMatch(/[^a-zA-Z]fetch\s*\(/);
+    expect(source).not.toMatch(/method\s*:\s*['"](?:GET|POST|PUT|PATCH|DELETE)['"]/i);
+    expect(source).not.toMatch(/searchContacts/);
+    expect(source).not.toMatch(/GHL_PATHS/);
   });
 
   // The claim made in the comment above, enforced: the matcher may only ever

@@ -130,7 +130,7 @@ All GET unless noted. `id_region` and `k_business` are added by the client.
 |---|---|---|
 | `/v1/collector/debt/list` | `subscription-access` | not on this plan |
 | `/v1/collector/debt/transaction` | `subscription-access` | not on this plan |
-| `/v1/login/attendance/list` | `date-incorrect` | **unsolved** — every date format tried fails |
+| `/v1/login/attendance/list` (APPOINTMENT k_period) | `id-nx` | **classes only** — see §"attendance is class-only" below |
 | `/v1/report/query` | `method-nx` on GET | POST only |
 | `/v1/report/data` | `report-nx` | needs a report sid |
 | `POST` on most read endpoints | `method-nx` | GET only |
@@ -156,9 +156,26 @@ foundation for P5 tasks 017–019. Until then `person` fills from the 20 staff o
 endpoints in the collection resolves a key to a rate. Without this there is no
 teacher cost and no margin.
 
-**3. What are the correct parameters for `/v1/login/attendance/list`?**
-It returns `date-incorrect` for `dt_date` in every format tried, including the
-`YYYY-MM-DD HH:MM:SS` form that other endpoints require.
+**3. What are the correct parameters for `/v1/login/attendance/list`?** ✅ resolved
+The parameters are `dt_date_local` (LOCAL time, `YYYY-MM-DD HH:MM:SS`) and
+`k_class_period` — confirmed against the live Postman collection and
+apidoc.wellnessliving.io. The earlier `date-incorrect` was a wrong-key test; the
+key `dt_date` is not used — only `dt_date_local`.
+
+### Attendance is class-only
+
+`/v1/login/attendance/list` accepts ONLY a class-period id. Feeding an
+appointment id (a `k_appointment`) yields sid `id-nx` — "The ID value for
+`k_class_period` that you have specified does not exist". Measured on live dev,
+21 Aug 2026 → 27 Aug 2026: **681 dead attendance rows out of 1,018**, every one
+of them for a session whose kind is `appointment`. Not an outage — WL is
+returning a correct answer.
+
+Consequence for this project: `session.k_period` holds `k_appointment` for
+appointment rows (see `src/sync/client-sessions.ts:93`), so the attendance seed
+MUST filter to `session_kind = 'class'`. Appointments have exactly one attendee
+already (the payer is the client), and that record is written by the
+client-session sync — no shared attendance call is needed for them.
 
 ### `/v1/purchase/receipt` shape — where the money is
 
@@ -459,6 +476,61 @@ fields. Phones are in the same `+1…` shape WL uses.
 One observed contact carried `tags: ["closed","wellness member"]` — WL members
 appear to be tagged, which may help matching.
 
+### What a contact actually carries — measured over 1,098 stored searches
+
+Measured 26–27 Aug 2026 from `raw_ghl`, not from the docs. 1,098 searches, all
+`/contacts/search`, all HTTP 200. Payload has exactly three top-level keys:
+`total`, `traceId`, `contacts`. 325 contact objects, 307 of them distinct, across
+506 clients searched.
+
+A contact object has **38 keys**. `customFields` and `tags` were present on
+**325 of 325** — always arrays, never absent.
+
+**`customFields` is sparse, and only three fields exist.**
+
+| | |
+|---|---|
+| Contacts with an **empty** `customFields` array | **254 of 325 (78%)** |
+| Distinct field ids in the whole location's data | **3** |
+| Shape | `[{id, value}]`, `value` always a string in this data |
+
+| Field id | Contacts | Values |
+|---|---|---|
+| `ibhlYPvuAeAA3N8iJqv6` | 54 | `DJ`, `PIANO`, `LIVE SOUND`, `VOICE`, `MUSIC PRODUCTION` |
+| `7NBvgQs2s08waeVnsl6J` | 21 | 20 distinct, 9–190 chars — free text |
+| `f48pVfYaewIDJl35G1X1` | 2 | 1 distinct, 12 chars |
+
+**The contact response carries field ids, never field names.** The mapping is
+`GET /locations/{locationId}/customFields`, and that is in the 401 list above —
+this token has contacts scope only. So a stored field can be reported but not
+labelled until either the client says what it is, or the token gains
+`locations.readonly`. Guessing from the values is exactly the trap: the first one
+*reads* like a programme, which is what makes a wrong name believable.
+
+**`tags` is a flat array of lowercase strings.** 44 distinct; 1–11 per contact, 2
+typical. The mix matters more than the count — program codes sit next to
+operational state:
+
+`wellness member` 167 · `closed` 164 · `wellness retention` 71 · `clf` 56 ·
+`sdc` 48 · `hlf` 48 · `wlf` 42 · `lead reactivation` 32 · then `nl stage 1/2/3`,
+`appointment no show`, `missed incoming call`, `power dialer clean up`,
+`mal inbox`, `no phone number`, `no email`, `dnd`, `bad email`, `disqualified lead`.
+
+Two consequences recorded in [DATA-MODEL.md](DATA-MODEL.md): a stored tag set must
+**replace** rather than merge, because GoHighLevel retires these; and the tag set
+must never be exposed to the client it describes.
+
+### The Version header: `2021-07-28` works, the docs now say `v3`
+
+`GHL_API_VERSION` is `2021-07-28` and every measured call above succeeded with it.
+But the current marketplace docs show `Version: v3` on `/contacts/search`,
+`/contacts/{id}` and `/locations/{id}/customFields`, and there is now a page
+titled "Contacts API v3" — so there appear to be two generations live.
+
+**Not measured.** Nothing here has been retried with `v3`, so this is a flag, not
+a finding. The header is configuration (`GHL_API_VERSION`), so testing it costs an
+env change rather than a code change.
+
 ### GHL always returns a trace id
 
 ```json
@@ -474,6 +546,25 @@ a support ticket.
 Measured 26 Aug 2026. `cid_report` 689 is WL's "Client List". It agrees with the
 portal exactly: **517 activated clients**, and all twelve client-type tiles match
 one for one. 1,285 across every status.
+
+### `o_member_status` only distinguishes ACTIVATED, and the row carries no status
+
+Measured 26 Aug 2026, full paged counts:
+
+| `o_member_status` | Distinct clients |
+|---|---|
+| `[]` (empty) | **1,285** — every status |
+| `[3]` | **517** — the portal's "Activated" |
+| `[1]` | 1,285 — **ignored**, returns everyone |
+| `[2]` | 1,285 — **ignored**, returns everyone |
+
+So `[3]` is the only value that restricts; WL treats any other code as no filter.
+And the report ROW has no activated/deactivated field — only a client *type* label
+(`text_client_type`, e.g. "Cancelled Client"), which is **not** the status: "Inactive
+Client" and "SDC Client" appear among the activated 517 *and* among the deactivated
+remainder. Consequence for the sync: to know each client's activation we fetch `[3]`
+(the activated set) and `[]` (everyone), and tag `person.is_active` by membership —
+there is no single-call way to get status per row. See migration 0027.
 
 ### It is asynchronous, and it fails silently
 

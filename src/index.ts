@@ -57,6 +57,12 @@ export {
   type WellnessSyncStep,
   type WellnessSyncSummary,
 } from './wl/sync.js';
+export {
+  runFullSyncPass,
+  runFullSyncPassParallel,
+  type FullSyncPassResult,
+  type FullSyncSummary,
+} from './sync/pass.js';
 export { isAuthorized, isAuthorizedByAny } from './http/bearer.js';
 export type { HttpRequest, HttpResponse } from './http/types.js';
 export { checkWlAuth, type WlHealthDeps } from './wl/health.js';

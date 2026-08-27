@@ -114,6 +114,13 @@ export interface WriteClientListInput {
   readonly page: ReportPage;
   readonly fields: readonly string[];
   readonly syncedAt: string;
+  /**
+   * The uids WL lists as ACTIVATED (o_member_status 3). Every client in this
+   * page whose uid is in the set is stored `is_active = true`, the rest false.
+   * The report row carries no status field (only a type label), so activation is
+   * known only by membership of the activated result - see migration 0027.
+   */
+  readonly activatedUids: ReadonlySet<string>;
 }
 
 /**
@@ -141,6 +148,9 @@ export async function writeClientList(
     const rows = clients.map((c) => ({
       ...c,
       k_business: input.kBusiness,
+      // Always known from the report split (true/false), never absent - so it is
+      // safe against merge-never-clobber and every row carries it.
+      is_active: input.activatedUids.has(c.uid),
       synced_at: input.syncedAt,
     }));
     for (const batch of groupByShape(rows)) {

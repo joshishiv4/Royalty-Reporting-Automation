@@ -7,7 +7,8 @@ import { WlClient, WlRequestError } from '../wl/client.js';
 import { WL_PATHS } from '../wl/endpoint.js';
 import { fetchAllReportRows, MEMBER_STATUS_ACTIVATED } from '../wl/report.js';
 import { WlTokenClient } from '../wl/token.js';
-import { recordingGhl, storeRawGhl } from './ghl-writer.js';
+import { recordingGhl, storeRawGhl, upsertGhlContact } from './ghl-writer.js';
+import { contactSnapshot } from '../ghl/snapshot.js';
 import { closeJobState, openJobState } from './job-state.js';
 import { writeClientList } from './clients.js';
 import { writeLocationList } from './locations.js';
@@ -112,15 +113,21 @@ interface JobSpec {
  * staff list - so the database only ever held people who had already done
  * something. This one asks WL who exists.
  *
- * ACTIVATED ONLY, DELIBERATELY. `o_member_status: [3]` is what the portal calls
- * "Activated Clients": 517 here, against 1,285 across every status. The other
- * 768 are overwhelmingly cancelled (713) or garbage profiles (22), and pulling
- * them would treble the row count and the storage for people nobody will ever
- * bill. Widening this is one constant, if that changes.
+ * EVERY STATUS, TAGGED. `o_member_status: []` returns all 1,285 clients (measured
+ * 26 Aug 2026), against 517 for the activated filter [3]. We store all of them so
+ * a cancelled client a purchase still points at resolves, and tag each with
+ * `is_active` from membership of the activated set - because the report row itself
+ * carries no status, only a client-type label (see clients.ts / migration 0027).
+ *
+ * TWO REPORT BUILDS, DELIBERATELY. The activated set is fetched first to learn
+ * which uids are active, then the full set is fetched and written. WL exposes no
+ * per-row status and its status filter only distinguishes [3] (the others are
+ * ignored and return everyone), so this two-query split is the only way to know
+ * each client's activation.
  *
  * ONE QUEUE ITEM, NOT ONE PER PAGE. The response carries no total, so the number
  * of pages is not known until the walk ends - there is nothing to fan out over
- * up front. At 500 rows a page this is 2 calls plus one poll each.
+ * up front.
  */
 export function runClientListSyncPass(
   config: AppConfig,
@@ -139,10 +146,21 @@ export function runClientListSyncPass(
       ({ wl, db, kBusiness, runId, nowIso }) =>
       async (item) => {
         try {
-          const { fields, pages } = await fetchAllReportRows(
+          // First: who is activated. Only [3] restricts; the report row has no
+          // status field, so this membership IS the status.
+          const activated = await fetchAllReportRows(
             wl,
             kBusiness,
             { memberStatuses: [MEMBER_STATUS_ACTIVATED] },
+            { priorAttempt: item.attempt_count },
+          );
+          const activatedUids = collectUids(activated.fields, activated.pages);
+
+          // Then: everyone, tagged against that set.
+          const { fields, pages } = await fetchAllReportRows(
+            wl,
+            kBusiness,
+            { memberStatuses: [] },
             { priorAttempt: item.attempt_count },
           );
           // Written page by page: one raw_wl row per payload, which is what
@@ -155,6 +173,7 @@ export function runClientListSyncPass(
               page,
               fields,
               syncedAt: nowIso(),
+              activatedUids,
             });
           }
           return { kind: 'done' };
@@ -164,6 +183,24 @@ export function runClientListSyncPass(
         }
       },
   });
+}
+
+/** The set of uids across every page, read by the `uid` column's name. */
+function collectUids(
+  fields: readonly string[],
+  pages: ReadonlyArray<{ readonly rows: ReadonlyArray<readonly unknown[]> }>,
+): ReadonlySet<string> {
+  const uidIdx = fields.indexOf('uid');
+  const uids = new Set<string>();
+  if (uidIdx === -1) return uids;
+  for (const page of pages) {
+    for (const row of page.rows) {
+      const uid = row[uidIdx];
+      if (typeof uid === 'string' && uid.length > 0) uids.add(uid);
+      else if (typeof uid === 'number' && Number.isFinite(uid)) uids.add(String(uid));
+    }
+  }
+  return uids;
 }
 
 /** Runs the staff sync: one job that lists staff and writes them as people. */
@@ -297,10 +334,24 @@ export function runReceiptSyncPass(
     jobName: 'receipt_sync',
     workType: 'purchase_receipt',
     seed: async ({ db, kBusiness, nowIso }) => {
-      const unpriced = await db.select<{ k_purchase: string }>(
-        'purchase',
-        `k_business=eq.${kBusiness}&m_total=is.null&select=k_purchase`,
-      );
+      // PAGINATED. PostgREST caps a select at 1000 rows by default. On live
+      // dev the unpriced set grew to 14,148 purchases (of 20,347 total); an
+      // unpaged read seeded only the first 1,000, and the remaining ~13,148
+      // silently never entered the queue - receipt_sync then reported 'ok'
+      // with nothing left to do while the pricing coverage stalled at ~30%.
+      // Loop until a short page returns so the full unpriced list is seeded
+      // no matter how deep it gets.
+      const PAGE = 1000;
+      const unpriced: Array<{ k_purchase: string }> = [];
+      for (let offset = 0; ; offset += PAGE) {
+        const page = await db.select<{ k_purchase: string }>(
+          'purchase',
+          `k_business=eq.${kBusiness}&m_total=is.null&order=k_purchase.asc` +
+            `&limit=${PAGE}&offset=${offset}&select=k_purchase`,
+        );
+        unpriced.push(...page);
+        if (page.length < PAGE) break;
+      }
       await enqueue(
         db,
         unpriced.map((p) => ({
@@ -356,10 +407,20 @@ export function runPurchaseElementSyncPass(
     jobName: 'purchase_element_sync',
     workType: 'purchase_item_element',
     seed: async ({ db, kBusiness, nowIso }) => {
-      const items = await db.select<{ k_purchase_item: string }>(
-        'purchase_item',
-        `k_business=eq.${kBusiness}&select=k_purchase_item`,
-      );
+      // PAGINATED. Same 1000-row PostgREST cap as receipt_sync's seed above:
+      // 20,558 purchase_item rows on live dev, only 1,000 were being seeded
+      // per invocation.
+      const PAGE = 1000;
+      const items: Array<{ k_purchase_item: string }> = [];
+      for (let offset = 0; ; offset += PAGE) {
+        const page = await db.select<{ k_purchase_item: string }>(
+          'purchase_item',
+          `k_business=eq.${kBusiness}&order=k_purchase_item.asc` +
+            `&limit=${PAGE}&offset=${offset}&select=k_purchase_item`,
+        );
+        items.push(...page);
+        if (page.length < PAGE) break;
+      }
       await enqueue(
         db,
         items.map((i) => ({
@@ -612,9 +673,20 @@ export function runAttendanceSyncPass(
     jobName: 'attendance_sync',
     workType: 'session_attendance',
     seed: async ({ db, kBusiness, nowIso }) => {
+      // CLASSES ONLY. /v1/login/attendance/list is documented as a class-period
+      // lookup (see Postman collection and WL-API-NOTES.md), and WL answers
+      // 200 `id-nx` for anything that is not a k_class_period. An
+      // appointment's `k_period` in the session table is really a
+      // k_appointment (see client-sessions.ts:93), and passing it here dies
+      // with "The ID value for k_class_period that you have specified does not
+      // exist" - measured on live dev, 681 dead rows out of 1,018 all with
+      // exactly that sid. Appointments do not need this call: a private
+      // session has one payer who IS the attendee, and that is already written
+      // by client-sessions.ts. Filter at the seed so it never even hits the
+      // queue.
       const sessions = await db.select<{ k_period: string; dt_start_utc: string }>(
         'session',
-        `k_business=eq.${kBusiness}&select=k_period,dt_start_utc`,
+        `k_business=eq.${kBusiness}&session_kind=eq.class&select=k_period,dt_start_utc`,
       );
       await enqueue(
         db,
@@ -702,6 +774,59 @@ export function runAttendanceSyncPass(
  * the wait - it moves on and comes back.
  */
 const GHL_REQUEUE_AFTER_MS = 300_000;
+
+/**
+ * Stores the matched contact's fields and tags, and never throws (PRD M06).
+ *
+ * WHY IT CANNOT THROW. The enrichment runs after the verdict is already
+ * committed. Letting a storage failure out would fail the queue item, and a
+ * requeue would send the matcher back to GoHighLevel for a client whose answer
+ * is final - breaking the one rule this pass is built on, that a client is
+ * searched exactly once. So the failure is absorbed here.
+ *
+ * NOTHING IS HIDDEN BY ABSORBING IT. A matched client with no `ghl_contact` row
+ * is `data_health_issue.missing_ghl_enrichment` by construction - the gap
+ * reports itself with no error channel, no log line and no write that could fail
+ * in turn. Closing it needs no API call either: migration 0026's backfill parses
+ * it out of the payload already stored in `raw_ghl`.
+ *
+ * WHICH RESPONSE THE SNAPSHOT COMES FROM. Found by contact id rather than by
+ * position. Today the deciding search is always the last one stored, because the
+ * matcher returns the moment it decides - so `stored[last]` would work and this
+ * is belt-and-braces. It is written this way because the position argument
+ * depends on the matcher's control flow, and a lookup by id does not: adding a
+ * third search route would quietly break the shortcut and not this.
+ */
+async function storeEnrichment(
+  db: SupabaseClient,
+  input: {
+    contactId: string;
+    stored: readonly { response: GhlSearchResponse; rawGhlId: string | null }[];
+    locationId: string;
+    fetchedAt: string;
+  },
+): Promise<void> {
+  try {
+    for (const { response, rawGhlId } of input.stored) {
+      const contact = response.contacts.find((c) => c.id === input.contactId);
+      if (contact === undefined) continue;
+
+      const snapshot = contactSnapshot(contact);
+      if (snapshot === null) return;
+
+      await upsertGhlContact(db, {
+        snapshot,
+        fetchedAt: input.fetchedAt,
+        rawGhlId,
+        locationId: input.locationId,
+      });
+      return;
+    }
+  } catch {
+    // Deliberately swallowed - see the doc comment above. The missing row is
+    // the report.
+  }
+}
 
 const SESSION_IMMUTABLE_AFTER_DAYS = 7;
 /** Once on discovery, once after it has happened. A third read learns nothing. */
@@ -875,6 +1000,12 @@ export function runClientSessionSyncPass(
  *
  * PHONE FIRST, EMAIL SECOND, NAMES NEVER - see matcher.ts for why each of those
  * is the way round it is.
+ *
+ * THE ENRICHMENT RIDES ALONG (M06). On a match, the contact's fields and tags
+ * are stored from the search response already in hand - no second request, so
+ * the once-per-client cost above is unchanged. It is the only moment they are
+ * ever read: nothing refreshes them afterwards, which is why `ghl_contact`
+ * carries a fetch timestamp and why an aged snapshot is not a health issue.
  */
 export function runGhlMatchSyncPass(
   config: AppConfig,
@@ -897,6 +1028,10 @@ export function runGhlMatchSyncPass(
         'person',
         `k_business=eq.${kBusiness}&${filter}&select=uid`,
       );
+      // retryUnresolved is an explicit human-initiated refresh - it must
+      // override the fresh-done skip in enqueue, otherwise clients matched in
+      // the last 24 hours would silently be excluded from the retry set the
+      // caller specifically asked to re-check.
       await enqueue(
         db,
         people.map((p) => ({
@@ -905,6 +1040,7 @@ export function runGhlMatchSyncPass(
           k_business: kBusiness,
         })),
         nowIso(),
+        { forceReseed: deps.retryUnresolved === true },
       );
     },
     makeHandler:
@@ -941,14 +1077,18 @@ export function runGhlMatchSyncPass(
             subject,
           );
 
+          // Kept paired with its stored row id so the enrichment below can say
+          // which payload it was parsed out of.
+          const stored: { response: GhlSearchResponse; rawGhlId: string | null }[] = [];
           for (const response of searches) {
-            await storeRawGhl(db, {
+            const rawGhlId = await storeRawGhl(db, {
               locationId: config.ghl.locationId,
               sourceEndpoint: GHL_PATHS.contactsSearch,
               response,
               runId,
               personUid: subject.uid,
             });
+            stored.push({ response, rawGhlId });
           }
 
           // Set on the first non-matching outcome and left alone thereafter, so
@@ -972,6 +1112,27 @@ export function runGhlMatchSyncPass(
             },
             `uid=eq.${subject.uid}&k_business=eq.${kBusiness}`,
           );
+
+          // The enrichment (M06): the agreed fields and tags, parsed out of the
+          // search that just decided the match. No second API call - the
+          // response is already in hand, which is what makes fetch-once free.
+          //
+          // AFTER the person update, and swallowed on failure, both on purpose.
+          // The verdict is the fact that matters and it must be durable before
+          // anything optional is attempted; and a storage problem here must not
+          // fail the item, because a requeue would search GoHighLevel again for
+          // a client whose verdict is already final. The gap needs no error
+          // channel to be noticed - a matched client with no ghl_contact row IS
+          // data_health_issue.missing_ghl_enrichment, and migration 0026's
+          // backfill closes it from stored payloads with no API call.
+          if (outcome.state === 'matched' && outcome.ghlContactId !== null) {
+            await storeEnrichment(db, {
+              contactId: outcome.ghlContactId,
+              stored,
+              locationId: config.ghl.locationId,
+              fetchedAt: nowIso(),
+            });
+          }
           return { kind: 'done' };
         } catch (error) {
           if (error instanceof WlRequestError) return outcomeFromWlError(error);
@@ -1261,6 +1422,61 @@ const DEFAULT_FULL_BUDGET_MS = 50_000;
 const MIN_PASS_BUDGET_MS = 3_000;
 
 /**
+ * The parallel full sync order. A single wave: every pass runs at the same
+ * time, and the sync eventually converges over multiple invocations.
+ *
+ * FLAT ON PURPOSE. An earlier draft grouped passes into three dependency waves
+ * so no pass ever ran before the pass that fills its input tables. That is
+ * SAFE in the classical sense, and it is exactly the problem: on live dev with
+ * ~thousands of items pending in wave-2 passes (purchase_sync, client_session_sync),
+ * wave 3 sat idle for the entire wall-clock of wave 2 - the observation "top row
+ * with 5 in_progress, bottom rows both 0 in_progress" is precisely that wait.
+ *
+ * The FK dependencies still hold, they just resolve OVER RUNS instead of within
+ * one:
+ *   - receipt_sync seeds from purchase rows that already exist. A run started
+ *     while purchase_sync is still adding new purchases simply picks up the ones
+ *     that were already there; the newly created purchases become eligible on
+ *     the next run's seed.
+ *   - purchase_element_sync is the same shape.
+ *   - ghl_match_sync ideally reads phone/email that profile_sync fills in - a
+ *     first run may match fewer people, and a second run finishes the job. This
+ *     is the trade the parallel mode explicitly accepts.
+ *
+ * Nothing here CORRUPTS state on the first run; the queue is durable and the
+ * fresh-done window in enqueue keeps repeated invocations cheap. The daily
+ * sequential runFullSyncPass is still what the Vercel cron uses; this mode is
+ * for a local backfill that wants every worker busy at once.
+ */
+const FULL_SYNC_WAVES: ReadonlyArray<
+  ReadonlyArray<{
+    readonly job: string;
+    readonly run: (config: AppConfig, deps: SyncPassDeps) => Promise<SyncPassSummary>;
+  }>
+> = [
+  [
+    { job: 'login_type_sync', run: runLoginTypeSyncPass },
+    { job: 'client_list_sync', run: runClientListSyncPass },
+    { job: 'staff_sync', run: runStaffSyncPass },
+    { job: 'location_sync', run: runLocationSyncPass },
+    { job: 'shop_category_sync', run: runShopCategorySyncPass },
+    { job: 'promotion_sync', run: runPromotionSyncPass },
+    { job: 'service_category_sync', run: runServiceCategorySyncPass },
+    { job: 'purchase_sync', run: runPurchaseSyncPass },
+    { job: 'profile_sync', run: runProfileSyncPass },
+    { job: 'schedule_sync', run: runScheduleSyncPass },
+    { job: 'client_session_sync', run: runClientSessionSyncPass },
+    { job: 'receipt_sync', run: runReceiptSyncPass },
+    { job: 'purchase_element_sync', run: runPurchaseElementSyncPass },
+    { job: 'attendance_sync', run: runAttendanceSyncPass },
+    { job: 'ghl_match_sync', run: runGhlMatchSyncPass },
+    { job: 'service_sync', run: runServiceSyncPass },
+  ],
+];
+
+const DEFAULT_PARALLEL_PASS_BUDGET_MS = 90 * 60_000;
+
+/**
  * Runs every sync pass in dependency order within ONE global time budget, the
  * shape the daily cron calls for a full WL -> Supabase pull.
  *
@@ -1445,6 +1661,98 @@ async function closeRun(
 }
 
 /** How many of THIS job's items are claimable now - the measure of "work left". */
+/**
+ * Runs every sync pass IN PARALLEL WITHIN DEPENDENCY WAVES.
+ *
+ * The sequential runFullSyncPass is the daily cron's shape - safe, bounded to
+ * one Vercel invocation, and correct because every pass sees the previous
+ * pass's writes. That is exactly wrong for a backfill: with 517 clients and a
+ * few thousand purchases, each per-item pass takes tens of minutes on its own,
+ * and running them serially wastes wall clock the WL and Supabase throats can
+ * happily handle in parallel.
+ *
+ * WHAT THIS PROMISES
+ *   - Each pass's seed runs EXACTLY ONCE. The pass's own inner loop drains its
+ *     queue within the given budget; there is no outer restart, so a done item
+ *     is never re-enqueued during a run.
+ *   - Passes inside a wave run concurrently. Passes across waves are still
+ *     sequential, so FK dependencies (purchase -> receipt, session -> attendance)
+ *     hold.
+ *   - One shared WlTokenClient means the whole run authenticates once. Each
+ *     pass still gets its own WlClient so its runId and sync_run row are
+ *     distinct.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO
+ *   - No global time budget. The caller decides how long each pass may run;
+ *     defaults to 90 minutes per pass, which is far past what any observed
+ *     backfill has needed. Aimed at a local/CLI backfill, not a Vercel cron.
+ *   - No cross-wave overlap. A pass in wave 2 that has no consumer in wave 3
+ *     could in principle start alongside wave 3, but the code stays honest to
+ *     the FK graph rather than trying to prove micro-optimisations safe.
+ */
+export async function runFullSyncPassParallel(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<FullSyncSummary> {
+  const now = deps.now ?? (() => Date.now());
+  const passBudgetMs = deps.budgetMs ?? DEFAULT_PARALLEL_PASS_BUDGET_MS;
+  const startedAt = now();
+
+  const db = deps.db ?? new SupabaseClient(config.supabase);
+  const tokens = new WlTokenClient(config.wl, { env: config.env });
+
+  const passes: FullSyncPassResult[] = [];
+
+  for (const wave of FULL_SYNC_WAVES) {
+    // Every pass in this wave gets its own WlClient (distinct runId, shared
+    // token cache). An injected wl (tests) is reused: a fake client has no
+    // sync_run constraint to collide with.
+    const waveResults = await Promise.all(
+      wave.map(({ job, run }) => {
+        const wl =
+          deps.wl ??
+          new WlClient(config.wl, {
+            tokens,
+            env: config.env,
+            timeoutMs: config.runtime.httpTimeoutMs,
+            now,
+          });
+        return run(config, { ...deps, wl, db, budgetMs: passBudgetMs, now })
+          .then((summary): FullSyncPassResult => ({ job, ran: true, summary }))
+          .catch((error: unknown): FullSyncPassResult => ({
+            job,
+            ran: true,
+            summary: {
+              runId: 'error',
+              state: 'failed',
+              claimed: 0,
+              done: 0,
+              requeued: 0,
+              dead: 0,
+              itemsRemaining: -1,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          }));
+      }),
+    );
+    passes.push(...waveResults);
+  }
+
+  const ran = passes
+    .filter((p): p is FullSyncPassResult & { summary: SyncPassSummary } => p.summary !== null)
+    .map((p) => p.summary);
+  const anyFailed = ran.some((s) => s.state === 'failed');
+  const anyIncomplete = ran.some((s) => s.state === 'partial' || s.itemsRemaining > 0);
+  const state: FullSyncSummary['state'] = anyFailed ? 'failed' : anyIncomplete ? 'partial' : 'ok';
+
+  return {
+    runId: ran[0]?.runId ?? 'none',
+    state,
+    durationMs: now() - startedAt,
+    passes,
+  };
+}
+
 async function countEligible(db: SupabaseClient, now: string, workType: string): Promise<number> {
   // ponytail: caps the look at 1000; a queue past that is a scaling problem to
   // solve with a PostgREST count header, not a reason to block a pass today.

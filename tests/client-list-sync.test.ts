@@ -159,6 +159,15 @@ describe('the date window is mandatory and it excludes silently', () => {
 
     expect(filter.o_member_status).toEqual([3]);
   });
+
+  // Measured 26 Aug 2026: [] returns all 1,285 clients, [3] returns 517. The
+  // empty filter is how the pass asks for every status.
+  it('sends an empty member-status filter to mean every status', () => {
+    const filter = buildReportBody(K_BUSINESS, { memberStatuses: [] }, 0, false)
+      .json_filter as Record<string, unknown>;
+
+    expect(filter.o_member_status).toEqual([]);
+  });
 });
 
 describe('paging walks until a short page', () => {
@@ -292,6 +301,7 @@ describe('writeClientList stores the payload before the people', () => {
       page,
       fields: FIELDS,
       syncedAt: 'now',
+      activatedUids: new Set(['33793232']),
     });
 
     expect(h.calls[0]).toMatchObject({ op: 'insert', table: 'raw_wl' });
@@ -309,6 +319,7 @@ describe('writeClientList stores the payload before the people', () => {
       page,
       fields: FIELDS,
       syncedAt: 'now',
+      activatedUids: new Set(['33793232']),
     });
 
     const link = h.calls.find((c) => c.table === 'raw_link');
@@ -323,10 +334,60 @@ describe('writeClientList stores the payload before the people', () => {
       page: { ...(page as object), rows: [] } as never,
       fields: FIELDS,
       syncedAt: 'now',
+      activatedUids: new Set(),
     });
 
     expect(h.calls.filter((c) => c.table === 'person')).toEqual([]);
     expect(h.calls.filter((c) => c.table === 'raw_link')).toEqual([]);
+  });
+});
+
+describe('is_active is tagged from the activated set, not the row', () => {
+  function db() {
+    const upserts: Array<Array<Record<string, unknown>>> = [];
+    return {
+      upserts,
+      db: {
+        insert: vi.fn(() => Promise.resolve([{ id: 'raw-1' }])),
+        upsert: vi.fn((_t: string, rows: unknown[]) => {
+          upserts.push(rows as Array<Record<string, unknown>>);
+          return Promise.resolve(rows);
+        }),
+      } as unknown as SupabaseClient,
+    };
+  }
+  const page = {
+    fields: FIELDS,
+    rows: [ROW],
+    response: { body: {}, traceId: 't', kLog: null, httpStatus: 200, latencyMs: 1 },
+  } as never;
+
+  it('marks a client in the activated set is_active true', async () => {
+    const h = db();
+    await writeClientList(h.db, {
+      kBusiness: K_BUSINESS,
+      runId: 'r1',
+      page,
+      fields: FIELDS,
+      syncedAt: 'now',
+      activatedUids: new Set(['33793232']),
+    });
+    expect(h.upserts[0]?.[0]?.is_active).toBe(true);
+  });
+
+  // The row's own type says "Staff Client Profile" and nothing about activation;
+  // absence from the activated set is the ONLY thing that makes it false.
+  it('marks a client absent from the activated set is_active false', async () => {
+    const h = db();
+    await writeClientList(h.db, {
+      kBusiness: K_BUSINESS,
+      runId: 'r1',
+      page,
+      fields: FIELDS,
+      syncedAt: 'now',
+      activatedUids: new Set(),
+    });
+    expect(h.upserts[0]?.[0]?.is_active).toBe(false);
   });
 });
 
@@ -400,6 +461,7 @@ describe('writeClientList batches sparse people rather than failing', () => {
       },
       fields: FIELDS,
       syncedAt: 'now',
+      activatedUids: new Set(),
     });
 
     expect(upserts).toHaveLength(2);

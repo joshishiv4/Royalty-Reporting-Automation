@@ -218,4 +218,164 @@ describe('enqueue', () => {
     expect(added).toBe(1);
     expect(calls.some((c) => c.op === 'insert')).toBe(true);
   });
+
+  // Regression: the earlier draft dedupe-queried WITHOUT a work_type filter,
+  // and did not paginate. Once the queue held more than PostgREST's 1000-row
+  // cap of active items (measured 1,301 pending in receipt_sync alone during a
+  // heavy backfill), the `seen` set silently missed rows and the follow-up
+  // insert hit the (work_type, target_key, k_business WHERE active) unique
+  // index. Every affected pass failed its whole seed with a SupabaseError.
+  // The check must be BOTH scoped and paginated: scoping cuts noise, and
+  // pagination is what makes it complete no matter how deep the queue is.
+  it('scopes the active-item lookup by work_type and k_business', async () => {
+    const { db, calls } = fakeDb({ select: () => [] });
+    await enqueue(db, [
+      { work_type: 'purchase_list', target_key: 'uid-1', k_business: '111111' },
+      { work_type: 'purchase_list', target_key: 'uid-2', k_business: '111111' },
+    ]);
+    const selectCall = calls.find((c) => c.op === 'select');
+    expect(selectCall).toBeDefined();
+    const query = selectCall!.query ?? '';
+    expect(query).toContain('work_type=in.(purchase_list)');
+    expect(query).toContain('k_business=in.(111111)');
+    expect(query).toContain('state=in.(pending,in_progress)');
+  });
+
+  it('pages past the PostgREST 1000-row cap so a deep queue does not slip rows', async () => {
+    // A first page that fills the limit means "there might be more"; enqueue
+    // must ask for a second page. Return a full page once, empty page after.
+    let pages = 0;
+    const firstPage = Array.from({ length: 1000 }, (_, i) => ({
+      work_type: 'purchase_receipt',
+      target_key: `existing-${String(i)}`,
+      k_business: '111111',
+    }));
+    const { db, calls } = fakeDb({
+      select: (_table, query) => {
+        pages += 1;
+        // The offset moves forward on the second call; on the third call the
+        // second batch has been requested and we return empty.
+        if (query.includes('offset=0')) return firstPage;
+        return [];
+      },
+    });
+    // The item we try to enqueue is one of the "existing" ones - it must be
+    // deduped away by the SECOND page's contribution to `seen`, not skipped
+    // because the first page was truncated.
+    const added = await enqueue(db, [
+      { work_type: 'purchase_receipt', target_key: 'existing-0', k_business: '111111' },
+    ]);
+    expect(added).toBe(0);
+    expect(pages).toBeGreaterThanOrEqual(2);
+    // Both offsets must actually be requested.
+    expect(calls.some((c) => c.op === 'select' && (c.query ?? '').includes('offset=0'))).toBe(true);
+    expect(calls.some((c) => c.op === 'select' && (c.query ?? '').includes('offset=1000'))).toBe(
+      true,
+    );
+    expect(calls.some((c) => c.op === 'insert')).toBe(false);
+  });
+
+  // Regression: an earlier draft only deduped against pending/in_progress rows,
+  // so a target with a recent 'done' row was re-enqueued on every sync run.
+  // Measured live: seven full-sync invocations in nine hours grew purchase_list
+  // from 517 rows to 3,737, and client_visits from 517 to 5,307. The fresh-done
+  // window makes a same-day re-invocation a no-op instead of a multiplier.
+  it('skips a target with a recent done row within the fresh-done window', async () => {
+    const NOW_MS = Date.parse('2026-08-27T10:00:00Z');
+    const RECENT = new Date(NOW_MS - 60 * 60 * 1000).toISOString(); // 1h ago
+    const { db, calls } = fakeDb({
+      select: (_table, query) => {
+        // active-item lookup: nothing pending or in-progress
+        if (query.includes('state=in.(pending,in_progress)')) return [];
+        // fresh-done lookup: one recent done row for the target
+        if (query.includes('state=eq.done') && query.includes('updated_at=gte.')) {
+          return [
+            {
+              work_type: 'purchase_list',
+              target_key: 'uid-1',
+              k_business: '111111',
+              updated_at: RECENT,
+            },
+          ];
+        }
+        return [];
+      },
+    });
+    const added = await enqueue(
+      db,
+      [{ work_type: 'purchase_list', target_key: 'uid-1', k_business: '111111' }],
+      undefined,
+      { now: () => NOW_MS },
+    );
+    expect(added).toBe(0);
+    expect(calls.some((c) => c.op === 'insert')).toBe(false);
+  });
+
+  it('re-enqueues a target whose only done row is OLDER than the window', async () => {
+    const NOW_MS = Date.parse('2026-08-27T10:00:00Z');
+    const { db, calls } = fakeDb({
+      // Both dedupe lookups return nothing - the old done row is not in the
+      // window, and there is no active row either.
+      select: () => [],
+    });
+    const added = await enqueue(
+      db,
+      [{ work_type: 'purchase_list', target_key: 'uid-1', k_business: '111111' }],
+      undefined,
+      { now: () => NOW_MS },
+    );
+    expect(added).toBe(1);
+    expect(calls.some((c) => c.op === 'insert')).toBe(true);
+  });
+
+  it('honours forceReseed even when the target has a fresh done row', async () => {
+    const NOW_MS = Date.parse('2026-08-27T10:00:00Z');
+    const RECENT = new Date(NOW_MS - 60 * 60 * 1000).toISOString();
+    let freshDoneQueried = false;
+    const { db, calls } = fakeDb({
+      select: (_table, query) => {
+        if (query.includes('state=eq.done')) {
+          freshDoneQueried = true;
+          return [
+            {
+              work_type: 'ghl_contact_match',
+              target_key: 'uid-1',
+              k_business: '111111',
+              updated_at: RECENT,
+            },
+          ];
+        }
+        return [];
+      },
+    });
+    const added = await enqueue(
+      db,
+      [{ work_type: 'ghl_contact_match', target_key: 'uid-1', k_business: '111111' }],
+      undefined,
+      { now: () => NOW_MS, forceReseed: true },
+    );
+    // forceReseed skips the fresh-done query entirely - the retry MUST override
+    // the "already synced" filter, otherwise a human-initiated re-check silently
+    // does nothing for anyone matched within the last day.
+    expect(freshDoneQueried).toBe(false);
+    expect(added).toBe(1);
+    expect(calls.some((c) => c.op === 'insert')).toBe(true);
+  });
+
+  it('scopes the fresh-done lookup by work_type and k_business, same as active', async () => {
+    const NOW_MS = Date.parse('2026-08-27T10:00:00Z');
+    const { db, calls } = fakeDb({ select: () => [] });
+    await enqueue(
+      db,
+      [{ work_type: 'purchase_list', target_key: 'uid-1', k_business: '111111' }],
+      undefined,
+      { now: () => NOW_MS },
+    );
+    const done = calls.find((c) => c.op === 'select' && (c.query ?? '').includes('state=eq.done'));
+    expect(done).toBeDefined();
+    const q = done!.query ?? '';
+    expect(q).toContain('work_type=in.(purchase_list)');
+    expect(q).toContain('k_business=in.(111111)');
+    expect(q).toContain('updated_at=gte.');
+  });
 });

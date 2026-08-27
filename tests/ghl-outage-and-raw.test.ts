@@ -197,9 +197,11 @@ describe('every GoHighLevel response is kept', () => {
 
   /**
    * The whole body, not the typed contacts. mapContact drops any contact with
-   * no id and keeps only six named fields; when the agreed field list arrives
-   * (the open point on this ticket) it will be parsed out of these payloads
-   * rather than re-fetched.
+   * no id and keeps only six named fields.
+   *
+   * This is what made the enrichment cheap when it landed: migration 0026
+   * backfilled 317 clients out of these stored payloads with no call to
+   * GoHighLevel. Keeping the body is what preserved that choice.
    */
   it('keeps the response verbatim, including fields nothing reads yet', async () => {
     const h = harness({ searchContacts: () => Promise.resolve(response()) });

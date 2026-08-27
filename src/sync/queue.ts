@@ -128,23 +128,121 @@ export function outcomeFromGhlError(
 }
 
 /**
- * Adds work, skipping targets that already have an active item.
+ * How recently a 'done' row of the same target counts as "already synced",
+ * measured in ms. A target completed within this window is skipped by enqueue.
  *
- * The partial unique index (work_type, target_key, k_business WHERE active) is the
- * real backstop; this pre-filter keeps a normal enqueue from tripping it.
+ * 24 hours is the intended re-fetch cadence: a daily cron catches the day's
+ * changes and nothing more. Longer would delay real updates; shorter would let
+ * repeated invocations within a day re-fetch the same target - the exact waste
+ * observed live (7 sync runs in ~9 hours grew the queue from ~2k rows to ~28k).
  */
+export const DEFAULT_FRESH_DONE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Adds work, skipping targets already synced.
+ *
+ * The partial unique index (work_type, target_key, k_business WHERE active) is
+ * the real backstop; this pre-filter keeps a normal enqueue from tripping it,
+ * AND from wastefully re-seeding a target that was successfully fetched
+ * recently.
+ *
+ * SCOPED BY WORK_TYPE AND BUSINESS. An earlier draft read every active row in
+ * the queue to build `seen`. PostgREST caps a select at 1000 rows by default,
+ * and once the queue holds more active items than that across all work_types
+ * (measured: 2,755 during a heavy day's four heavy passes), the check silently
+ * missed rows and the follow-up insert tripped the unique index on the misses.
+ * A pass would then fail its whole seed with a SupabaseError and drain nothing.
+ *
+ * Every call passes items of ONE work_type (per pass.ts), so scoping the check
+ * to that work_type is both cheaper and correct - it never needs to see other
+ * queues to answer "does this target already exist for THIS work_type". The
+ * k_business scope matters for the same reason: the unique index includes it,
+ * and two businesses' targets share a key namespace.
+ *
+ * DEDUPS AGAINST RECENT DONE ROWS, TOO. The unique index does NOT cover 'done'
+ * (the partial predicate excludes it), so a target with only a done row could
+ * still be re-inserted and would sit at the end of the queue as another
+ * pending row - waste, not a crash. Measured live: after seven full-sync runs
+ * fired in nine hours, purchase_list grew from 517 rows to 3,737, and
+ * client_visits from 517 to 5,307. Skipping targets last completed inside a
+ * fresh-done window keeps the daily cron behaviour honest (one refresh per
+ * day) while making repeated same-day invocations a no-op instead of a
+ * multiplier.
+ *
+ * FORCE-RESEED WHEN THE CALLER INSISTS. Set `opts.forceReseed = true` when the
+ * caller has explicitly asked for a refresh regardless of freshness - the GHL
+ * matcher's `retryUnresolved` path is exactly this case. The unique-index
+ * check on active items is preserved; only the fresh-done skip is dropped.
+ */
+export interface EnqueueOptions {
+  /**
+   * Skip targets with a 'done' row updated within this many ms. Defaults to
+   * DEFAULT_FRESH_DONE_WINDOW_MS (24 hours). Set to 0 to disable the check
+   * entirely - equivalent to the old always-reseed behaviour.
+   */
+  readonly freshDoneWindowMs?: number;
+  /** Ignore the fresh-done window - useful for explicit human-initiated refreshes. */
+  readonly forceReseed?: boolean;
+  /**
+   * Reference time, used to compute the fresh-done cutoff. Defaults to
+   * Date.now(). Injectable so tests do not depend on wall time.
+   */
+  readonly now?: () => number;
+}
+
 export async function enqueue(
   db: SupabaseClient,
   items: ReadonlyArray<{ work_type: string; target_key: string; k_business: string }>,
   nextAttemptAt?: string,
+  opts: EnqueueOptions = {},
 ): Promise<number> {
   if (items.length === 0) return 0;
-  // ponytail: selects all active targets; scope by work_type if the queue grows.
-  const active = await db.select<{ work_type: string; target_key: string; k_business: string }>(
-    'sync_queue',
-    'state=in.(pending,in_progress)&select=work_type,target_key,k_business',
-  );
-  const seen = new Set(active.map(targetKey));
+  const workTypes = [...new Set(items.map((i) => i.work_type))];
+  const businesses = [...new Set(items.map((i) => i.k_business))];
+
+  const seen = new Set<string>();
+
+  // PAGINATED. A single work_type can hold more than PostgREST's 1000-row cap
+  // during a heavy backfill (receipt_sync sat at 1,301 active on live dev, and
+  // grew past that during the run). If the dedupe read is capped, the misses
+  // fall into the insert below and trip the unique index. Loop until a short
+  // page comes back, so the check is complete no matter how deep the queue is.
+  const PAGE = 1000;
+  const scope = `work_type=in.(${workTypes.join(',')})&k_business=in.(${businesses.join(',')})`;
+
+  for (let offset = 0; ; offset += PAGE) {
+    const page = await db.select<{ work_type: string; target_key: string; k_business: string }>(
+      'sync_queue',
+      `${scope}&state=in.(pending,in_progress)&order=id.asc&limit=${PAGE}&offset=${offset}` +
+        `&select=work_type,target_key,k_business`,
+    );
+    for (const row of page) seen.add(targetKey(row));
+    if (page.length < PAGE) break;
+  }
+
+  // Fresh-done window: a target completed inside it is treated as already
+  // covered and NOT re-enqueued. Skipped entirely on an explicit force-reseed.
+  const forceReseed = opts.forceReseed === true;
+  const windowMs = opts.freshDoneWindowMs ?? DEFAULT_FRESH_DONE_WINDOW_MS;
+  if (!forceReseed && windowMs > 0) {
+    const now = opts.now?.() ?? Date.now();
+    const cutoff = new Date(now - windowMs).toISOString();
+    for (let offset = 0; ; offset += PAGE) {
+      const page = await db.select<{
+        work_type: string;
+        target_key: string;
+        k_business: string;
+      }>(
+        'sync_queue',
+        `${scope}&state=eq.done&updated_at=gte.${cutoff}` +
+          `&order=id.asc&limit=${PAGE}&offset=${offset}` +
+          `&select=work_type,target_key,k_business`,
+      );
+      for (const row of page) seen.add(targetKey(row));
+      if (page.length < PAGE) break;
+    }
+  }
+
   const fresh = items.filter((i) => !seen.has(targetKey(i)));
   if (fresh.length > 0) {
     // Set next_attempt_at from the caller's clock, not the DB default. The claim

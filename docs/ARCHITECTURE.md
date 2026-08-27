@@ -88,7 +88,7 @@ correctly does not start.
 | Private appointments, per client (schedule/page/list + element → session, staff, attendance) | [`src/sync/client-sessions.ts`](../src/sync/client-sessions.ts) |
 | Service catalogue + categories (appointment/book/service/{list,category} → service, service_category; marks is_resolved) | [`src/sync/services.ts`](../src/sync/services.ts) |
 | The durable sync_queue loop (claim, settle, requeue, dead-letter) | [`src/sync/queue.ts`](../src/sync/queue.ts) |
-| One bounded sync pass per job, and `runFullSyncPass` (every pass in FK order, one token, one budget) | [`src/sync/pass.ts`](../src/sync/pass.ts) |
+| One bounded sync pass per job, `runFullSyncPass` (sequential FK order, one token, one budget), and `runFullSyncPassParallel` (three dependency waves, seed-once-per-pass, one shared token — the local backfill shape) | [`src/sync/pass.ts`](../src/sync/pass.ts) |
 | Per-job lifecycle + clean-completion watermark (sync_job_state) | [`src/sync/job-state.ts`](../src/sync/job-state.ts) |
 
 Four things about this client are worth knowing before changing it:
@@ -121,6 +121,7 @@ not most endpoints — see [WL-API-NOTES.md](WL-API-NOTES.md).
 | URL building and the endpoint list | [`src/ghl/endpoint.ts`](../src/ghl/endpoint.ts) |
 | Backoff timing (mirrors WL's shape) | [`src/ghl/retry.ts`](../src/ghl/retry.ts) |
 | Auth reachability probe | [`src/ghl/health.ts`](../src/ghl/health.ts) |
+| Projecting a fetched contact into the fields and tags `ghl_contact` stores — pure, reaches nothing | [`src/ghl/snapshot.ts`](../src/ghl/snapshot.ts) |
 
 Three things about this client are worth knowing before changing it:
 
@@ -141,7 +142,7 @@ envelope inside" trap to guard against.
 
 | Question | File |
 |---|---|
-| CLI commands — `healthcheck`, `sync:wellness`, `config:check`, `config:show` | [`src/cli/main.ts`](../src/cli/main.ts) |
+| CLI commands — `healthcheck`, `sync:wellness`, `sync:full-parallel`, `config:check`, `config:show` | [`src/cli/main.ts`](../src/cli/main.ts) |
 | Everything the package exports | [`src/index.ts`](../src/index.ts) |
 | Vercel health route | [`api/health.ts`](../api/health.ts) |
 | Vercel sync route — staff only, targeted | [`api/wellness-sync.ts`](../api/wellness-sync.ts) |
@@ -213,6 +214,9 @@ to re-run.
 | `0022` | `person.ghl_match_attempted_at` — separates "never searched" from "searched, not found" |
 | `0023` | `person.ghl_unresolved_since` — a clock retries do not reset; the 48-hour GHL alert; `ghl_contact_id` documented as deliberately non-unique |
 | `0024` | `raw_ghl.person_uid` — which client a stored GoHighLevel response was fetched for, so "stored alongside" is a link and not a grep |
+| `0025` | `sync_queue_progress` and `ghl_match_progress` views — per-stage "how many done, how many pending" queryable from SQL editor |
+| `0026` | `ghl_contact` + `ghl_custom_field` — GoHighLevel fields and tags keyed by **contact**, not person; the agreed field list as data (`is_reported`) rather than columns; `client_ghl` and `ghl_enrichment_missing` views; two new health issues; backfills 317 clients from stored `raw_ghl` payloads with no API call |
+| `0027` | `person.is_active` — whether WL lists a client as activated (report `o_member_status` 3). A boolean, because WL exposes no per-row status and only that one filter restricts; null until the client-list report has seen them. Not derived from `text_login_type` — type is not status |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs, plus case tables for rules that live in SQL. They are not migrations and

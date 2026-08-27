@@ -6,16 +6,20 @@ import { createLogger } from '../logging/logger.js';
 import { credentialValues, describeConfig, redact } from '../logging/redact.js';
 import { MissingSecretsError, SecretsProviderError } from '../secrets/types.js';
 import { checkAll } from '../health/index.js';
+import { runFullSyncPassParallel } from '../sync/pass.js';
 import { runWellnessSync } from '../wl/sync.js';
 
 const USAGE = `royalty-sync <command>
 
 Commands:
-  healthcheck     Resolve config, then probe every dependency. Exit 1 on failure.
-  sync:wellness   Authenticate against WellnessLiving, then run one read-only pass.
-  config:check    Resolve and validate config only. Makes no network calls.
-  config:show     Print the resolved config with credentials fingerprinted.
-  help            Show this message.
+  healthcheck        Resolve config, then probe every dependency. Exit 1 on failure.
+  sync:wellness      Authenticate against WellnessLiving, then run one read-only pass.
+  sync:full-parallel Run every sync pass in dependency waves, in parallel within each
+                     wave. Aimed at a local backfill: each pass seeds ONCE and drains
+                     within its own budget (default 90 min per pass).
+  config:check       Resolve and validate config only. Makes no network calls.
+  config:show        Print the resolved config with credentials fingerprinted.
+  help               Show this message.
 
 Environment:
   APP_ENV           dev | prod                       (required)
@@ -31,7 +35,11 @@ async function main(argv: readonly string[]): Promise<number> {
     return 0;
   }
 
-  if (!['healthcheck', 'config:check', 'config:show', 'sync:wellness'].includes(command)) {
+  if (
+    !['healthcheck', 'config:check', 'config:show', 'sync:wellness', 'sync:full-parallel'].includes(
+      command,
+    )
+  ) {
     console.error(`Unknown command: ${command}\n\n${USAGE}`);
     return 2;
   }
@@ -90,6 +98,37 @@ async function main(argv: readonly string[]): Promise<number> {
       }
       console.log(JSON.stringify(summary, null, 2));
       return summary.ok ? 0 : 1;
+    }
+
+    case 'sync:full-parallel': {
+      logger.info('parallel full sync starting', { env: config.env });
+      const summary = await runFullSyncPassParallel(config);
+      logger.info('parallel full sync finished', {
+        runId: summary.runId,
+        state: summary.state,
+        durationMs: summary.durationMs,
+      });
+      for (const p of summary.passes) {
+        if (!p.ran || p.summary === null) {
+          logger.warn('pass skipped', { job: p.job });
+          continue;
+        }
+        const s = p.summary;
+        const fields = {
+          job: p.job,
+          state: s.state,
+          claimed: s.claimed,
+          done: s.done,
+          requeued: s.requeued,
+          dead: s.dead,
+          itemsRemaining: s.itemsRemaining,
+        };
+        if (s.state === 'ok') logger.info('pass ok', fields);
+        else if (s.state === 'partial') logger.warn('pass partial', fields);
+        else logger.error('pass failed', { ...fields, error: s.error ?? 'unknown' });
+      }
+      console.log(JSON.stringify(summary, null, 2));
+      return summary.state === 'failed' ? 1 : 0;
     }
 
     case 'healthcheck': {

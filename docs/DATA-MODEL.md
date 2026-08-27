@@ -1,8 +1,9 @@
 # Data model
 
-18 tables and 6 views on Supabase. Every design decision below came from calling
-the live API, and the evidence is quoted so a future reader can check it rather
-than trust it.
+26 tables and 12 views on Supabase — counted from a database with every migration
+applied, 27 Aug 2026, because the number here had drifted six tables behind. Every
+design decision below came from calling the live API, and the evidence is quoted so
+a future reader can check it rather than trust it.
 
 Structure and module map: [ARCHITECTURE.md](ARCHITECTURE.md).
 API findings behind these choices: [WL-API-NOTES.md](WL-API-NOTES.md).
@@ -14,10 +15,14 @@ people      person, lead                     views: client, teacher
 money       location, service, purchase, purchase_item,
             purchase_payment, purchase_account_credit
 schedule    session, session_staff, attendance
+                   view: session_outcome
 staff pay   staff_pay_rate, staff_service
-reference   promotion, shop_category, service_category
+reference   promotion, shop_category, service_category, login_type
                    view: unresolved_service
+ghl         ghl_contact, ghl_custom_field
+                   views: client_ghl, ghl_enrichment_missing
 control     sync_queue, sync_job_state, sync_run, sync_conflict
+                   views: sync_queue_progress, ghl_match_progress
 raw         raw_wl, raw_ghl, raw_link
 health      views: data_health, data_health_issue,
                    customer_journey, enrollment_margin
@@ -87,6 +92,25 @@ Observed 9 digits for one person and `""` for another, and it is only returned b
 `/v1/login/search/staff-app/list`, never by `/v1/user`. Nullable, and unique only
 where present.
 
+### `is_active` is the only status WL will give us (0027)
+
+The database stores **every** client — 1,285 across all statuses, not just the 517
+the portal calls "Activated" — because a cancelled client a purchase still points
+at has to resolve. `is_active` says which of them WL currently activates.
+
+It is a **boolean, and derived from a set, not read from a field**. The client-list
+report row carries a client *type* label (`text_client_type` → `text_login_type`)
+but **no status column**. And the report's `o_member_status` filter distinguishes
+exactly one value: measured 26 Aug 2026, `[3]` returns the 517 activated, while
+`[1]` and `[2]` are ignored and return all 1,285. So "activated" is the only status
+the API can actually tell us — `is_active` is set by whether a uid appears in the
+`[3]` result, and everyone else is false.
+
+**Type is not status.** "Inactive Client" and "SDC Client" both appear among the
+activated 517 *and* among the deactivated remainder, so deriving activation from the
+type label would misclassify thousands. Null means the person reached the table as a
+purchase-only stub and the client-list report has not yet covered them.
+
 ### `lead`
 
 A lead has no `uid` — it is a form submission, not an account. When it converts,
@@ -135,6 +159,57 @@ record stays complete and fully usable with the link empty, and **nothing is
 created in GoHighLevel to fill the gap** — which is why `matched` always means a
 contact that already existed. `ambiguous` is never auto-resolved: choosing
 between candidates would put one person's royalties on another person's record.
+
+### The GoHighLevel fields and tags are a table, not columns (0026)
+
+`ghl_contact` holds one row **per contact**, and `person` joins it through the
+`ghl_contact_id` it already had. No new column on `person`, and no surrogate key.
+
+Three measured reasons, all of which point the same way:
+
+| | |
+|---|---|
+| `ghl_contact_id` is deliberately non-unique | **307 distinct contacts across 317 matched clients.** A family on one phone shares a contact, so the fields belong to the contact. On `person` the same fact would be stored in N rows, and a partial run can leave them disagreeing — the failure `is_staff` was rejected for |
+| Typed tables key on the source system's id | `uid`, `k_purchase`, `k_service`, `k_login_type` are all `text`. A `uuid` PK appears only where the source gives no key: `lead`, `raw_wl`, `raw_ghl`, `raw_link`, `sync_*` |
+| A surrogate key would hide a re-key | With the natural key, a re-issued GoHighLevel id shows up as a new row and the old one ages visibly. A `uuid` would keep pointing at a contact that no longer exists |
+
+**The agreed field list is data, not schema — and that is what unblocked M06.**
+The ticket sat open because "the agreed fields" was being modelled as columns, so
+nothing could be built before the list arrived and everything would need
+migrating again if it changed. Instead `ghl_contact.fields` keeps **every**
+custom field the contact carried, and `ghl_custom_field.is_reported` says which
+may be shown. `client_ghl` projects only those. Confirming the list is an
+`UPDATE`; so is changing it.
+
+`is_reported` defaults to false. Nothing reaches a client record until somebody
+says it should — a half-right field on a client record gets believed.
+
+**Field names are unavailable, not omitted.** The contact response carries field
+**ids** only; `GET /locations/{id}/customFields` maps them to names and answers
+**401** for a contacts-scope Private Integration Token. So
+`ghl_custom_field.name` is nullable and arrives from the client or from a widened
+token — never from a guess. Measured 26 Aug 2026: exactly three field ids exist
+in this location's data, and 254 of 325 contacts carry an empty `customFields`
+array.
+
+**Tags replace, they do not merge.** 44 distinct tags observed, 1–11 per contact.
+Many are operational state GoHighLevel retires — `mal inbox`, `nl stage 2`,
+`power dialer clean up`. Merging would keep a tag after GoHighLevel removed it,
+with nothing able to take it off again. Every fetch is kept in `raw_ghl`, so
+replacing is reversible rather than lossy.
+
+**Fetched once, never refreshed.** A client is searched exactly once; the
+enrichment is parsed out of that same response, so it costs no extra API call.
+`fetched_at` is therefore the date of the match, not of the data, and a tag
+changed in GoHighLevel afterwards is not reflected. `stale_ghl_contact` reports
+that age past `ghl_stale_after()` (30 days) — deliberately, and knowing it will
+not clear while nothing refreshes. It states an age for a reader to weigh, not a
+fault to chase. `missing_ghl_enrichment` is the companion that **does** clear:
+linked with nothing stored, closable by re-parsing `raw_ghl` with no API call.
+
+**RLS on, no policy.** The tag set includes `disqualified lead`, `bad email` and
+`no phone number` — the studio's notes about a client, not the client's to read.
+Reporting runs on the service role.
 
 ## Money
 
