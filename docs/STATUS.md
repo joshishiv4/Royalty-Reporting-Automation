@@ -193,13 +193,46 @@ sessions is the schema doing exactly what M08 asked for: *"sessions not yet
 reviewed by the studio are stored and visible, but never counted as attended"*.
 Nothing is broken here; the pipeline is waiting on a human.
 
-Outcome distribution after the backfill: 4,396 `upcoming`, 29 `unknown`,
-3 `attended`, 3 `awaiting_staff`.
+### Then appointment attendance was read for the first time — 27 Aug 2026
 
-**Those 29 are worth a look.** They are past sessions WellnessLiving still reports
-as BOOK — the session ran and no outcome was ever recorded. `visit_awaiting_staff`
-misses them because WL has not marked them PENDING either, so they read as
-`unknown` in a column nobody watches. 0030 adds `visit_unresolved_past` for them.
+The backfill above left 4,425 BOOK against 3 ATTEND, and 29 past sessions reading
+`unknown`. That was not WellnessLiving being vague: `/v1/login/attendance/list`
+had never been called for an appointment, because sending the appointment key as
+`k_class_period` returns `id-nx` and that was recorded as "the endpoint is
+class-only". It is `k_appointment`. The pass now picks the parameter from
+`session_kind`, and the queue drained **4,441 done, 0 requeued, 0 dead** — against
+681 dead out of 1,018 before.
+
+| `attendance.id_visit` | after backfill | after appointment sync |
+|---|---|---|
+| 1 BOOK | 4,425 | 4,371 |
+| 3 ATTEND | 3 | **19** |
+| **6 CANCEL** | **0** | **26** |
+| 7 PENDING | 3 | 15 |
+
+| `session_outcome.outcome` | after backfill | after appointment sync |
+|---|---|---|
+| `upcoming` | 4,396 | 4,371 |
+| **`unknown`** | **29** | **0** |
+| `attended` | 3 | 19 |
+| **`client_cancelled`** | **0** | **26** |
+| `awaiting_staff` | 3 | 15 |
+
+Two things to take from this.
+
+**The 29 `unknown` rows were not ambiguous data — they were unread data.** Every
+one resolved into a real outcome. `visit_unresolved_past` (0030) still earns its
+place, but it now reports 0 rather than 29.
+
+**Client cancellation is in the database for the first time — 26 of them.** This
+is the M08 blocker that read "client cancellation is not reported anywhere in the
+API" closed with evidence: WL reports it as `id_visit` 6 (CANCEL, in time) and 4
+(PENALTY, too late). What is still not published is a cancellation *timestamp* on
+the endpoints this project calls — see WL-API-NOTES.md for the two that do carry
+one and why neither is wired up yet.
+
+All 19 attended visits are already past, so `is_reviewed` remains the only thing
+between them and being countable.
 
 ### Coverage, measured 27 Aug 2026
 
