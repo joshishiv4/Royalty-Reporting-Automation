@@ -44,6 +44,7 @@ const config = {
   env: 'dev',
   wl: { kBusiness: K_BUSINESS, clientId: '', clientSecret: '', host: '', authHost: '', region: 0 },
   sync: { historyStart: '1980-01-01', dailyLookbackDays: 2 },
+  runtime: { maxConcurrency: 5, httpTimeoutMs: 30000 },
 } as unknown as AppConfig;
 
 /** A harness that runs the pass over exactly one queued session. */

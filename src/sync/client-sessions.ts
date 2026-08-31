@@ -360,3 +360,195 @@ function readInt(value: unknown): number | null {
 function wlBool(value: unknown): boolean {
   return value === true || value === 1 || value === '1';
 }
+
+/** One visit's detail read, ready to be written with the rest of its client's. */
+export interface VisitDetail {
+  readonly kVisit: string;
+  readonly response: WlResponse<unknown>;
+  /** New fetch count for this session (PRD 7.3). */
+  readonly detailFetchCount: number;
+}
+
+export interface WriteClientSessionsInput {
+  readonly kBusiness: string;
+  /** The client whose list these came from - they are the attendee on each. */
+  readonly uid: string;
+  readonly runId: string;
+  readonly fetchedAt: string;
+  readonly details: readonly VisitDetail[];
+  /** Keys already stubbed this pass. See writeClientSession. */
+  readonly stubbed?: Set<string>;
+}
+
+export interface WriteClientSessionsResult {
+  readonly written: number;
+  readonly unparseable: number;
+}
+
+/**
+ * Writes EVERY visit of one client in a handful of round trips.
+ *
+ * WHY THIS EXISTS. `writeClientSession` costs seven SEQUENTIAL Supabase round
+ * trips per visit - raw_wl, location, service, session, raw_link, session_staff,
+ * attendance. Measured on the 1980 backfill at roughly 460ms each, that is ~3.7s
+ * of latency per visit, and the whole pass ran at 2.18 visits/sec: ~3.8 hours for
+ * the studio's ~30,000 remaining historical visits. WellnessLiving was never the
+ * bottleneck; waiting on the database one row at a time was.
+ *
+ * A client with 82 visits used to cost 574 round trips. It now costs about seven,
+ * because the work is the same shape for every visit and Postgres is perfectly
+ * happy to take them all at once.
+ *
+ * ORDER IS STILL THE FK ORDER - stubs, then sessions, then the rows that point at
+ * them. Batching changes how many statements that takes, not what may exist first.
+ *
+ * RAW FIDELITY IS NOT TRADED AWAY. Every payload is still stored, one raw_wl row
+ * each, and still linked to the rows it produced. The insert returns the new ids
+ * in the order they were sent, which is what makes the link possible in bulk - and
+ * if the count ever came back different this REFUSES rather than linking payloads
+ * to the wrong records, because a silently mis-attributed payload is worse than a
+ * failed pass.
+ */
+export async function writeClientSessions(
+  db: SupabaseClient,
+  input: WriteClientSessionsInput,
+): Promise<WriteClientSessionsResult> {
+  if (input.details.length === 0) return { written: 0, unparseable: 0 };
+
+  const parsedAll = input.details.map((d) => ({
+    detail: d,
+    parsed: parseVisitElement(d.response.body, input.kBusiness),
+  }));
+  const usable = parsedAll.filter(
+    (p): p is { detail: VisitDetail; parsed: ParsedVisit } => p.parsed !== null,
+  );
+  const unparseable = parsedAll.length - usable.length;
+
+  // 1. Every payload, verbatim, in one insert. Unparseable ones are stored too:
+  // the payload is the evidence for why it could not be read.
+  const rawIds = await db.insert<{ id: string }>(
+    'raw_wl',
+    parsedAll.map((p) => ({
+      k_business: input.kBusiness,
+      source_endpoint: '/v1/schedule/page/element',
+      target_kind: 'record',
+      target_key: p.detail.kVisit,
+      payload: p.detail.response.body,
+      http_status: p.detail.response.httpStatus,
+      wl_status: 'ok',
+      trace_id: p.detail.response.traceId,
+      k_log: p.detail.response.kLog,
+      run_id: input.runId,
+      latency_ms: p.detail.response.latencyMs,
+    })),
+  );
+  if (rawIds.length !== parsedAll.length) {
+    throw new Error(
+      `raw_wl returned ${String(rawIds.length)} ids for ${String(parsedAll.length)} payloads - ` +
+        `refusing to link payloads to records by guesswork`,
+    );
+  }
+  const idFor = new Map(parsedAll.map((p, i) => [p.detail.kVisit, rawIds[i]?.id]));
+
+  if (usable.length === 0) return { written: 0, unparseable };
+
+  // 2. Stubs, deduped across the whole client and skipped if this pass already
+  // wrote them.
+  const seen = input.stubbed;
+  const need = (table: string, key: string): boolean => {
+    const marker = `${table}:${key}`;
+    if (seen?.has(marker) === true) return false;
+    seen?.add(marker);
+    return true;
+  };
+  const locations = [
+    ...new Set(
+      usable.map((u) => u.parsed.session.k_location).filter((k): k is string => k !== null),
+    ),
+  ].filter((k) => need('location', k));
+  const services = [
+    ...new Set(
+      usable.map((u) => u.parsed.session.k_service).filter((k): k is string => k !== null),
+    ),
+  ].filter((k) => need('service', k));
+
+  if (locations.length > 0) {
+    await db.upsert(
+      'location',
+      locations.map((k_location) => ({ k_location, k_business: input.kBusiness })),
+      { onConflict: 'k_location' },
+    );
+  }
+  if (services.length > 0) {
+    await db.upsert(
+      'service',
+      services.map((k_service) => ({ k_service, k_business: input.kBusiness })),
+      { onConflict: 'k_service' },
+    );
+  }
+
+  // 3. Sessions. Deduped on the composite key: one client can hold two visits to
+  // the same occurrence, and a batch that repeats a key fights itself.
+  const sessions = new Map<string, Record<string, unknown>>();
+  for (const u of usable) {
+    // id_visit belongs to attendance, never to session - see writeClientSession.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-vars -- dropping it is
+       the point: destructuring is what keeps it out of the session row. */
+    const { id_visit: _drop, ...row } = u.parsed.session;
+    sessions.set(`${row.k_period}|${row.dt_start_utc}`, {
+      ...row,
+      detail_fetch_count: u.detail.detailFetchCount,
+      detail_fetched_at: input.fetchedAt,
+    });
+  }
+  await db.upsert('session', [...sessions.values()], { onConflict: 'k_period,dt_start_utc' });
+
+  // 4. Who taught, and who attended.
+  const staff = new Map<string, Record<string, unknown>>();
+  const attendance = new Map<string, Record<string, unknown>>();
+  const links: Array<{ rawWlId: string; key: string }> = [];
+  for (const u of usable) {
+    const s = u.parsed.session;
+    const key = `${s.k_period}|${s.dt_start_utc}`;
+    const rawWlId = idFor.get(u.detail.kVisit);
+    if (rawWlId !== undefined) links.push({ rawWlId, key });
+    for (const st of u.parsed.staff) {
+      staff.set(`${key}|${st.k_staff}`, {
+        k_period: s.k_period,
+        dt_start_utc: s.dt_start_utc,
+        k_staff: st.k_staff,
+        uid: null,
+      });
+    }
+    attendance.set(`${key}|${input.uid}`, {
+      k_period: s.k_period,
+      dt_start_utc: s.dt_start_utc,
+      uid: input.uid,
+      k_business: input.kBusiness,
+      k_visit: u.detail.kVisit,
+      ...visitOutcome(s.id_visit),
+    });
+  }
+
+  if (staff.size > 0) {
+    await db.upsert('session_staff', [...staff.values()], {
+      onConflict: 'k_period,dt_start_utc,k_staff',
+    });
+  }
+  await db.upsert('attendance', [...attendance.values()], {
+    onConflict: 'k_period,dt_start_utc,uid',
+  });
+  if (links.length > 0) {
+    await db.insert(
+      'raw_link',
+      links.map((l) => ({
+        raw_wl_id: l.rawWlId,
+        table_name: 'session',
+        record_key: l.key,
+        field_group: 'visit',
+      })),
+    );
+  }
+
+  return { written: sessions.size, unparseable };
+}

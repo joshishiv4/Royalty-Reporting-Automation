@@ -18,6 +18,7 @@ const config = {
   env: 'dev',
   wl: { kBusiness: '111111', clientId: '', clientSecret: '', host: '', authHost: '', region: 0 },
   sync: { historyStart: '1980-01-01', dailyLookbackDays: 2 },
+  runtime: { maxConcurrency: 5, httpTimeoutMs: 30000 },
 } as unknown as AppConfig;
 
 function fakeWl(): WlClient {

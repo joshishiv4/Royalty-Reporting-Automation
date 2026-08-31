@@ -27,6 +27,7 @@ const config = {
   env: 'dev',
   wl: { kBusiness: K_BUSINESS },
   sync: { historyStart: '1980-01-01', dailyLookbackDays: 2 },
+  runtime: { maxConcurrency: 5, httpTimeoutMs: 30000 },
   ghl: { locationId: LOCATION },
 } as unknown as AppConfig;
 

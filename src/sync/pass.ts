@@ -45,12 +45,13 @@ import { writeServiceCategoryList, writeServiceList } from './services.js';
 import { GhlClient } from '../ghl/client.js';
 import { matchPerson } from '../ghl/matcher.js';
 import { writeAttendanceList } from './attendance.js';
-import { parseVisitList, writeClientSession } from './client-sessions.js';
+import { parseVisitList, writeClientSessions } from './client-sessions.js';
 import { writeSessionList } from './sessions.js';
 import { writeShopCategoryList } from './shop-categories.js';
 import { writeStaffList } from './writer.js';
 import { visitWindow } from './visit-window.js';
 import type { VisitWindow } from './visit-window.js';
+import { runBatch } from '../wl/batch.js';
 
 /**
  * One bounded sync pass, the shape the cron route runs.
@@ -1075,11 +1076,13 @@ export function runClientSessionSyncPass(
 
           const at = Date.parse(nowIso());
           const settledBefore = at - SESSION_IMMUTABLE_AFTER_DAYS * 86_400_000;
-          let fetched = 0;
           let skipped = 0;
 
           // Each visit needs its own detail call - the list carries pointers
-          // (k_visit and a date) and nothing else.
+          // (k_visit and a date) and nothing else. Decide WHICH first, then fetch
+          // them together: the 7.3 rule is pure bookkeeping and does not need to
+          // sit between two network calls.
+          const wanted: Array<{ kVisit: string; priorCount: number }> = [];
           for (const kVisit of visits) {
             const prior = seen.get(kVisit);
             if (prior !== undefined) {
@@ -1103,28 +1106,46 @@ export function runClientSessionSyncPass(
                 continue;
               }
             }
-
-            const detail = await wl.request(WL_PATHS.schedulePageElement, {
-              query: { k_visit: kVisit },
-              priorAttempt: item.attempt_count,
-            });
-            await writeClientSession(db, {
-              kBusiness,
-              uid,
-              kVisit,
-              response: detail,
-              runId,
-              detailFetchCount: (prior?.detail_fetch_count ?? 0) + 1,
-              fetchedAt: nowIso(),
-              stubbed,
-            });
-            fetched += 1;
+            wanted.push({ kVisit, priorCount: prior?.detail_fetch_count ?? 0 });
           }
+
+          // FETCH THIS CLIENT'S VISITS TOGETHER, NOT ONE BEHIND ANOTHER. A client
+          // with 82 years of history used to serialise 82 round trips to
+          // WellnessLiving; the queue's own concurrency only ever overlapped
+          // different CLIENTS, so one long history stalled its whole slot.
+          const detail = await runBatch(
+            wanted,
+            async (w) => ({
+              kVisit: w.kVisit,
+              response: await wl.request(WL_PATHS.schedulePageElement, {
+                query: { k_visit: w.kVisit },
+                priorAttempt: item.attempt_count,
+              }),
+              detailFetchCount: w.priorCount + 1,
+            }),
+            { concurrency: config.runtime.maxConcurrency },
+          );
+
+          // ONE WRITE FOR THE WHOLE CLIENT. Seven sequential round trips per
+          // visit was the real cost of this pass - 2.18 visits/sec measured, most
+          // of it waiting on the database a row at a time.
+          await writeClientSessions(db, {
+            kBusiness,
+            uid,
+            runId,
+            fetchedAt: nowIso(),
+            details: detail.results,
+            stubbed,
+          });
+
+          // A detail call that failed is the item's failure, not a silent gap:
+          // rethrow the first so the queue can classify and requeue it.
+          const firstFailure = detail.failures[0];
+          if (firstFailure !== undefined) throw firstFailure.error;
 
           // fetched + skipped is the call-volume story this rule exists for:
           // on a settled client every visit is skipped and the pass costs a
           // single list call. Measured figures are in ARCHITECTURE.md.
-          void fetched;
           void skipped;
           return { kind: 'done' };
         } catch (error) {

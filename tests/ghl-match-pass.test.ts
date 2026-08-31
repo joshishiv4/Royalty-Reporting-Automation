@@ -19,6 +19,7 @@ const config = {
   wl: { kBusiness: K_BUSINESS },
   ghl: {},
   sync: { historyStart: '1980-01-01', dailyLookbackDays: 2 },
+  runtime: { maxConcurrency: 5, httpTimeoutMs: 30000 },
 } as unknown as AppConfig;
 
 const contact = (id: string): GhlContact => ({
