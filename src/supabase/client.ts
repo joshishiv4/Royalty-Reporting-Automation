@@ -98,6 +98,28 @@ export class SupabaseClient {
   }
 
   /**
+   * Calls a Postgres function.
+   *
+   * Used where SQL can express something PostgREST cannot. The queue's
+   * `enqueue_sync_items` is the case that forced it: its uniqueness rule is a
+   * PARTIAL unique index, and probed live against this database, every route
+   * PostgREST offers fails - a plain insert and `resolution=ignore-duplicates`
+   * both raise 23505 (the latter infers the PRIMARY KEY, a generated uuid, which
+   * never conflicts), and naming the index columns as `on_conflict` raises 42P10
+   * because inferring a partial index requires repeating its WHERE clause. Only
+   * raw SQL can write a bare `ON CONFLICT DO NOTHING`.
+   */
+  async rpc<T = unknown>(fn: string, args: Record<string, unknown>): Promise<T> {
+    const response = await this.send(fn, `${this.config.url}/rest/v1/rpc/${fn}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(args),
+    });
+    // A scalar-returning function answers with the bare value, not an array.
+    return this.parseValue<T>(fn, response);
+  }
+
+  /**
    * Upserts rows on `options.onConflict` and returns them as stored.
    *
    * Idempotent: a row already present is updated in place, not duplicated. This
@@ -284,6 +306,19 @@ export class SupabaseClient {
     }
     const parsed = parseJson(raw);
     return Array.isArray(parsed) ? (parsed as T[]) : [];
+  }
+
+  /**
+   * The same response handling, but returning the body as it came.
+   *
+   * parse() coerces a non-array to [], which is right for a table read and wrong
+   * for a function: a scalar-returning function answers with the bare value, and
+   * flattening `7` to `[]` would silently report "nothing queued".
+   */
+  private async parseValue<T>(name: string, response: Response): Promise<T> {
+    const rows = await this.parse<unknown>(name, response.clone());
+    if (rows.length > 0) return rows[0] as T;
+    return parseJson(await response.text()) as T;
   }
 }
 

@@ -33,6 +33,10 @@ function fakeDb(script: DbScript = {}) {
     query?: string;
   }> = [];
   const db = {
+    // enqueue writes through a Postgres function now (migration 0032), so a
+    // fake db has to answer it. It reports everything as inserted: these
+    // tests are about what gets queued, not how Postgres resolves a clash.
+    rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
     insert: vi.fn((table: string, rows: unknown[]) => {
       calls.push({ op: 'insert', table });
       return Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows);
@@ -126,6 +130,10 @@ describe('runStaffSyncPass', () => {
     const calls: Array<{ op: string; table: string; patch?: Record<string, unknown> }> = [];
     const db = {
       // The first DB write the handler makes is raw_wl; make it transiently fail.
+      // enqueue writes through a Postgres function now (migration 0032), so a
+      // fake db has to answer it. It reports everything as inserted: these
+      // tests are about what gets queued, not how Postgres resolves a clash.
+      rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
       insert: vi.fn((table: string, rows: unknown[]) => {
         calls.push({ op: 'insert', table });
         if (table === 'raw_wl') throw new SupabaseError('raw_wl', 503, 'service unavailable');

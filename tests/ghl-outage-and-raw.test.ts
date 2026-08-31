@@ -65,6 +65,10 @@ function harness(ghl: { searchContacts: () => Promise<GhlSearchResponse> }) {
   let claimed = false;
 
   const db = {
+    // enqueue writes through a Postgres function now (migration 0032), so a
+    // fake db has to answer it. It reports everything as inserted: these
+    // tests are about what gets queued, not how Postgres resolves a clash.
+    rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
     insert: vi.fn((table: string, rows: unknown[]) => {
       inserts.push({ table, rows });
       return Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : [{ id: 'raw-1' }]);
@@ -272,6 +276,10 @@ describe('storeRawGhl records the shape raw_ghl expects', () => {
   it("calls a search a 'page', because it is neither a record nor a cursor", async () => {
     const rows: unknown[] = [];
     const db = {
+      // enqueue writes through a Postgres function now (migration 0032), so a
+      // fake db has to answer it. It reports everything as inserted: these
+      // tests are about what gets queued, not how Postgres resolves a clash.
+      rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
       insert: vi.fn((_t: string, r: unknown[]) => {
         rows.push(...r);
         return Promise.resolve(r);

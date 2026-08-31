@@ -34,6 +34,10 @@ function fakeWl(): WlClient {
 function fakeDbTracking(rowsByTable: Record<string, unknown[]>) {
   const calls: Array<{ op: string; table: string; query: string }> = [];
   const db = {
+    // enqueue writes through a Postgres function now (migration 0032), so a
+    // fake db has to answer it. It reports everything as inserted: these
+    // tests are about what gets queued, not how Postgres resolves a clash.
+    rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
     insert: vi.fn((table: string, rows: unknown[]) =>
       Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows),
     ),

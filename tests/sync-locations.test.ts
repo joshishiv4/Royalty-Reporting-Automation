@@ -45,6 +45,10 @@ describe('writeLocationList', () => {
   it('stores raw, then upserts locations on k_location and links them', async () => {
     const calls: Array<{ op: string; table: string; onConflict?: string }> = [];
     const db = {
+      // enqueue writes through a Postgres function now (migration 0032), so a
+      // fake db has to answer it. It reports everything as inserted: these
+      // tests are about what gets queued, not how Postgres resolves a clash.
+      rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
       insert: vi.fn((table: string, rows: unknown[]) => {
         calls.push({ op: 'insert', table });
         return Promise.resolve(table === 'raw_wl' ? [{ id: 'raw-l' }] : rows);

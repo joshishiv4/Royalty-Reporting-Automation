@@ -224,6 +224,7 @@ to re-run.
 | `0029` | `attendance.id_visit` — WL's own visit status (`WlVisitSid`), the only field that says what happened. `is_attended` was written from `is_checkin` ("ready to be checked in", true on 0 of 4,423 sessions) and is now derived from `id_visit` and **nullable**; `session_outcome` and `is_countable` read the status; adds `visit_awaiting_staff` |
 | `0030` | `attendance.dt_checkin_utc` — WL's `dt_register`, "the date the client checked in", present on 55 of 55 sampled records and previously discarded. Evidence beside the verdict: nothing derives from it. Class-only — the appointment record does not carry it, so it does NOT answer Q9; that still needs `is_arrive` from the StaffApp schedule list. Adds `visit_unresolved_past` — sessions that ran while WL still says BOOK, which `visit_awaiting_staff` misses because WL is not asking anybody |
 | `0031` | `sync_job_state.window_start_override` / `window_end_override` — a ONE-SHOT manual sync window, consumed by the next clean drain. Beside the derived rule, not instead of it: a stored cursor that advances past an interrupted run loses that work silently. Adds `sync_window_override`, normally empty |
+| `0032` | `enqueue_sync_items()` — queueing in one atomic statement; PostgREST cannot write `ON CONFLICT DO NOTHING` against a partial index |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs, plus case tables for rules that live in SQL. They are not migrations and

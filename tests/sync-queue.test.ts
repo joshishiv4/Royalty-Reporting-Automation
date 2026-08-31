@@ -37,6 +37,14 @@ function fakeDb(responses: Responses = {}) {
       calls.push({ op: 'update', table, patch, query });
       return Promise.resolve(responses.update?.(table, patch, query) ?? []);
     }),
+    // enqueue writes through a Postgres function now (migration 0032), because
+    // PostgREST cannot express ON CONFLICT DO NOTHING against a partial index.
+    // Recorded as op 'insert' so the tests below still assert on the write
+    // itself rather than on which client method happened to carry it.
+    rpc: vi.fn((fn: string, args: { items: unknown[] }) => {
+      calls.push({ op: 'insert', table: fn, rows: args.items });
+      return Promise.resolve(args.items.length);
+    }),
     insert: vi.fn((table: string, rows: unknown[]) => {
       calls.push({ op: 'insert', table, rows });
       return Promise.resolve(rows);
@@ -457,5 +465,99 @@ describe('enqueue', () => {
     expect(q).toContain('work_type=in.(purchase_list)');
     expect(q).toContain('k_business=in.(111111)');
     expect(q).toContain('updated_at=gte.');
+  });
+});
+
+/**
+ * The 23505 that killed attendance_sync on 31 Aug 2026.
+ *
+ * enqueue dedupes with a READ and then inserts with a later WRITE, and nothing
+ * holds between them. sync:full-parallel starts every pass at the same instant,
+ * and a run that never closed can still be draining, so two runs of one pass
+ * overlap easily: one moves rows pending->done while the other is paging the
+ * dedupe read, that read skips rows, and the insert collides with the partial
+ * unique index sync_queue_active_target_key.
+ *
+ * The dedupe stays - it saves sending tens of thousands of rows the database
+ * would only discard - but it is no longer load-bearing for correctness.
+ */
+describe('enqueue cannot be broken by a racing run', () => {
+  function harness(active: Array<Record<string, string>> = []) {
+    const inserts: Array<{ method: string; rows: unknown[] }> = [];
+    const db = {
+      select: vi.fn((table: string, query: string) => {
+        if (table === 'sync_queue' && query.includes('state=in.(pending,in_progress)')) {
+          return Promise.resolve(query.includes('offset=0') ? active : []);
+        }
+        return Promise.resolve([]);
+      }),
+      insert: vi.fn((_t: string, rows: unknown[]) => {
+        inserts.push({ method: 'insert', rows });
+        return Promise.resolve(rows);
+      }),
+      // enqueue writes through a Postgres function now (migration 0032).
+      rpc: vi.fn((_fn: string, args: { items: unknown[] }) => {
+        inserts.push({ method: 'rpc', rows: args.items });
+        return Promise.resolve(args.items.length);
+      }),
+    } as unknown as SupabaseClient;
+    return { db, inserts };
+  }
+
+  const item = (target: string) => ({
+    work_type: 'session_attendance',
+    target_key: target,
+    k_business: '111111',
+  });
+
+  // A plain INSERT fails the whole pass on one duplicate. ON CONFLICT DO
+  // NOTHING - which is what insertIgnoringDuplicates emits - skips it, and a
+  // duplicate here means the target already has an active item, which is
+  // exactly the state the index exists to guarantee.
+  it('writes through the atomic function, never a plain insert', async () => {
+    const h = harness();
+    await enqueue(h.db, [item('a'), item('b')]);
+
+    // Nothing may reach a plain insert: that is the write that raised 23505.
+    expect(h.inserts.map((i) => i.method)).toEqual(['rpc']);
+  });
+
+  // The dedupe read only knows what is stored. A caller handing the same target
+  // in twice would collide with ITSELF inside a single insert, which no amount
+  // of reading the database can prevent.
+  it('dedupes the batch against itself, not just against the database', async () => {
+    const h = harness();
+    const added = await enqueue(h.db, [item('a'), item('a'), item('b')]);
+
+    expect(h.inserts[0]?.rows).toHaveLength(2);
+    expect(added).toBe(2);
+  });
+
+  // Reporting what we hoped to add would hide precisely the races worth seeing.
+  it('reports what was actually inserted, not what was attempted', async () => {
+    const db = {
+      select: vi.fn(() => Promise.resolve([])),
+      insert: vi.fn(() => Promise.resolve([])),
+      // Two sent, ONE stored: the other lost the race and the database skipped
+      // it. That gap is the whole reason this number is reported.
+      rpc: vi.fn(() => Promise.resolve(1)),
+    } as unknown as SupabaseClient;
+
+    expect(await enqueue(db, [item('a'), item('b')])).toBe(1);
+  });
+
+  it('still skips a target the database already has active', async () => {
+    const h = harness([{ work_type: 'session_attendance', target_key: 'a', k_business: '111111' }]);
+    await enqueue(h.db, [item('a'), item('b')]);
+
+    expect(h.inserts[0]?.rows).toHaveLength(1);
+  });
+
+  it('writes nothing at all when every target is already queued', async () => {
+    const h = harness([{ work_type: 'session_attendance', target_key: 'a', k_business: '111111' }]);
+    const added = await enqueue(h.db, [item('a')]);
+
+    expect(h.inserts).toEqual([]);
+    expect(added).toBe(0);
   });
 });

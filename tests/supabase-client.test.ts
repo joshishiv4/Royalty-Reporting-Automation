@@ -109,3 +109,44 @@ describe('SupabaseClient', () => {
     expect(error.message).not.toContain(config.url);
   });
 });
+
+describe('rpc', () => {
+  /**
+   * The queue's uniqueness rule is a PARTIAL unique index, and probed live
+   * against this database every PostgREST route fails: a plain insert and
+   * `resolution=ignore-duplicates` both raise 23505 (the latter infers the
+   * PRIMARY KEY, a generated uuid, which never conflicts), and naming the index
+   * columns raises 42P10 because inferring a partial index needs its WHERE
+   * clause repeated. Only raw SQL can write a bare ON CONFLICT DO NOTHING -
+   * hence a function, hence this.
+   */
+  it('posts to the function endpoint with the arguments as the body', async () => {
+    let seen: { url: string; body: string } | null = null;
+    const db = new SupabaseClient(config, {
+      fetch: ((url: string, init: { body: string }) => {
+        seen = { url, body: init.body };
+        return Promise.resolve(
+          new Response('7', { status: 200, headers: { 'content-type': 'application/json' } }),
+        );
+      }) as unknown as typeof globalThis.fetch,
+    });
+
+    await db.rpc('enqueue_sync_items', { items: [{ target_key: 'a' }] });
+
+    expect(seen!.url).toContain('/rest/v1/rpc/enqueue_sync_items');
+    expect(JSON.parse(seen!.body)).toEqual({ items: [{ target_key: 'a' }] });
+  });
+
+  // A scalar-returning function answers with the bare value, not an array, and
+  // the caller needs the number back to report what was really queued.
+  it('returns a scalar result as a scalar', async () => {
+    const db = new SupabaseClient(config, {
+      fetch: (() =>
+        Promise.resolve(
+          new Response('7', { status: 200, headers: { 'content-type': 'application/json' } }),
+        )) as unknown as typeof globalThis.fetch,
+    });
+
+    expect(await db.rpc<number>('enqueue_sync_items', { items: [] })).toBe(7);
+  });
+});

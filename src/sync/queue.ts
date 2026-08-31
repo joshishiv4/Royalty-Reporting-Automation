@@ -321,21 +321,54 @@ export async function enqueue(
     }
   }
 
-  const fresh = items.filter((i) => !seen.has(targetKey(i)));
-  if (fresh.length > 0) {
-    // Set next_attempt_at from the caller's clock, not the DB default. The claim
-    // filters on this same clock, so relying on the server's now() makes a fresh
-    // item look not-yet-eligible whenever the two clocks differ by a hair.
-    await db.insert(
-      'sync_queue',
-      fresh.map((i) => ({
+  // Deduped against the batch itself as well as against the database. The read
+  // above only knows what is already stored; a caller handing the same target in
+  // twice would collide with ITSELF inside one insert.
+  const fresh = items.filter((i) => {
+    const key = targetKey(i);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  if (fresh.length === 0) return 0;
+
+  // ONE ATOMIC STATEMENT, NOT A READ FOLLOWED BY A WRITE. The dedupe above is a
+  // read and this is a later write, with nothing holding between them. Two
+  // overlapping runs of one pass had the other draining rows pending -> done
+  // while this one paged the dedupe read, so that read skipped rows and the
+  // insert collided: `23505: duplicate key ... sync_queue_active_target_key`,
+  // which killed attendance_sync outright on 31 Aug 2026 with 32,440 items left
+  // unqueued.
+  //
+  // The database resolves it instead. `enqueue_sync_items` is an INSERT with a
+  // bare ON CONFLICT DO NOTHING (migration 0032) - a duplicate means the target
+  // already has an active item, which is exactly the state the partial unique
+  // index exists to guarantee, so skipping is the correct answer rather than a
+  // swallowed error. It has to be a function: PostgREST cannot express ON
+  // CONFLICT DO NOTHING against a PARTIAL index, and all three of its routes
+  // were probed live and fail (see the migration).
+  //
+  // The dedupe read stays because it saves sending tens of thousands of rows the
+  // database would only discard. It is no longer load-bearing for correctness.
+  //
+  // next_attempt_at comes from the caller's clock, not the DB default: the claim
+  // filters on that same clock, so relying on the server's now() makes a fresh
+  // item look not-yet-eligible whenever the two differ by a hair.
+  const CHUNK = 500;
+  let inserted = 0;
+  for (let start = 0; start < fresh.length; start += CHUNK) {
+    inserted += await db.rpc<number>('enqueue_sync_items', {
+      items: fresh.slice(start, start + CHUNK).map((i) => ({
         ...i,
-        state: 'pending',
         ...(nextAttemptAt === undefined ? {} : { next_attempt_at: nextAttemptAt }),
       })),
-    );
+    });
   }
-  return fresh.length;
+  // What was actually added, not what we hoped to add: the difference is the
+  // races the dedupe read missed, and reporting the optimistic number would hide
+  // exactly the thing worth noticing.
+  return inserted;
 }
 
 /** Flips leases that outlived their claim back to pending, so nothing strands. */

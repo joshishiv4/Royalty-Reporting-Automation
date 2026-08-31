@@ -351,6 +351,10 @@ describe('writeClientList stores the payload before the people', () => {
     return {
       calls,
       db: {
+        // enqueue writes through a Postgres function now (migration 0032), so a
+        // fake db has to answer it. It reports everything as inserted: these
+        // tests are about what gets queued, not how Postgres resolves a clash.
+        rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
         insert: vi.fn((table: string, rows: unknown[]) => {
           calls.push({ op: 'insert', table, rows });
           return Promise.resolve([{ id: 'raw-1' }]);
@@ -424,6 +428,10 @@ describe('is_active is tagged from the activated set, not the row', () => {
     return {
       upserts,
       db: {
+        // enqueue writes through a Postgres function now (migration 0032), so a
+        // fake db has to answer it. It reports everything as inserted: these
+        // tests are about what gets queued, not how Postgres resolves a clash.
+        rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
         insert: vi.fn(() => Promise.resolve([{ id: 'raw-1' }])),
         upsert: vi.fn((_t: string, rows: unknown[]) => {
           upserts.push(rows as Array<Record<string, unknown>>);
@@ -514,6 +522,10 @@ describe('writeClientList batches sparse people rather than failing', () => {
   it('splits one page into as many upserts as there are shapes', async () => {
     const upserts: Array<Array<Record<string, unknown>>> = [];
     const db = {
+      // enqueue writes through a Postgres function now (migration 0032), so a
+      // fake db has to answer it. It reports everything as inserted: these
+      // tests are about what gets queued, not how Postgres resolves a clash.
+      rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
       insert: vi.fn(() => Promise.resolve([{ id: 'raw-1' }])),
       upsert: vi.fn((_t: string, rows: unknown[]) => {
         upserts.push(rows as Array<Record<string, unknown>>);
@@ -577,6 +589,10 @@ describe('a field list that stopped carrying what we map fails the run', () => {
   it('refuses the page before any client is written', async () => {
     const calls: Array<{ op: string; table: string }> = [];
     const stub = {
+      // enqueue writes through a Postgres function now (migration 0032), so a
+      // fake db has to answer it. It reports everything as inserted: these
+      // tests are about what gets queued, not how Postgres resolves a clash.
+      rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
       insert: vi.fn((table: string, _rows: unknown[]) => {
         calls.push({ op: 'insert', table });
         // storeRawWl needs the new payload's id back to link rows to it.

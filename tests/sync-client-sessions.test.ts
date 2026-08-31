@@ -197,6 +197,10 @@ describe('writeClientSession', () => {
       options?: { onConflict?: string } | undefined;
     }> = [];
     const db = {
+      // enqueue writes through a Postgres function now (migration 0032), so a
+      // fake db has to answer it. It reports everything as inserted: these
+      // tests are about what gets queued, not how Postgres resolves a clash.
+      rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
       insert: vi.fn((table: string, rows: unknown[]) => {
         calls.push({ op: 'insert', table, rows });
         return Promise.resolve(table === 'raw_wl' ? [{ id: 'raw-cs' }] : rows);
@@ -370,6 +374,10 @@ describe('the session upsert carries only session columns', () => {
   function spy() {
     const calls: Array<{ table: string; rows: unknown[] }> = [];
     const db = {
+      // enqueue writes through a Postgres function now (migration 0032), so a
+      // fake db has to answer it. It reports everything as inserted: these
+      // tests are about what gets queued, not how Postgres resolves a clash.
+      rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
       insert: vi.fn((table: string, rows: unknown[]) =>
         Promise.resolve(table === 'raw_wl' ? [{ id: 'raw-1' }] : rows),
       ),

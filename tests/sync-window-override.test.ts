@@ -22,6 +22,10 @@ function spy() {
       return Promise.resolve(rows);
     }),
     select: vi.fn(() => Promise.resolve([])),
+    // enqueue writes through a Postgres function now (migration 0032), so a
+    // fake db has to answer it. It reports everything as inserted: these
+    // tests are about what gets queued, not how Postgres resolves a clash.
+    rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
     insert: vi.fn(() => Promise.resolve([])),
     update: vi.fn(() => Promise.resolve([])),
   } as unknown as SupabaseClient;

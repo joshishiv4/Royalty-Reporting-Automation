@@ -25,6 +25,10 @@ function fakeWl(): WlClient {
 /** A db that seeds cleanly and claims nothing, so every pass drains to ok. */
 function fakeDb() {
   return {
+    // enqueue writes through a Postgres function now (migration 0032), so a
+    // fake db has to answer it. It reports everything as inserted: these
+    // tests are about what gets queued, not how Postgres resolves a clash.
+    rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
     insert: vi.fn((table: string, rows: unknown[]) =>
       Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows),
     ),
@@ -86,6 +90,10 @@ describe('runFullSyncPass', () => {
   it('reports failed when a pass fails', async () => {
     // A staff claim that yields an item, whose handler throws a non-WL error.
     const db = {
+      // enqueue writes through a Postgres function now (migration 0032), so a
+      // fake db has to answer it. It reports everything as inserted: these
+      // tests are about what gets queued, not how Postgres resolves a clash.
+      rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
       insert: vi.fn((table: string, rows: unknown[]) =>
         Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows),
       ),
@@ -201,6 +209,10 @@ describe('runFullSyncPassParallel', () => {
     } as unknown as WlClient;
 
     const db = {
+      // enqueue writes through a Postgres function now (migration 0032), so a
+      // fake db has to answer it. It reports everything as inserted: these
+      // tests are about what gets queued, not how Postgres resolves a clash.
+      rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
       insert: vi.fn((table: string, rows: unknown[]) =>
         Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows),
       ),
@@ -267,6 +279,10 @@ describe('runFullSyncPassParallel', () => {
     let ticks = 0;
 
     const db = {
+      // enqueue writes through a Postgres function now (migration 0032), so a
+      // fake db has to answer it. It reports everything as inserted: these
+      // tests are about what gets queued, not how Postgres resolves a clash.
+      rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
       insert: vi.fn((table: string, rows: unknown[]) =>
         Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows),
       ),
