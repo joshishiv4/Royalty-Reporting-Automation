@@ -319,3 +319,51 @@ describe('runFullSyncPassParallel', () => {
     expect(entries.length).toBeGreaterThan(5);
   });
 });
+
+/**
+ * There used to be a 50-second default budget for the WHOLE run, shared across
+ * every pass. Fifty seconds is a serverless function's ceiling and had no
+ * business being a sync's default: measured on live dev 31 Aug 2026, a run did
+ * fifty seconds of work, skipped every pass it never reached, and reported `ok`
+ * while 40,333 items sat queued for days.
+ *
+ * These pin the replacement: unbounded unless the caller names a deadline.
+ */
+describe('no run stops early unless the caller asked it to', () => {
+  /** A clock that has already blown far past any old default. */
+  function clockPast(ms: number) {
+    let first = true;
+    return () => {
+      if (first) {
+        first = false;
+        return 0;
+      }
+      return ms;
+    };
+  }
+
+  it('runs every pass with no budget, however long the clock says it took', async () => {
+    const summary = await runFullSyncPass(config, {
+      wl: fakeWl(),
+      db: fakeDb(),
+      now: clockPast(3_600_000),
+    });
+
+    // Not one skipped. With a default budget in place, everything after the
+    // first pass came back ran:false.
+    expect(summary.passes.filter((p) => !p.ran)).toEqual([]);
+  });
+
+  it('still honours a budget the caller does name', async () => {
+    const summary = await runFullSyncPass(config, {
+      wl: fakeWl(),
+      db: fakeDb(),
+      now: clockPast(3_600_000),
+      budgetMs: 50_000,
+    });
+
+    // The api route relies on exactly this: stop STARTING work before the
+    // platform kills the function, and report what is left.
+    expect(summary.passes.some((p) => !p.ran)).toBe(true);
+  });
+});

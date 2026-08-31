@@ -1614,7 +1614,23 @@ const FULL_SYNC_ORDER: ReadonlyArray<{
   { job: 'service_sync', run: runServiceSyncPass },
 ];
 
-const DEFAULT_FULL_BUDGET_MS = 50_000;
+/**
+ * There is deliberately NO default full-sync budget.
+ *
+ * There used to be one: 50 seconds, for the whole run, shared across every pass.
+ * It is a serverless function's ceiling, and it had no business being the
+ * default for a sync. The consequence, measured on live dev 31 Aug 2026: a run
+ * would do fifty seconds of work, skip the passes it never reached, and report
+ * `ok`. 40,333 items sat queued for days while every run looked clean - the same
+ * failure shape as the queued report and the 1,000-row read cap, where the run
+ * says success and the data is wrong.
+ *
+ * A caller that has a deadline must now say so. `api/wellness-sync-all.ts` does,
+ * because a platform timeout is a real constraint on THAT caller. The CLI does
+ * not, because nothing is going to kill it, and a backfill that stops early for
+ * no reason is just a backfill that never finishes.
+ */
+
 /** Below this, a pass would only seed and immediately stop; skip it instead. */
 const MIN_PASS_BUDGET_MS = 3_000;
 
@@ -1693,7 +1709,10 @@ export async function runFullSyncPass(
   deps: SyncPassDeps = {},
 ): Promise<FullSyncSummary> {
   const now = deps.now ?? (() => Date.now());
-  const totalBudgetMs = deps.budgetMs ?? DEFAULT_FULL_BUDGET_MS;
+  // Unbounded unless the caller has a deadline of its own. See the note above
+  // DEFAULT_FULL_BUDGET_MS's removal: a default deadline made every run stop
+  // early and still report ok.
+  const totalBudgetMs = deps.budgetMs ?? Number.POSITIVE_INFINITY;
   const startedAt = now();
 
   // One database and one token client for the whole run. The token client is

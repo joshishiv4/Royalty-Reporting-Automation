@@ -73,6 +73,7 @@ correctly does not start.
 | Client-list rows → person (mapped by field NAME, never position) | [`src/sync/clients.ts`](../src/sync/clients.ts) |
 | Writing WL responses to Supabase (raw_wl → typed rows → raw_link) | [`src/sync/writer.ts`](../src/sync/writer.ts) |
 | Writing GHL responses to Supabase (raw_ghl), and the recorder that makes every search store itself | [`src/sync/ghl-writer.ts`](../src/sync/ghl-writer.ts) |
+| Reading how far the sync has got, from the queue rather than from a run summary | [`src/sync/progress.ts`](../src/sync/progress.ts) |
 | Writing purchases (list → purchase + purchase_item, stub FKs) | [`src/sync/purchases.ts`](../src/sync/purchases.ts) |
 | Enriching purchases with money (receipt → totals, payments, credit) | [`src/sync/receipts.ts`](../src/sync/receipts.ts) |
 | Enriching purchases with the recipient (purchase/list/element → uid_recipient, person stub, conflict on disagreement) | [`src/sync/recipients.ts`](../src/sync/recipients.ts) |
@@ -147,6 +148,7 @@ envelope inside" trap to guard against.
 | CLI commands — `healthcheck`, `sync:wellness`, `sync:full-parallel`, `config:check`, `config:show` | [`src/cli/main.ts`](../src/cli/main.ts) |
 | Everything the package exports | [`src/index.ts`](../src/index.ts) |
 | Vercel health route | [`api/health.ts`](../api/health.ts) |
+| Vercel sync-PROGRESS route — read-only, built to be polled while a backfill runs | [`api/sync-status.ts`](../api/sync-status.ts) |
 | Vercel sync route — staff only, targeted | [`api/wellness-sync.ts`](../api/wellness-sync.ts) |
 | Vercel FULL sync route — every pass, the daily cron | [`api/wellness-sync-all.ts`](../api/wellness-sync-all.ts) |
 | Reading and setting the visit sync's date window — GET what the next window will be and why, POST a ONE-SHOT manual `{start,end}`, DELETE to clear | [`api/sync-window.ts`](../api/sync-window.ts) |

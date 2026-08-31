@@ -3,6 +3,8 @@ import { isAuthorizedByAny } from '../src/http/bearer.js';
 import type { HttpRequest, HttpResponse } from '../src/http/types.js';
 import { MissingSecretsError, SecretsProviderError } from '../src/secrets/types.js';
 import { runFullSyncPass } from '../src/sync/pass.js';
+import { readSyncProgress } from '../src/sync/progress.js';
+import { SupabaseClient } from '../src/supabase/client.js';
 
 /**
  * A config-resolution failure whose message is safe to return: these name the
@@ -44,6 +46,14 @@ function isConfigError(error: unknown): boolean {
 /** Accepts GET because Vercel Cron issues GET; POST for a manual trigger. */
 const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST']);
 
+/**
+ * How long this function may keep STARTING work.
+ *
+ * Under the platform's own timeout, so the run ends by choice - reporting
+ * `partial` with the queue intact - instead of being killed mid-item.
+ */
+const FUNCTION_BUDGET_MS = 50_000;
+
 export default async function handler(req: HttpRequest, res: HttpResponse): Promise<void> {
   res.setHeader('Cache-Control', 'no-store');
 
@@ -66,13 +76,35 @@ export default async function handler(req: HttpRequest, res: HttpResponse): Prom
 
   try {
     const config = await loadConfig();
-    const summary = await runFullSyncPass(config);
+    // The budget lives HERE, not in runFullSyncPass, because it is this
+    // caller's constraint and nobody else's: the platform kills the function at
+    // its own limit, so the run must stop STARTING work before that and hand
+    // back `partial` rather than being killed mid-item with its leases held.
+    // A CLI backfill has no such ceiling and must not inherit this one.
+    const summary = await runFullSyncPass(config, { budgetMs: FUNCTION_BUDGET_MS });
+
+    // HOW MUCH IS LEFT, in the same response. A run summary describes only what
+    // THIS invocation managed, which is at most one budget's worth - so on its
+    // own it cannot tell a caller whether to invoke again. Reading the queue
+    // afterwards answers that directly, and it is three cheap view reads.
+    const progress = await readSyncProgress(
+      new SupabaseClient(config.supabase),
+      config.wl.kBusiness,
+    );
 
     // `failed` is the only 503: a pass hit a bug it could not record as queue
     // state. `ok` and `partial` are both 200 - `partial` means the budget ran out
     // with work still queued or a later pass not yet reached, which is the normal
     // way a long run ends and resumes on the next invocation.
-    res.status(summary.state === 'failed' ? 503 : 200).json(summary);
+    res.status(summary.state === 'failed' ? 503 : 200).json({
+      ...summary,
+      // `complete` is the flag a scheduler should loop on - not summary.state,
+      // which says `ok` for a run that did fifty honest seconds of a two-hour
+      // backfill. Poll /api/sync-status for the same answer without working.
+      complete: progress.complete,
+      remaining: progress.totals,
+      stages: progress.stages,
+    });
   } catch (error) {
     if (isConfigError(error)) {
       // Names the offending keys, never their values - safe for an authorized
