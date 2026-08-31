@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '../src/supabase/client.js';
 import { clientListReportStep, type ClientListStepDeps } from '../src/sync/pass.js';
+import { describeReport, reportOutcome } from '../src/wl/report.js';
 
 /**
  * The client-list report is asynchronous, so its pass must poll ACROSS queue
@@ -59,7 +60,17 @@ function harness(reportStatus: () => number) {
       const body = opts.json as Record<string, unknown>;
       wlBodies.push(body);
       return Promise.resolve({
-        body: { a_field: FIELDS, a_row: [ROW], id_report_status: reportStatus() },
+        body: {
+          a_field: FIELDS,
+          a_row: [ROW],
+          id_report_status: reportStatus(),
+          // dtu_complete tracks the status, the way the live endpoint does: all
+          // 44 stored payloads with status 3 carry it. Readiness needs BOTH -
+          // WL Support's 'Saving' state is exactly status-says-done-but-the-file
+          // -is-not-written, so a fixture that omits this would let a rule the
+          // guard exists to enforce pass unnoticed.
+          dtu_complete: reportStatus() === 3 ? '2026-08-31 10:00:00' : null,
+        },
         traceId: 't',
         kLog: null,
         httpStatus: 200,
@@ -163,5 +174,81 @@ describe('client-list report state machine', () => {
 
     expect(outcome).toEqual({ kind: 'defer', requeueAfterMs: 2_000 });
     expect(h.jobState().report_handle).toBeNull(); // cleared -> next step re-requests
+  });
+});
+
+/**
+ * WL Support, 31 Aug 2026, on the report lifecycle:
+ *
+ *   "Generating - being generated. Saving - data is generated and the file is
+ *    being written (not yet retrievable). Completed - ready. Cancelled -
+ *    stopped. Error - finished with errors."
+ *
+ *   "For 'is it ready to retrieve', the reliable check is status = Completed
+ *    WITH the result/download link populated. Saving is an intermediate state,
+ *    so don't treat it as ready."
+ *
+ * They gave names; the API answers with integers, and only 2 and 3 have ever
+ * been observed (44 of 44 stored payloads are 3). So Cancelled and Error are
+ * NOT mapped to numbers here - guessing 4 and 5 would be inventing a contract.
+ * What is used instead is text_error, a field WL actually sends.
+ */
+describe('a report is ready only when two signals agree', () => {
+  const complete = { id_report_status: 3, dtu_complete: '2026-08-31 10:00:00', text_error: '' };
+
+  it('accepts a report that is Completed and has finished writing', () => {
+    expect(reportOutcome(complete)).toBe('complete');
+  });
+
+  // The Saving case, in the fields this endpoint returns. Status alone said
+  // ready; dtu_complete says the file is not written yet.
+  it('refuses a report whose status says done but which has not finished writing', () => {
+    expect(reportOutcome({ ...complete, dtu_complete: null })).toBe('pending');
+  });
+
+  it('keeps waiting while it is still being generated', () => {
+    expect(reportOutcome({ id_report_status: 2, dtu_complete: null })).toBe('pending');
+  });
+
+  // Recognised by what WL says, not by a status number nobody has confirmed.
+  it('treats a populated text_error as finished-and-failed', () => {
+    expect(reportOutcome({ ...complete, text_error: 'something broke' })).toBe('failed');
+  });
+
+  // An errored report is FINISHED. Polling on would spend the whole budget and
+  // then blame a timeout for something WL had already reported.
+  it('calls it failed even when the status still looks in-flight', () => {
+    expect(reportOutcome({ id_report_status: 2, dtu_complete: null, text_error: 'boom' })).toBe(
+      'failed',
+    );
+  });
+
+  it('ignores an empty or whitespace text_error, which is the normal case', () => {
+    expect(reportOutcome({ ...complete, text_error: '   ' })).toBe('complete');
+  });
+});
+
+describe('giving up says what the last answer actually was', () => {
+  /**
+   * Support lists Cancelled and Error as terminal, but the API answers with
+   * numbers we have never seen - so an unmapped terminal state still ends in a
+   * timeout. When it does, the message has to carry the evidence, or the first
+   * occurrence teaches nobody anything.
+   */
+  it('names the status and the write state', () => {
+    expect(describeReport({ id_report_status: 4, dtu_complete: null })).toContain(
+      'id_report_status=4',
+    );
+    expect(describeReport({ id_report_status: 4, dtu_complete: null })).toContain(
+      'dtu_complete=null',
+    );
+  });
+
+  it('quotes the error text when there is one', () => {
+    expect(describeReport({ id_report_status: 5, text_error: 'disk full' })).toContain('disk full');
+  });
+
+  it('says so plainly when the status is missing entirely', () => {
+    expect(describeReport({})).toContain('absent');
   });
 });

@@ -66,7 +66,16 @@ export const ALL_DATES = {
 /** WL's member-status filter. 3 is what the portal calls "Activated Clients". */
 export const MEMBER_STATUS_ACTIVATED = 3;
 
-/** The report is complete and its rows can be trusted. */
+/**
+ * The report is complete and its rows can be trusted.
+ *
+ * WL Support (31 Aug 2026) names five states: Generating, Saving, Completed,
+ * Cancelled, Error - and warns that SAVING IS NOT READY ("data is generated and
+ * the file is being written"). They gave names; the API gives numbers, and we
+ * have only ever observed 2 (in flight) and 3 (done, on 44 of 44 stored
+ * payloads). Which number is Cancelled and which is Error is NOT known, so this
+ * file does not pretend to map them - see reportOutcome.
+ */
 const REPORT_STATUS_COMPLETE = 3;
 
 /** WL's own page size for this report. */
@@ -81,6 +90,51 @@ export interface ReportBody {
   readonly a_row?: unknown;
   readonly id_report_status?: unknown;
   readonly dtu_complete?: unknown;
+  /**
+   * WL's own error channel for a report that finished badly. Empty on all 44
+   * stored payloads. This is how an 'Error' report is recognised WITHOUT
+   * knowing which number Error is.
+   */
+  readonly text_error?: unknown;
+}
+
+/**
+ * Is this response a finished report, a failed one, or neither yet?
+ *
+ * TWO SIGNALS, NOT ONE. WL Support: "the reliable check is status = Completed
+ * WITH THE RESULT LINK POPULATED. Saving is an intermediate state, so don't
+ * treat it as ready." Status alone was what this read before. Requiring
+ * dtu_complete as well is the same rule stated in the fields this endpoint
+ * actually returns - and it costs nothing, because all 44 stored completed
+ * payloads carry both.
+ *
+ * text_error IS THE ERROR TEST, not a status number. Support named five states
+ * but the API answers with integers, and we have only ever seen 2 and 3.
+ * Guessing that 4 is Cancelled and 5 is Error would be inventing an API
+ * contract. text_error is a field WL actually sends, so a failed report is
+ * recognised by what it says rather than by a number nobody has confirmed.
+ */
+export function reportOutcome(body: ReportBody): 'complete' | 'failed' | 'pending' {
+  const error = typeof body.text_error === 'string' ? body.text_error.trim() : '';
+  // Checked FIRST: a report that finished with errors is finished. Polling on
+  // would burn the whole budget and then blame a timeout for it.
+  if (error.length > 0) return 'failed';
+  const done =
+    readInt(body.id_report_status) === REPORT_STATUS_COMPLETE &&
+    body.dtu_complete !== null &&
+    body.dtu_complete !== undefined;
+  return done ? 'complete' : 'pending';
+}
+
+/** What the last response said, for an error message that names a cause. */
+export function describeReport(body: ReportBody): string {
+  const status = readInt(body.id_report_status);
+  const error = typeof body.text_error === 'string' ? body.text_error.trim() : '';
+  return (
+    `id_report_status=${status === null ? 'absent' : String(status)}` +
+    `, dtu_complete=${body.dtu_complete === null || body.dtu_complete === undefined ? 'null' : 'set'}` +
+    (error.length > 0 ? `, text_error=${JSON.stringify(error)}` : '')
+  );
 }
 
 export interface ReportPage {
@@ -161,6 +215,7 @@ export async function fetchReportPage(
   deps: ReportDeps = {},
 ): Promise<ReportPage> {
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  let last: ReportBody | null = null;
 
   for (let poll = 0; poll < MAX_POLLS; poll += 1) {
     // Only the first call asks WL to rebuild; the rest read the report it is
@@ -173,19 +228,35 @@ export async function fetchReportPage(
       ...(deps.priorAttempt === undefined ? {} : { priorAttempt: deps.priorAttempt }),
     });
 
-    if (readInt(response.body.id_report_status) === REPORT_STATUS_COMPLETE) {
+    const outcome = reportOutcome(response.body);
+    if (outcome === 'complete') {
       return {
         fields: readFields(response.body.a_field),
         rows: readRows(response.body.a_row),
         response,
       };
     }
+    // A report that finished with errors is FINISHED. Polling on would spend the
+    // whole budget and then blame a timeout for something WL had already told us.
+    if (outcome === 'failed') {
+      throw new Error(
+        `WL report ${String(REPORT_CLIENT_LIST)} finished with errors: ` +
+          describeReport(response.body),
+      );
+    }
+    last = response.body;
     await sleep(POLL_INTERVAL_MS);
   }
 
+  // Name what the last answer actually said. WL Support lists Cancelled and
+  // Error as terminal states but the API answers with numbers we have never
+  // seen, so an unmapped terminal state still lands here - and when it does,
+  // this message is what makes it diagnosable the first time instead of the
+  // second.
   throw new Error(
     `WL report ${String(REPORT_CLIENT_LIST)} did not finish building after ` +
-      `${String(MAX_POLLS)} polls - refusing to treat a queued report as an empty one`,
+      `${String(MAX_POLLS)} polls - refusing to treat an unfinished report as an ` +
+      `empty one. Last response: ${last === null ? 'none' : describeReport(last)}`,
   );
 }
 
@@ -231,7 +302,7 @@ async function reportRequestOnce(
   offset: number,
   refresh: boolean,
   deps: ReportDeps = {},
-): Promise<{ status: number | null; page: ReportPage }> {
+): Promise<{ status: number | null; body: ReportBody; page: ReportPage }> {
   const body = buildReportBody(kBusiness, filter, offset, refresh);
   const response = await wl.request<ReportBody>(WL_PATHS.reportQuery, {
     method: 'POST',
@@ -241,6 +312,9 @@ async function reportRequestOnce(
   });
   return {
     status: readInt(response.body.id_report_status),
+    // The whole body, so a caller can judge completion on two signals rather
+    // than on the status number alone - see reportOutcome.
+    body: response.body,
     page: {
       fields: readFields(response.body.a_field),
       rows: readRows(response.body.a_row),
@@ -274,8 +348,18 @@ export async function pollReport(
   filter: ReportFilter,
   deps: ReportDeps = {},
 ): Promise<{ complete: boolean }> {
-  const { status } = await reportRequestOnce(wl, kBusiness, filter, 0, false, deps);
-  return { complete: status === REPORT_STATUS_COMPLETE };
+  const { body } = await reportRequestOnce(wl, kBusiness, filter, 0, false, deps);
+  const outcome = reportOutcome(body);
+  // Throwing rather than returning complete:false. The caller's contract is
+  // "not yet, poll again later", and a report that WL says failed will never
+  // become ready - so answering "not yet" would defer it forever instead of
+  // surfacing the failure to the queue.
+  if (outcome === 'failed') {
+    throw new Error(
+      `WL report ${String(REPORT_CLIENT_LIST)} finished with errors: ${describeReport(body)}`,
+    );
+  }
+  return { complete: outcome === 'complete' };
 }
 
 /**

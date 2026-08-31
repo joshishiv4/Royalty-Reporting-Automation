@@ -954,3 +954,53 @@ All three were established by measurement, and all three decide whether a sync
 returns the right people or silently returns none. `/v1/report/data` is a
 **different** endpoint (GET, `id_report` rather than `cid_report`) and is not what
 we use.
+
+
+### The report lifecycle, confirmed by WL Support (31 Aug 2026)
+
+Support named five states:
+
+| State | Meaning |
+|---|---|
+| Generating | being generated |
+| Saving | data generated, **file still being written — not retrievable** |
+| Completed | ready |
+| Cancelled | generation stopped |
+| Error | generation finished with errors |
+
+> "For 'is it ready to retrieve', the reliable check is status = Completed **with
+> the result/download link populated**. Saving is an intermediate state, so don't
+> treat it as ready."
+
+**They gave names; the API answers with integers.** Only `2` (in flight) and `3`
+(done) have ever been observed — 44 of 44 stored payloads are `3`, every one with
+`dtu_complete` set and `text_error` empty. **Which number is Cancelled and which
+is Error is not known**, and `src/wl/report.ts` deliberately does not guess:
+
+* **ready** = `id_report_status = 3` **and** `dtu_complete` set. Two signals, which
+  is Support's rule stated in the fields this endpoint actually returns. Status
+  alone is exactly the Saving trap.
+* **failed** = `text_error` non-empty. A field WL really sends, so an errored
+  report is caught without inventing a status mapping. Checked first: a report
+  that finished with errors is finished, and polling on would burn the budget and
+  then blame a timeout.
+* **anything else** = keep waiting, and when the polls run out the error names the
+  last `id_report_status`, whether `dtu_complete` was set, and any `text_error`.
+  An unmapped Cancelled or Error still ends in a timeout — but a diagnosable one.
+
+Also confirmed, and it is why `requestReport` and `pollReport` are separate:
+
+> "re-running a report reuses the same handle but resets it to a generating state"
+
+`is_refresh: 1` goes out **once**; every poll and every page read uses
+`is_refresh: 0`. Refreshing per page would throw away the finished build and
+restart it.
+
+And: "generated reports are cleaned up after a period, so the handle isn't valid
+indefinitely." We re-request per run, so nothing depends on a handle surviving.
+
+**Still open.** Support says there are TWO All Clients reports — one that requires
+filters, and a batch one that works off a date range without them — and that the
+batch one is right for a bulk pull. We call `cid_report` **689**, which requires
+`o_date` and accepts empty filters, so it behaves like the batch one. That is
+inference, not confirmation.
