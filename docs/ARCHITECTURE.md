@@ -165,6 +165,7 @@ same functions. Nothing lives only in an entry point.
 | Supabase reachability and key acceptance | [`src/supabase/health.ts`](../src/supabase/health.ts) |
 | Supabase writes/reads (PostgREST over fetch) | [`src/supabase/client.ts`](../src/supabase/client.ts) |
 | Constant-time bearer check for routes | [`src/http/bearer.ts`](../src/http/bearer.ts) |
+| Reading a JSON body whatever shape the platform hands it in | [`src/http/body.ts`](../src/http/body.ts) |
 | Route request/response shapes | [`src/http/types.ts`](../src/http/types.ts) |
 | Provider selection | [`src/secrets/index.ts`](../src/secrets/index.ts) |
 | Secret bundle and env types | [`src/secrets/types.ts`](../src/secrets/types.ts) |
@@ -227,6 +228,7 @@ to re-run.
 | `0030` | `attendance.dt_checkin_utc` — WL's `dt_register`, "the date the client checked in", present on 55 of 55 sampled records and previously discarded. Evidence beside the verdict: nothing derives from it. Class-only — the appointment record does not carry it, so it does NOT answer Q9; that still needs `is_arrive` from the StaffApp schedule list. Adds `visit_unresolved_past` — sessions that ran while WL still says BOOK, which `visit_awaiting_staff` misses because WL is not asking anybody |
 | `0031` | `sync_job_state.window_start_override` / `window_end_override` — a ONE-SHOT manual sync window, consumed by the next clean drain. Beside the derived rule, not instead of it: a stored cursor that advances past an interrupted run loses that work silently. Adds `sync_window_override`, normally empty |
 | `0032` | `enqueue_sync_items()` — queueing in one atomic statement; PostgREST cannot write `ON CONFLICT DO NOTHING` against a partial index |
+| `0033` | `sync_run.heartbeat_at` and the `abandoned` state — a run whose process died is retired instead of claiming to be alive forever; restores the `ghl_unresolved_48h` branch and the unresolved clock that `0026` dropped |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs, plus case tables for rules that live in SQL. They are not migrations and

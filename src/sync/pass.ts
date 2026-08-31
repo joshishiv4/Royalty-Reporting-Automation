@@ -1784,6 +1784,12 @@ async function runPass(
   };
   const handler = spec.makeHandler(ctx);
 
+  // Retire anything that stopped beating BEFORE opening this run, so a reader
+  // looking at 'running' rows sees only runs that are actually alive - this one
+  // included. Sweeping afterwards would leave a window where the table still
+  // lies, which is the whole failure being fixed.
+  await abandonStaleRuns(db, iso());
+
   await openRun(db, ctx.runId, ctx.kBusiness, spec.jobName, iso());
   await openJobState(db, spec.jobName, ctx.kBusiness, iso());
 
@@ -1808,6 +1814,9 @@ async function runPass(
       totals.requeued += s.requeued;
       totals.dead += s.dead;
       deferred += s.deferred;
+      // Between batches, not inside one: a batch is the smallest unit this loop
+      // controls, and a beat per item would be a write per item for nothing.
+      await beat(db, ctx.runId, iso());
       if (s.claimed === 0) break; // nothing eligible: the queue is drained
     }
   } catch (error) {
@@ -1868,8 +1877,61 @@ async function openRun(
       k_business: kBusiness,
       started_at: startedAt,
       state: 'running',
+      // The heartbeat starts the moment the run does. A row that never beats
+      // again is a process that died before its first batch.
+      heartbeat_at: startedAt,
     },
   ]);
+}
+
+/**
+ * How long a run may go without a heartbeat before it is presumed dead.
+ *
+ * Generous on purpose. The beat lands between batches, and a batch is not
+ * bounded: client_session_sync fetches a client's whole history in one item, and
+ * a slow WL plus the retry ladder can stretch that. Declaring a working run dead
+ * would be worse than noticing a dead one late - the sweep only RECORDS the
+ * outcome, but a false positive would put a lie in the table.
+ */
+const RUN_HEARTBEAT_STALE_MS = 30 * 60 * 1000;
+
+/**
+ * Retires runs whose process died without closing them.
+ *
+ * WHY THIS EXISTS. closeRun() is the only thing that moves a run off 'running',
+ * so a process that dies leaves the row saying 'running' forever. Forty such
+ * rows had accumulated by 31 Aug 2026, the oldest from the 21st, and they made
+ * sync_run unable to answer the one question it exists for: is a sync running
+ * right now? It always said yes.
+ *
+ * That is not cosmetic. Two attendance_sync runs overlapped - one of them a
+ * corpse nobody had noticed - and the collision killed the pass with 32,440
+ * items unqueued. A wrong answer to "is something already running" is what let
+ * the race happen.
+ *
+ * The same shape as reclaimExpired for queue items: a lease, and a sweep for
+ * whatever outlived it.
+ */
+async function abandonStaleRuns(db: SupabaseClient, now: string): Promise<number> {
+  const cutoff = new Date(Date.parse(now) - RUN_HEARTBEAT_STALE_MS).toISOString();
+  const rows = await db.update(
+    'sync_run',
+    {
+      state: 'abandoned',
+      // The constraint requires a finish time once state leaves 'running'. We
+      // know it stopped, not when - the last heartbeat is the closest defensible
+      // answer, and inventing a precise one would be worse.
+      finished_at: now,
+      error: 'no heartbeat: the process died without closing this run',
+    },
+    `state=eq.running&heartbeat_at=lt.${cutoff}&select=run_id`,
+  );
+  return rows.length;
+}
+
+/** Says the run is still alive. Cheap, and called once per drained batch. */
+async function beat(db: SupabaseClient, runId: string, now: string): Promise<void> {
+  await db.update('sync_run', { heartbeat_at: now }, `run_id=eq.${runId}`);
 }
 
 async function closeRun(

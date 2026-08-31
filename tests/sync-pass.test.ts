@@ -93,7 +93,10 @@ describe('runStaffSyncPass', () => {
     expect(summary.state).toBe('ok');
     // The run is opened and then closed with a finished_at + ok state.
     const open = calls.find((c) => c.op === 'insert' && c.table === 'sync_run');
-    const close = calls.find((c) => c.op === 'update' && c.table === 'sync_run');
+    // LAST, not first. runPass now sweeps abandoned runs before opening its own
+    // (migration 0033), so the first sync_run update is that sweep. The close is
+    // the final word on this run.
+    const close = calls.filter((c) => c.op === 'update' && c.table === 'sync_run').at(-1);
     expect(open).toBeDefined();
     expect(close!.patch).toMatchObject({ state: 'ok' });
     expect(close!.patch!.finished_at).toBeTruthy();
@@ -110,7 +113,10 @@ describe('runStaffSyncPass', () => {
 
     expect(summary.state).toBe('partial');
     expect(summary.itemsRemaining).toBe(1);
-    const close = calls.find((c) => c.op === 'update' && c.table === 'sync_run');
+    // LAST, not first. runPass now sweeps abandoned runs before opening its own
+    // (migration 0033), so the first sync_run update is that sweep. The close is
+    // the final word on this run.
+    const close = calls.filter((c) => c.op === 'update' && c.table === 'sync_run').at(-1);
     expect(close!.patch).toMatchObject({ state: 'partial' });
   });
 

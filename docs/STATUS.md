@@ -327,7 +327,39 @@ within it: a parent-child purchase (recipient ≠ payer) has never been observed
 dev — every sample is a self-purchase — so that path is mock-verified only
 (task 008).
 
+## A view is rewritten whole, and that has already cost us twice
+
+`data_health_issue` cannot be appended to - Postgres makes you write the whole
+thing out - so a branch nobody retypes simply vanishes. It has happened:
+
+* `0023` added `ghl_unresolved_48h` (board item M05's 48-hour alert) and pointed
+  the three GoHighLevel rows at `ghl_unresolved_since` so `data_health.oldest`
+  meant something. `0026` recreated the view from an older copy and **silently
+  lost both**. Nothing failed. The alert simply stopped existing, and `oldest`
+  went back to resetting on every sync.
+* Found 31 Aug 2026 only because `0033` had to touch the view too, and the live
+  view was checked against the file before rewriting it.
+
+**Before recreating `data_health_issue`, list the live view's branches first**
+(`select distinct issue from data_health_issue`) and diff them against what you
+are about to write. The file in `supabase/migrations/` is not the authority -
+the newest migration that recreated the view is, and that is easy to miss.
+
 ## Decisions waiting on someone
+
+**`WL_REQUESTS_PER_SECOND` is set and read by nothing (31 Aug 2026).** It sits in
+`.env` at 2, and a grep across `src/` and `api/` finds no reader. The live drain
+ran at 1,591 items/min - roughly 26 requests/second - so nothing is throttling
+WellnessLiving at all. WL has never pushed back, so this is not urgent, but a
+knob that looks like a safety limit and is not is worse than no knob. Either wire
+it up or delete it.
+
+**`attendance.synced_at` says when a row was first written, not when it was last
+confirmed (31 Aug 2026).** The writer never sends the column, so its `now()`
+default only fires on insert. After a full re-check of all 43,733 rows, not one
+of them reported having been confirmed. `data_health`'s staleness checks read
+this column.
+
 
 **Which GoHighLevel fields to report — no longer blocks M06 (27 Aug 2026).**
 M06 is built and the ticket can close. The blocker was self-inflicted: "the
