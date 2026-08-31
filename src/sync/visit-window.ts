@@ -101,3 +101,42 @@ export function visitWindow(input: VisitWindowInput): VisitWindow {
   const back = input.now - input.lookbackDays * 24 * 60 * 60 * 1000;
   return { dtuStart: wlDateTime(back), dtuEnd, isInitial: false, isOverride: false };
 }
+
+/**
+ * Reads a window boundary, accepting `1980-01-01` or a full ISO timestamp.
+ *
+ * REJECTED RATHER THAN COERCED. A date this cannot parse would otherwise become
+ * `Invalid Date` and reach WellnessLiving as a window that quietly matches
+ * nothing - a request accepted, obeyed, and worthless. Loud is the only safe
+ * failure here.
+ *
+ * Lives here, not in a route, because two endpoints now accept these dates and
+ * the same string must mean the same window to both.
+ */
+export function parseWindowBoundary(value: unknown, field: string): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw new Error(`${field} must be a string date`);
+  const ms = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value);
+  if (!Number.isFinite(ms)) throw new Error(`${field} is not a date this endpoint can read`);
+  return new Date(ms).toISOString();
+}
+
+/**
+ * Reads a start/end pair off a request body, refusing an inverted range.
+ *
+ * Returns nulls when neither is given, which is how a caller says "use the
+ * derived rule" - a cron passes no body at all and must not be treated as
+ * requesting an empty window.
+ */
+export function readWindowRequest(body: Record<string, unknown>): {
+  start: string | null;
+  end: string | null;
+  requested: boolean;
+} {
+  const start = parseWindowBoundary(body.start, 'start');
+  const end = parseWindowBoundary(body.end, 'end');
+  if (start !== null && end !== null && Date.parse(start) >= Date.parse(end)) {
+    throw new Error('start must be before end');
+  }
+  return { start, end, requested: start !== null || end !== null };
+}

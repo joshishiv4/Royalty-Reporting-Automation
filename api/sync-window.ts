@@ -1,10 +1,11 @@
 import { ConfigValidationError, loadConfig } from '../src/config/index.js';
 import { isAuthorizedByAny } from '../src/http/bearer.js';
+import { readJsonBody } from '../src/http/body.js';
 import type { HttpRequest, HttpResponse } from '../src/http/types.js';
 import { MissingSecretsError, SecretsProviderError } from '../src/secrets/types.js';
 import { SupabaseClient } from '../src/supabase/client.js';
 import { readWindowState, setWindowOverride } from '../src/sync/job-state.js';
-import { visitWindow } from '../src/sync/visit-window.js';
+import { parseWindowBoundary, visitWindow } from '../src/sync/visit-window.js';
 
 /**
  * Reads and sets the visit sync's date window, token-protected.
@@ -46,35 +47,6 @@ function isConfigError(error: unknown): boolean {
   );
 }
 
-/**
- * Accepts `1980-01-01` or a full ISO timestamp, and refuses anything else.
- *
- * Rejected rather than coerced: a date this endpoint cannot parse would otherwise
- * become `Invalid Date` and reach WellnessLiving as a window that quietly matches
- * nothing - a request accepted, obeyed, and worthless.
- */
-function parseBoundary(value: unknown, field: string): string | null {
-  if (value === undefined || value === null || value === '') return null;
-  if (typeof value !== 'string') throw new Error(`${field} must be a string date`);
-  const ms = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value);
-  if (!Number.isFinite(ms)) throw new Error(`${field} is not a date this endpoint can read`);
-  return new Date(ms).toISOString();
-}
-
-function readBody(req: HttpRequest): Record<string, unknown> {
-  const raw = (req as { body?: unknown }).body;
-  if (raw === undefined || raw === null) return {};
-  if (typeof raw === 'string') {
-    try {
-      return JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      throw new Error('body is not valid JSON');
-    }
-  }
-  if (typeof raw === 'object') return raw as Record<string, unknown>;
-  throw new Error('body is not valid JSON');
-}
-
 export default async function handler(req: HttpRequest, res: HttpResponse): Promise<void> {
   res.setHeader('Cache-Control', 'no-store');
 
@@ -100,9 +72,9 @@ export default async function handler(req: HttpRequest, res: HttpResponse): Prom
     const now = new Date();
 
     if (req.method === 'POST' || req.method === 'DELETE') {
-      const body = req.method === 'DELETE' ? {} : readBody(req);
-      const start = req.method === 'DELETE' ? null : parseBoundary(body.start, 'start');
-      const end = req.method === 'DELETE' ? null : parseBoundary(body.end, 'end');
+      const body = req.method === 'DELETE' ? {} : readJsonBody(req);
+      const start = req.method === 'DELETE' ? null : parseWindowBoundary(body.start, 'start');
+      const end = req.method === 'DELETE' ? null : parseWindowBoundary(body.end, 'end');
 
       if (start !== null && end !== null && Date.parse(start) >= Date.parse(end)) {
         res.status(400).json({ ok: false, error: 'start must be before end' });

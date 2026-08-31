@@ -2,8 +2,11 @@ import { ConfigValidationError, loadConfig } from '../src/config/index.js';
 import { isAuthorizedByAny } from '../src/http/bearer.js';
 import type { HttpRequest, HttpResponse } from '../src/http/types.js';
 import { MissingSecretsError, SecretsProviderError } from '../src/secrets/types.js';
+import { readJsonBody } from '../src/http/body.js';
+import { setWindowOverride } from '../src/sync/job-state.js';
 import { runFullSyncPass } from '../src/sync/pass.js';
 import { readSyncProgress } from '../src/sync/progress.js';
+import { readWindowRequest } from '../src/sync/visit-window.js';
 import { SupabaseClient } from '../src/supabase/client.js';
 
 /**
@@ -54,6 +57,12 @@ const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST']);
  */
 const FUNCTION_BUDGET_MS = 50_000;
 
+/**
+ * The job a start/end applies to. Visits are the only windowed pass - every
+ * other pass reads all of what it syncs - so a dated request means this one.
+ */
+const WINDOWED_JOB = 'client_session_sync';
+
 export default async function handler(req: HttpRequest, res: HttpResponse): Promise<void> {
   res.setHeader('Cache-Control', 'no-store');
 
@@ -74,8 +83,42 @@ export default async function handler(req: HttpRequest, res: HttpResponse): Prom
     return;
   }
 
+  // A start/end in the body sets the visit window for THIS run, so triggering a
+  // dated backfill is one call instead of two. Two was a footgun: setting the
+  // window and forgetting to run left the override sitting there for whichever
+  // cron fired next, which then quietly re-read a range nobody asked it for.
+  //
+  // Rejected BEFORE any work starts. A window this cannot parse would reach
+  // WellnessLiving matching nothing - accepted, obeyed, and worthless - so a bad
+  // date must fail the request rather than silently produce an empty sync.
+  let window: { start: string | null; end: string | null; requested: boolean };
+  try {
+    window = readWindowRequest(readJsonBody(req));
+  } catch (error) {
+    res.status(400).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'window could not be read',
+    });
+    return;
+  }
+
   try {
     const config = await loadConfig();
+    const db = new SupabaseClient(config.supabase);
+
+    // Set before the run, so the pass that follows picks it up. Only when asked:
+    // a cron sends no body and must keep the derived rule (SYNC_HISTORY_START
+    // until a clean drain, then a rolling SYNC_DAILY_LOOKBACK_DAYS overlap).
+    if (window.requested) {
+      await setWindowOverride(
+        db,
+        WINDOWED_JOB,
+        config.wl.kBusiness,
+        window.start,
+        window.end,
+        new Date().toISOString(),
+      );
+    }
     // The budget lives HERE, not in runFullSyncPass, because it is this
     // caller's constraint and nobody else's: the platform kills the function at
     // its own limit, so the run must stop STARTING work before that and hand
@@ -87,10 +130,7 @@ export default async function handler(req: HttpRequest, res: HttpResponse): Prom
     // THIS invocation managed, which is at most one budget's worth - so on its
     // own it cannot tell a caller whether to invoke again. Reading the queue
     // afterwards answers that directly, and it is three cheap view reads.
-    const progress = await readSyncProgress(
-      new SupabaseClient(config.supabase),
-      config.wl.kBusiness,
-    );
+    const progress = await readSyncProgress(db, config.wl.kBusiness);
 
     // `failed` is the only 503: a pass hit a bug it could not record as queue
     // state. `ok` and `partial` are both 200 - `partial` means the budget ran out
@@ -102,6 +142,9 @@ export default async function handler(req: HttpRequest, res: HttpResponse): Prom
       // which says `ok` for a run that did fifty honest seconds of a two-hour
       // backfill. Poll /api/sync-status for the same answer without working.
       complete: progress.complete,
+      // Echoed so a caller can see the dates were understood as intended, rather
+      // than discovering later that a typo produced an empty range.
+      window_applied: window.requested ? { start: window.start, end: window.end } : null,
       remaining: progress.totals,
       stages: progress.stages,
     });
