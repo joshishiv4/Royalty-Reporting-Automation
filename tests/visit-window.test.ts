@@ -76,3 +76,77 @@ describe('the format WellnessLiving actually accepts', () => {
     );
   });
 });
+
+describe('a manual window wins, and says so', () => {
+  const clean = '2026-08-30T04:00:00.000Z';
+
+  it('overrides the daily overlap on a job that has drained cleanly', () => {
+    // The whole point of setting one is to override what the rule would choose,
+    // so it is checked BEFORE the watermark branch, not after.
+    const w = visitWindow({
+      ...base,
+      lastCleanCompletionAt: clean,
+      startOverride: '2023-03-01T00:00:00.000Z',
+      endOverride: '2023-04-01T00:00:00.000Z',
+    });
+    expect(w.dtuStart).toBe('2023-03-01 00:00:00');
+    expect(w.dtuEnd).toBe('2023-04-01 00:00:00');
+    expect(w.isOverride).toBe(true);
+  });
+
+  it('overrides the backfill too', () => {
+    const w = visitWindow({
+      ...base,
+      lastCleanCompletionAt: null,
+      startOverride: '2023-03-01T00:00:00.000Z',
+      endOverride: null,
+    });
+    expect(w.dtuStart).toBe('2023-03-01 00:00:00');
+    expect(w.isInitial).toBe(false);
+    expect(w.isOverride).toBe(true);
+  });
+
+  it('an end with no start still reaches the configured floor', () => {
+    // "up to here" means everything up to here, not an empty range.
+    const w = visitWindow({
+      ...base,
+      lastCleanCompletionAt: clean,
+      endOverride: '2023-04-01T00:00:00.000Z',
+    });
+    expect(w.dtuStart).toBe('1980-01-01 00:00:00');
+    expect(w.dtuEnd).toBe('2023-04-01 00:00:00');
+  });
+
+  it('a start with no end runs to now', () => {
+    const w = visitWindow({
+      ...base,
+      lastCleanCompletionAt: clean,
+      startOverride: '2023-03-01T00:00:00.000Z',
+    });
+    expect(w.dtuEnd).toBe('2026-08-31 04:00:00');
+  });
+
+  it('falls back to the rule when both are null', () => {
+    const w = visitWindow({
+      ...base,
+      lastCleanCompletionAt: clean,
+      startOverride: null,
+      endOverride: null,
+    });
+    expect(w.isOverride).toBe(false);
+    expect(w.dtuStart).toBe('2026-08-29 04:00:00');
+  });
+
+  it('reports which rule produced the window, so a surprise explains itself', () => {
+    const asRule = visitWindow({ ...base, lastCleanCompletionAt: clean });
+    const asBackfill = visitWindow({ ...base, lastCleanCompletionAt: null });
+    const asManual = visitWindow({
+      ...base,
+      lastCleanCompletionAt: clean,
+      startOverride: '2023-03-01T00:00:00.000Z',
+    });
+    expect([asRule.isInitial, asRule.isOverride]).toEqual([false, false]);
+    expect([asBackfill.isInitial, asBackfill.isOverride]).toEqual([true, false]);
+    expect([asManual.isInitial, asManual.isOverride]).toEqual([false, true]);
+  });
+});

@@ -149,6 +149,7 @@ envelope inside" trap to guard against.
 | Vercel health route | [`api/health.ts`](../api/health.ts) |
 | Vercel sync route — staff only, targeted | [`api/wellness-sync.ts`](../api/wellness-sync.ts) |
 | Vercel FULL sync route — every pass, the daily cron | [`api/wellness-sync-all.ts`](../api/wellness-sync-all.ts) |
+| Reading and setting the visit sync's date window — GET what the next window will be and why, POST a ONE-SHOT manual `{start,end}`, DELETE to clear | [`api/sync-window.ts`](../api/sync-window.ts) |
 
 The CLI and the routes are thin: both resolve config, build a client, and call the
 same functions. Nothing lives only in an entry point.
@@ -222,6 +223,7 @@ to re-run.
 | `0028` | `purchase.m_refund` — the refund is a fact about the **purchase**, not the item; `purchase_item.m_refund` is an echo and must never be SUMmed (summing it inflated refunds up to 4× and made 38 purchases look over-refunded). Adds `purchase_net`, `revenue_month`, `active_client` and `purchase_over_refunded` views |
 | `0029` | `attendance.id_visit` — WL's own visit status (`WlVisitSid`), the only field that says what happened. `is_attended` was written from `is_checkin` ("ready to be checked in", true on 0 of 4,423 sessions) and is now derived from `id_visit` and **nullable**; `session_outcome` and `is_countable` read the status; adds `visit_awaiting_staff` |
 | `0030` | `attendance.dt_checkin_utc` — WL's `dt_register`, "the date the client checked in", present on 55 of 55 sampled records and previously discarded. Evidence beside the verdict: nothing derives from it. Class-only — the appointment record does not carry it, so it does NOT answer Q9; that still needs `is_arrive` from the StaffApp schedule list. Adds `visit_unresolved_past` — sessions that ran while WL still says BOOK, which `visit_awaiting_staff` misses because WL is not asking anybody |
+| `0031` | `sync_job_state.window_start_override` / `window_end_override` — a ONE-SHOT manual sync window, consumed by the next clean drain. Beside the derived rule, not instead of it: a stored cursor that advances past an interrupted run loses that work silently. Adds `sync_window_override`, normally empty |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs, plus case tables for rules that live in SQL. They are not migrations and

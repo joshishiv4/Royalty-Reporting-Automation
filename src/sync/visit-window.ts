@@ -38,6 +38,8 @@ export interface VisitWindow {
   readonly dtuEnd: string;
   /** True when nothing has ever drained cleanly, so this is a full backfill. */
   readonly isInitial: boolean;
+  /** True when a manual override supplied this window rather than the rule. */
+  readonly isOverride: boolean;
 }
 
 export interface VisitWindowInput {
@@ -46,6 +48,13 @@ export interface VisitWindowInput {
   readonly lookbackDays: number;
   /** `sync_job_state.last_clean_completion_at`, or null if never. */
   readonly lastCleanCompletionAt: string | null;
+  /**
+   * A one-shot manual window (0031). Set, it WINS over the derived rule; a start
+   * with no end means "from there to now". It is cleared by the next clean drain,
+   * not on read - see the migration for why a standing override is a footgun.
+   */
+  readonly startOverride?: string | null;
+  readonly endOverride?: string | null;
   /** Milliseconds since epoch. */
   readonly now: number;
 }
@@ -66,12 +75,29 @@ function startOfDay(date: string): string {
 
 export function visitWindow(input: VisitWindowInput): VisitWindow {
   const dtuEnd = wlDateTime(input.now);
+
+  // A manual window wins outright. Deliberately BEFORE the watermark branch: the
+  // whole point of setting one is to override what the rule would have chosen,
+  // including on a job that has already drained cleanly.
+  const start = input.startOverride ?? null;
+  const end = input.endOverride ?? null;
+  if (start !== null || end !== null) {
+    return {
+      // An end with no start still reaches back to the configured floor - "up to
+      // here" means everything up to here, not an empty range.
+      dtuStart: start === null ? startOfDay(input.historyStart) : wlDateTime(Date.parse(start)),
+      dtuEnd: end === null ? dtuEnd : wlDateTime(Date.parse(end)),
+      isInitial: false,
+      isOverride: true,
+    };
+  }
+
   if (input.lastCleanCompletionAt === null) {
-    return { dtuStart: startOfDay(input.historyStart), dtuEnd, isInitial: true };
+    return { dtuStart: startOfDay(input.historyStart), dtuEnd, isInitial: true, isOverride: false };
   }
   // Anchored on NOW, not on the watermark. A watermark that is weeks old (a job
   // paused and resumed) would otherwise silently widen the daily window into
   // another accidental backfill; the lookback is a fixed overlap, by design.
   const back = input.now - input.lookbackDays * 24 * 60 * 60 * 1000;
-  return { dtuStart: wlDateTime(back), dtuEnd, isInitial: false };
+  return { dtuStart: wlDateTime(back), dtuEnd, isInitial: false, isOverride: false };
 }

@@ -60,7 +60,19 @@ export async function closeJobState(
         last_seen_at: now,
         // Only a clean drain advances the watermark. Omitted otherwise, so an
         // earlier clean completion survives a later partial/failed run.
-        ...(passState === 'ok' ? { last_clean_completion_at: now } : {}),
+        //
+        // The same drain CONSUMES a one-shot window override (0031). Cleared here
+        // rather than when it is read: a run that crashed before doing the work
+        // would otherwise have swallowed the request silently. Honoured, then
+        // gone - a standing override would make every night re-fetch the same
+        // range forever while reporting success.
+        ...(passState === 'ok'
+          ? {
+              last_clean_completion_at: now,
+              window_start_override: null,
+              window_end_override: null,
+            }
+          : {}),
       },
     ],
     { onConflict: 'job_name,k_business' },
@@ -74,17 +86,63 @@ export async function closeJobState(
  * back to `SYNC_HISTORY_START` or only over the daily overlap, and a half-done
  * backfill must keep looking like a backfill.
  */
-export async function readCleanCompletion(
+export interface WindowState {
+  /** Moves only on a clean drain. Null means "never finished" - still a backfill. */
+  readonly lastCleanCompletionAt: string | null;
+  /** One-shot manual window (0031). Wins over the derived rule while set. */
+  readonly startOverride: string | null;
+  readonly endOverride: string | null;
+}
+
+export async function readWindowState(
   db: SupabaseClient,
   jobName: string,
   kBusiness: string,
-): Promise<string | null> {
-  const rows = await db.select<{ last_clean_completion_at: string | null }>(
+): Promise<WindowState> {
+  const rows = await db.select<{
+    last_clean_completion_at: string | null;
+    window_start_override: string | null;
+    window_end_override: string | null;
+  }>(
     'sync_job_state',
     `job_name=eq.${jobName}&k_business=eq.${kBusiness}&limit=1` +
-      `&select=last_clean_completion_at`,
+      `&select=last_clean_completion_at,window_start_override,window_end_override`,
   );
-  return rows[0]?.last_clean_completion_at ?? null;
+  const row = rows[0];
+  return {
+    lastCleanCompletionAt: row?.last_clean_completion_at ?? null,
+    startOverride: row?.window_start_override ?? null,
+    endOverride: row?.window_end_override ?? null,
+  };
+}
+
+/**
+ * Sets (or clears, with two nulls) a job's one-shot manual window.
+ *
+ * Upserts rather than updates: a window can legitimately be set for a job that
+ * has never run, and a missing row should not silently swallow the request.
+ */
+export async function setWindowOverride(
+  db: SupabaseClient,
+  jobName: string,
+  kBusiness: string,
+  start: string | null,
+  end: string | null,
+  now: string,
+): Promise<void> {
+  await db.upsert(
+    'sync_job_state',
+    [
+      {
+        job_name: jobName,
+        k_business: kBusiness,
+        window_start_override: start,
+        window_end_override: end,
+        last_seen_at: now,
+      },
+    ],
+    { onConflict: 'job_name,k_business' },
+  );
 }
 
 /** The persisted state of an async report build, for the client-list poller. */

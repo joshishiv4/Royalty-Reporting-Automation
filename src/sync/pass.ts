@@ -21,7 +21,7 @@ import {
   openJobState,
   readReportState,
   saveReportRequested,
-  readCleanCompletion,
+  readWindowState,
 } from './job-state.js';
 import { writeClientList } from './clients.js';
 import { writeLocationList } from './locations.js';
@@ -1013,11 +1013,13 @@ export function runClientSessionSyncPass(
       // item and it costs a database round trip.
       let cached: Promise<VisitWindow> | null = null;
       const visitWindowOnce = (): Promise<VisitWindow> =>
-        (cached ??= readCleanCompletion(db, 'client_session_sync', kBusiness).then((watermark) =>
+        (cached ??= readWindowState(db, 'client_session_sync', kBusiness).then((state) =>
           visitWindow({
             historyStart: config.sync.historyStart,
             lookbackDays: config.sync.dailyLookbackDays,
-            lastCleanCompletionAt: watermark,
+            lastCleanCompletionAt: state.lastCleanCompletionAt,
+            startOverride: state.startOverride,
+            endOverride: state.endOverride,
             now: Date.parse(nowIso()),
           }),
         ));
