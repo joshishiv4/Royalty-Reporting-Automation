@@ -52,3 +52,5 @@ Thumbs.db
 scratchpad/
 # Also the loose form, still written at the repo root by other sessions.
 scratchpad-*.mjs
+.vercel
+.env*
