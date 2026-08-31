@@ -21,6 +21,7 @@ import {
   openJobState,
   readReportState,
   saveReportRequested,
+  readCleanCompletion,
 } from './job-state.js';
 import { writeClientList } from './clients.js';
 import { writeLocationList } from './locations.js';
@@ -48,6 +49,8 @@ import { parseVisitList, writeClientSession } from './client-sessions.js';
 import { writeSessionList } from './sessions.js';
 import { writeShopCategoryList } from './shop-categories.js';
 import { writeStaffList } from './writer.js';
+import { visitWindow } from './visit-window.js';
+import type { VisitWindow } from './visit-window.js';
 
 /**
  * One bounded sync pass, the shape the cron route runs.
@@ -961,15 +964,16 @@ const MAX_DETAIL_FETCHES = 2;
  * seventeen teachers had no session we could see. Private lessons are the main
  * revenue line, so without this pass almost nothing is attributable.
  *
- * FORWARD ONLY BY CHOICE, NOT BY LIMITATION - and the comment here used to claim
- * otherwise. Sending only `{ uid }` returns upcoming visits, which is what
- * ongoing sync wants: a session is caught while upcoming and its outcome filled
- * in later by the 7.3 re-read.
+ * TWO LIST CALLS PER CLIENT, BECAUSE THE ENDPOINT HAS TWO MODES. `{ uid }` alone
+ * answers with UPCOMING visits; `is_past=1` switches it to previous ones, and only
+ * then do `dtu_start`/`dtu_end` narrow it. Neither call sees the other's half, so
+ * covering a client takes both - see src/sync/visit-window.ts for which window is
+ * used and why.
  *
- * But `is_past=1` returns the client's previous visits, and `dtu_start`/`dtu_end`
- * window them. Measured live 27 Aug 2026: one uid answered 0 visits without the
- * flag and 402 with it, spanning 2021 to 2025. History is still P9's job, but P9
- * is not blocked - see client-sessions.ts for the full measurement.
+ * This used to send `{ uid }` only, which is why the database began at "now" and
+ * held no history whatsoever. Measured against the studio's own portal on
+ * 31 Aug 2026, the history it was not asking for is 38,839 appointments and 435
+ * classes.
  *
  * A client with nothing booked returns an empty list, which is a real answer:
  * the job completes rather than failing.
@@ -1004,16 +1008,42 @@ export function runClientSessionSyncPass(
         nowIso(),
       );
     },
-    makeHandler:
-      ({ wl, db, kBusiness, runId, nowIso }) =>
-      async (item) => {
+    makeHandler: ({ wl, db, kBusiness, runId, nowIso }) => {
+      // Read once per pass, not once per client: it is the same answer for every
+      // item and it costs a database round trip.
+      let cached: Promise<VisitWindow> | null = null;
+      const visitWindowOnce = (): Promise<VisitWindow> =>
+        (cached ??= readCleanCompletion(db, 'client_session_sync', kBusiness).then((watermark) =>
+          visitWindow({
+            historyStart: config.sync.historyStart,
+            lookbackDays: config.sync.dailyLookbackDays,
+            lastCleanCompletionAt: watermark,
+            now: Date.parse(nowIso()),
+          }),
+        ));
+      return async (item) => {
         try {
           const uid = item.target_key;
+          const window = await visitWindowOnce();
+
+          // Upcoming. No date parameters: without is_past the endpoint ignores
+          // them and answers the future list regardless.
           const listed = await wl.request(WL_PATHS.schedulePageList, {
             query: { uid },
             priorAttempt: item.attempt_count,
           });
-          const visits = parseVisitList(listed.body);
+          // Past, narrowed to the window. On the first run that is
+          // SYNC_HISTORY_START..now; afterwards it is the daily overlap, which is
+          // what stops every historical visit being re-listed each night.
+          const past = await wl.request(WL_PATHS.schedulePageList, {
+            query: { uid, is_past: 1, dtu_start: window.dtuStart, dtu_end: window.dtuEnd },
+            priorAttempt: item.attempt_count,
+          });
+          // A visit can legitimately land in both halves around the boundary, so
+          // the union is deduped on the key rather than concatenated.
+          const visits = [
+            ...new Set([...parseVisitList(listed.body), ...parseVisitList(past.body)]),
+          ];
 
           // What we already know about these visits, so a settled one is not
           // read again (PRD 7.3). One query for the whole client, not one per
@@ -1096,7 +1126,8 @@ export function runClientSessionSyncPass(
           if (outcome !== null) return outcome;
           throw error;
         }
-      },
+      };
+    },
   });
 }
 

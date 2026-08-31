@@ -7,6 +7,7 @@ import { runFullSyncPass, runFullSyncPassParallel } from '../src/sync/pass.js';
 const config = {
   env: 'dev',
   wl: { kBusiness: '111111', clientId: '', clientSecret: '', host: '', authHost: '', region: 0 },
+  sync: { historyStart: '1980-01-01', dailyLookbackDays: 2 },
 } as unknown as AppConfig;
 
 /** A WL client whose every call returns a valid but empty body. */

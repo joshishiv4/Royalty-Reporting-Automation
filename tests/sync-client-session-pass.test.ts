@@ -24,7 +24,11 @@ const PAST = '2026-08-20 15:00:00'; // five days before NOW
 const FUTURE = '2026-09-20 15:00:00'; // well after NOW
 const ANCIENT = '2026-08-01 15:00:00'; // more than a week before NOW
 
-const config = { env: 'dev', wl: { kBusiness: K_BUSINESS } } as unknown as AppConfig;
+const config = {
+  env: 'dev',
+  wl: { kBusiness: K_BUSINESS },
+  sync: { historyStart: '1980-01-01', dailyLookbackDays: 2 },
+} as unknown as AppConfig;
 
 function visitBody(kVisit: string, dtGlobal: string): unknown {
   return {
@@ -50,10 +54,12 @@ function harness(
   known: Array<{ kVisit: string; count: number; start: string }>,
 ) {
   const requested: string[] = [];
+  const calls: Array<{ path: string; query: Record<string, unknown> }> = [];
   const wl = {
     runId: 'run-x',
-    request: vi.fn((path: string, opts?: { query?: Record<string, string> }) => {
+    request: vi.fn((path: string, opts?: { query?: Record<string, unknown> }) => {
       requested.push(path);
+      calls.push({ path, query: opts?.query ?? {} });
       if (path.endsWith('/page/list')) {
         return Promise.resolve({
           body: { a_visit: visits.map((v) => ({ k_visit: v.kVisit })) },
@@ -63,7 +69,8 @@ function harness(
           latencyMs: 1,
         });
       }
-      const kVisit = opts?.query?.['k_visit'] ?? '';
+      const raw = opts?.query?.['k_visit'];
+      const kVisit = typeof raw === 'string' ? raw : '';
       const found = visits.find((v) => v.kVisit === kVisit);
       return Promise.resolve({
         body: visitBody(kVisit, found?.start ?? FUTURE),
@@ -138,6 +145,7 @@ function harness(
     wl,
     db,
     requested,
+    calls,
     detailCalls: () => requested.filter((p) => p.endsWith('/element')).length,
   };
 }
@@ -187,7 +195,7 @@ describe('client session pass: the at-most-twice rule (PRD 7.3)', () => {
     expect(h.detailCalls()).toBe(0);
   });
 
-  it('costs a single list call for a client whose sessions have all settled', async () => {
+  it('costs only its list calls for a client whose sessions have all settled', async () => {
     const h = harness(
       [
         { kVisit: 'v1', start: FUTURE },
@@ -201,7 +209,52 @@ describe('client session pass: the at-most-twice rule (PRD 7.3)', () => {
       ],
     );
     await run(h);
+    // The point of the 7.3 rule: a settled client costs NO detail calls at all.
     expect(h.detailCalls()).toBe(0);
-    expect(h.requested.filter((p) => p.endsWith('/page/list'))).toHaveLength(1);
+    // Two list calls, not one, and that is the cost of having history: `{ uid }`
+    // answers with upcoming visits only, and `is_past=1` is a separate mode -
+    // neither call sees the other's half. Two cheap list calls per client is the
+    // whole price of no longer starting the database at "now".
+    expect(h.requested.filter((p) => p.endsWith('/page/list'))).toHaveLength(2);
+  });
+});
+
+describe('history is asked for explicitly, and only history uses the window', () => {
+  // Mutation-proofing: dropping is_past from the second call silently returns the
+  // FUTURE list twice, so the pass would look healthy while fetching no history
+  // at all. That is exactly the failure this project spent weeks not noticing.
+  it('sends is_past on the second list call, with the window', async () => {
+    const h = harness([{ kVisit: 'v1', start: FUTURE }], []);
+    await run(h);
+
+    const lists = h.calls.filter((c) => c.path.endsWith('/page/list'));
+    expect(lists).toHaveLength(2);
+
+    const past = lists.filter((c) => c.query.is_past !== undefined);
+    expect(past).toHaveLength(1);
+    expect(past[0]?.query.dtu_start).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(past[0]?.query.dtu_end).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  });
+
+  it('does NOT send dates on the upcoming call', async () => {
+    // Without is_past the endpoint ignores date parameters and answers the future
+    // list regardless - sending them would only imply a filter that is not there.
+    const h = harness([{ kVisit: 'v1', start: FUTURE }], []);
+    await run(h);
+
+    const upcoming = h.calls
+      .filter((c) => c.path.endsWith('/page/list'))
+      .find((c) => c.query.is_past === undefined);
+    expect(upcoming).toBeDefined();
+    expect(upcoming?.query.dtu_start).toBeUndefined();
+    expect(Object.keys(upcoming?.query ?? {})).toEqual(['uid']);
+  });
+
+  it('reaches back to the configured floor when nothing has completed cleanly', async () => {
+    const h = harness([{ kVisit: 'v1', start: FUTURE }], []);
+    await run(h);
+
+    const past = h.calls.find((c) => c.query.is_past !== undefined);
+    expect(String(past?.query.dtu_start)).toContain('1980-01-01');
   });
 });

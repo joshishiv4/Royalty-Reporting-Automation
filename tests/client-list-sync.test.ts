@@ -149,8 +149,21 @@ describe('the date window is mandatory and it excludes silently', () => {
     const filter = body.json_filter as Record<string, unknown>;
 
     expect(filter.o_date).toEqual(ALL_DATES);
-    expect(Number(ALL_DATES.dl_start.slice(0, 4))).toBeLessThanOrEqual(1900);
+    // The floor is the studio's choice (1980), and it only has to be earlier
+    // than the studio's oldest client - it costs nothing to be earlier than the
+    // data. What it must NOT be is anywhere near the present: id_report_date 4
+    // is CLIENT SINCE DATE, so a late floor drops people with no error at all.
+    expect(Number(ALL_DATES.dl_start.slice(0, 4))).toBeLessThanOrEqual(1980);
     expect(Number(ALL_DATES.dl_end.slice(0, 4))).toBeGreaterThanOrEqual(2100);
+  });
+
+  it('does NOT end the window at today, however obvious that looks', () => {
+    // WL caches a report BY ITS FILTER. An end date of "now" changes daily, so
+    // every run would start a fresh build and pay the full queue-and-poll wait
+    // instead of reading a built one. Nobody has a join date in the future, so
+    // the fixed ceiling selects exactly the same clients for free.
+    const thisYear = new Date().getUTCFullYear();
+    expect(Number(ALL_DATES.dl_end.slice(0, 4))).toBeGreaterThan(thisYear + 50);
   });
 
   // WL misreads a partial filter object, so every key goes even when empty.

@@ -143,6 +143,31 @@ export const runtimeOptionsSchema = z.object({
   // platform log stream; file logs are for local runs and long-lived hosts.
   LOG_TO_FILE: booleanFromString,
   LOG_DIR: z.string().trim().min(1).default('logs'),
+
+  /**
+   * How far back the first visit sync reaches. `YYYY-MM-DD`.
+   *
+   * Config, not a constant: it is a business decision about how much history is
+   * worth paying for, and the studio's answer (1980) is older than the studio.
+   * Measured against the portal on 31 Aug 2026, the real span is ~38,839
+   * appointments and 435 classes, so the floor only has to be early enough - it
+   * costs nothing to be earlier than the data.
+   */
+  SYNC_HISTORY_START: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'SYNC_HISTORY_START must be YYYY-MM-DD')
+    .default('1980-01-01'),
+
+  /**
+   * Days of overlap the DAILY visit sync re-reads.
+   *
+   * Not 1. A session's outcome is settled after it runs, not when it is booked,
+   * and WL may leave it PENDING for staff for a while - so a one-day window can
+   * miss the moment the answer arrives. Every write is an upsert on a WL key, so
+   * the overlap is free of consequence.
+   */
+  SYNC_DAILY_LOOKBACK_DAYS: positiveIntFromString.default('2'),
 });
 
 export const appEnvSchema = z.enum(APP_ENVS);
@@ -160,6 +185,14 @@ export interface WlConfig {
   readonly kBusiness: string;
   readonly clientId: string;
   readonly clientSecret: string;
+}
+
+/** How far back each visit sync reaches. See src/sync/visit-window.ts. */
+export interface SyncConfig {
+  /** `YYYY-MM-DD`. The floor for the very first (backfill) run. */
+  readonly historyStart: string;
+  /** Days of overlap re-read on every run after the first clean drain. */
+  readonly dailyLookbackDays: number;
 }
 
 export interface SupabaseConfig {
@@ -202,6 +235,7 @@ export interface AppConfig {
   readonly supabase: SupabaseConfig;
   readonly ghl: GhlConfig;
   readonly runtime: RuntimeConfig;
+  readonly sync: SyncConfig;
 }
 
 /** Thrown when resolved values are present but invalid. Never echoes a value. */

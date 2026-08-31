@@ -14,7 +14,12 @@ import { runGhlMatchSyncPass } from '../src/sync/pass.js';
  */
 
 const K_BUSINESS = '111111';
-const config = { env: 'dev', wl: { kBusiness: K_BUSINESS }, ghl: {} } as unknown as AppConfig;
+const config = {
+  env: 'dev',
+  wl: { kBusiness: K_BUSINESS },
+  ghl: {},
+  sync: { historyStart: '1980-01-01', dailyLookbackDays: 2 },
+} as unknown as AppConfig;
 
 const contact = (id: string): GhlContact => ({
   id,

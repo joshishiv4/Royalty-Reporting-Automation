@@ -26,6 +26,7 @@ const LOCATION = 'loc-1';
 const config = {
   env: 'dev',
   wl: { kBusiness: K_BUSINESS },
+  sync: { historyStart: '1980-01-01', dailyLookbackDays: 2 },
   ghl: { locationId: LOCATION },
 } as unknown as AppConfig;
 

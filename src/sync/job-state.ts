@@ -67,6 +67,26 @@ export async function closeJobState(
   );
 }
 
+/**
+ * The clean-completion watermark, or null if this job has never drained cleanly.
+ *
+ * Read rather than assumed: it is what decides whether the visit sync reaches
+ * back to `SYNC_HISTORY_START` or only over the daily overlap, and a half-done
+ * backfill must keep looking like a backfill.
+ */
+export async function readCleanCompletion(
+  db: SupabaseClient,
+  jobName: string,
+  kBusiness: string,
+): Promise<string | null> {
+  const rows = await db.select<{ last_clean_completion_at: string | null }>(
+    'sync_job_state',
+    `job_name=eq.${jobName}&k_business=eq.${kBusiness}&limit=1` +
+      `&select=last_clean_completion_at`,
+  );
+  return rows[0]?.last_clean_completion_at ?? null;
+}
+
 /** The persisted state of an async report build, for the client-list poller. */
 export interface ReportState {
   /** Non-null once a build has been requested: poll it, do not restart. */

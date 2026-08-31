@@ -7,6 +7,7 @@ import { runStaffSyncPass } from '../src/sync/pass.js';
 const config = {
   env: 'dev',
   wl: { kBusiness: '111111' },
+  sync: { historyStart: '1980-01-01', dailyLookbackDays: 2 },
 } as unknown as AppConfig;
 
 /** A WL client whose staff call returns an empty (but valid) list, or throws. */

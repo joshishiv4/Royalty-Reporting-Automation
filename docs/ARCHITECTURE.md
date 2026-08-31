@@ -86,6 +86,7 @@ correctly does not start.
 | The class schedule (schedule/class/list → session + session_staff, keyed on class **and** date) | [`src/sync/sessions.ts`](../src/sync/sessions.ts) |
 | Who booked and who turned up (login/attendance/list → attendance, per occurrence) | [`src/sync/attendance.ts`](../src/sync/attendance.ts) |
 | Private appointments, per client (schedule/page/list + element → session, staff, attendance) | [`src/sync/client-sessions.ts`](../src/sync/client-sessions.ts) |
+| **How far back each visit sync reaches** — `is_past` + `dtu_start`/`dtu_end`, initial vs daily, decided by the clean-completion watermark | [`src/sync/visit-window.ts`](../src/sync/visit-window.ts) |
 | **What WL's visit status means** — `WlVisitSid` → the `attendance` outcome columns, in ONE place because two passes write them | [`src/sync/visit-outcome.ts`](../src/sync/visit-outcome.ts) |
 | Service catalogue + categories (appointment/book/service/{list,category} → service, service_category; marks is_resolved) | [`src/sync/services.ts`](../src/sync/services.ts) |
 | The durable sync_queue loop (claim, settle, requeue, dead-letter; claims and processes the batch as a bounded concurrent pool; `outcomeFromError` requeues a transient DB error instead of failing the pass) | [`src/sync/queue.ts`](../src/sync/queue.ts) |

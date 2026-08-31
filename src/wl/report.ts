@@ -42,7 +42,22 @@ export const REPORT_CLIENT_LIST = 689;
  * narrower window drops clients without saying so.
  */
 export const ALL_DATES = {
-  dl_start: '1900-01-01',
+  /**
+   * The studio's chosen floor, and older than the studio. `id_report_date: 4` is
+   * CLIENT SINCE DATE, and a window that starts too late drops people with no
+   * error at all: a 2010..2026 window returned 516 activated clients where the
+   * portal showed 517 - one client, joined before 2010, simply absent.
+   */
+  dl_start: '1980-01-01',
+  /**
+   * FIXED, NOT `now` - and that is a deliberate refusal of the obvious.
+   *
+   * An end date of "today" changes every single day, and WL CACHES A REPORT BY
+   * ITS FILTER. A moving end date therefore starts a fresh report build on every
+   * run, so every run pays the full queue-and-poll wait instead of reading a
+   * built one. Nobody has a join date in the future, so the two windows select
+   * exactly the same clients - one of them just costs a rebuild each time.
+   */
   dl_end: '2100-12-31',
   /** 4 = client since date. */
   id_report_date: 4,
