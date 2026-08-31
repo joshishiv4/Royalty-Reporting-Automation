@@ -355,11 +355,11 @@ The StaffApp schedule list is worth reaching for three fields beyond
 | `a_staff_info[].is_staff_change` | *"true means staff is substituted"* | A royalty is paid to whoever taught. Nothing else in the API says a substitution happened |
 | `dt_confirm` | *"Will be zero date + time in case appointment is not yet confirmed by client"* | Confirmation is a client act with a time on it |
 
-### Attendance is NOT class-only — that was our parameter bug (settled live 27 Aug 2026)
+### Attendance is NOT class-only — that was our parameter bug (settled live 31 Aug 2026)
 
 `/v1/login/attendance/list` rejects an appointment key with sid `id-nx` — "The ID
 value for `k_class_period` that you have specified does not exist". Measured
-21 Aug → 27 Aug 2026: **681 dead attendance rows out of 1,018**, every one for an
+21 Aug → 31 Aug 2026: **681 dead attendance rows out of 1,018**, every one for an
 appointment. That was recorded here as "the endpoint is class-only".
 
 **It is not.** WL's spec summarises the endpoint as *"clients attending a class,

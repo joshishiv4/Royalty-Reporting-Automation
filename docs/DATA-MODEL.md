@@ -472,7 +472,7 @@ counting rather than by asking.
 `page/element`) and [`attendance.ts`](../src/sync/attendance.ts) (per class
 occurrence, from `attendance/list`), on the same primary key. Both upsert the
 outcome unconditionally, so the later pass wins regardless of which payload is
-fresher. Measured 27 Aug 2026: the two routes overlap on 5 (visit, client) pairs
+fresher. Measured 31 Aug 2026: the two routes overlap on 5 (visit, client) pairs
 and **disagree on 0**, so this is a structural risk rather than an active fault —
 recorded because the day they disagree, nothing in the code decides who is right.
 The derivation itself cannot diverge: both import

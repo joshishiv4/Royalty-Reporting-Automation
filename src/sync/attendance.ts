@@ -36,6 +36,15 @@ export type AttendanceRow = {
   readonly dt_booked_utc: string | null;
   /** WL's own verdict (WlVisitSid). THE authoritative outcome - see visit-outcome.ts. */
   readonly id_visit: string | null;
+  /**
+   * When WL recorded the client checking in (`dt_register`).
+   *
+   * CLASS-ONLY, and null is the normal case. The appointment record from this
+   * endpoint carries id_visit, k_visit and uid but NOT dt_register - probed live
+   * on one past and one upcoming appointment. Evidence beside the verdict:
+   * nothing derives from it, because attendance is id_visit = 3 (0030).
+   */
+  readonly dt_checkin_utc: string | null;
   readonly is_attended: boolean | null;
   readonly is_no_show: boolean;
   readonly is_cancelled_client: boolean;
@@ -58,7 +67,7 @@ export interface ParsedAttendance {
  *
  * ID_VISIT FIRST. It is what the API documents as "the status of the visit", and
  * it is what migration 0029 made `session_outcome.is_countable` depend on.
- * Measured on live dev 27 Aug 2026 it is present on 55 of 55 sampled client
+ * Measured on live dev 31 Aug 2026 it is present on 55 of 55 sampled client
  * records (BOOK 45, ATTEND 8, PENDING 2) - yet this parser used to ignore it and
  * derive attendance from `is_visit`/`is_attend` instead, so every row it wrote
  * left `id_visit` null and could never become countable.
@@ -122,6 +131,7 @@ export function parseAttendanceList(
         k_business: kBusiness,
         k_visit: readString(rec, 'k_visit'),
         dt_booked_utc: readString(rec, 'dt_book'),
+        dt_checkin_utc: readString(rec, 'dt_register'),
         ...outcomeOf(rec),
         is_waitlisted: isWaitlisted,
         is_unpaid: wlBool(rec?.is_unpaid),

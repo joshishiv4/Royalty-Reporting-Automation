@@ -29,7 +29,7 @@ import { runAttendanceSyncPass } from '../src/sync/pass.js';
  * `dt_date` versus `dt_date_local`, which had this endpoint recorded as blocked
  * for days.
  *
- * Probed live 27 Aug 2026 on one past and one upcoming appointment: k_appointment=
+ * Probed live 31 Aug 2026 on one past and one upcoming appointment: k_appointment=
  * is accepted and returns the attendee carrying id_visit (3 ATTEND on the past
  * one, 1 BOOK on the upcoming one), while the same key as k_class_period still
  * fails with id-nx.

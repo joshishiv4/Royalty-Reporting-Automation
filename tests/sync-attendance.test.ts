@@ -56,6 +56,9 @@ describe('parseAttendanceList', () => {
       k_business: K_BUSINESS,
       k_visit: '754626261',
       dt_booked_utc: '2026-07-10 20:20:04',
+      // No dt_register on this fixture: no check-in was recorded, which is not
+      // the same as not attending. See 0030.
+      dt_checkin_utc: null,
       // Null, not '3': this fixture carries no id_visit, and inferring the
       // attendance from is_visit must not invent a status WL never sent.
       id_visit: null,
@@ -304,6 +307,24 @@ describe("WL's own visit status is what gets stored", () => {
     // never actually stated one.
     const [row] = parse(body({ a_list_active: [attendee({ id_visit: 0 })] })).rows;
     expect(row?.id_visit).toBeNull();
+    expect(row?.is_attended).toBe(true);
+  });
+});
+
+describe('the check-in moment, which is not is_checkin', () => {
+  it("stores WL's dt_register as the check-in time", () => {
+    const [row] = parse(
+      body({ a_list_active: [attendee({ dt_register: '2026-08-19 15:02:11' })] }),
+    ).rows;
+    expect(row?.dt_checkin_utc).toBe('2026-08-19 15:02:11');
+  });
+
+  it('leaves it null when WL recorded no check-in', () => {
+    // The normal case for an appointment: that record shape carries id_visit but
+    // no dt_register at all. Null here means "no check-in recorded", NOT "did
+    // not attend" - attendance is id_visit = 3 and nothing derives from this.
+    const [row] = parse(body({ a_list_active: [attendee({ id_visit: 3 })] })).rows;
+    expect(row?.dt_checkin_utc).toBeNull();
     expect(row?.is_attended).toBe(true);
   });
 });

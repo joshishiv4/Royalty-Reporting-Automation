@@ -776,7 +776,7 @@ export function runAttendanceSyncPass(
       // id-nx was a correct answer to a question asked wrongly - the same shape
       // of mistake as dt_date versus dt_date_local (see attendance.ts).
       //
-      // Probed live 27 Aug 2026 on one past and one upcoming appointment:
+      // Probed live 31 Aug 2026 on one past and one upcoming appointment:
       // k_appointment= is accepted and returns the attendee with id_visit - 3
       // ATTEND on the past one, 1 BOOK on the upcoming one - while the same key
       // as k_class_period still fails with id-nx. So appointment OUTCOMES are

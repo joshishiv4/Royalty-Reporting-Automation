@@ -78,7 +78,7 @@ const REQUIRED = 'uid';
  *
  * Measured before adding it, so this is a no-op today rather than a new
  * blocker: all 11 mapped ids are present on 20 of 20 stored report payloads
- * (27 Aug 2026), out of 37 ids the report returns.
+ * (31 Aug 2026), out of 37 ids the report returns.
  *
  * Deliberately strict. Phone is the PRIMARY GoHighLevel match key, so a
  * quietly-absent phone column degrades matching rather than breaking it, which

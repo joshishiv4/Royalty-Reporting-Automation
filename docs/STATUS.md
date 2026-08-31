@@ -1,6 +1,6 @@
 # Status and plan
 
-Last updated **27 Aug 2026**. Keep the date honest — a stale status file is worse
+Last updated **31 Aug 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed.
 
 ## The plan
@@ -140,7 +140,7 @@ What is missing is the writer.
 **M04**, GoHighLevel matching and royalty calculation. Credentials work; there is no
 `src/ghl/` yet.
 
-## Measured 27 Aug 2026 — `id_visit` is read by the view but written by nothing
+## Measured 31 Aug 2026 — `id_visit` is read by the view but written by nothing
 
 Migration 0029 made `attendance.id_visit` the field the royalty rule turns on.
 Measured on live dev the same day, read-only:
@@ -166,7 +166,7 @@ not that a month of royalties is missing.
 **The cheap fix was a re-parse, not a re-sync — and it is done.** Those 4,990
 stored payloads each carry `id_visit` (200 of 200 sampled), and every attendance
 row has its `k_visit`, so the gap was closed with **zero WellnessLiving calls**.
-Re-parsed and applied 27 Aug 2026:
+Re-parsed and applied 31 Aug 2026:
 
 | | before | after |
 |---|---|---|
@@ -193,7 +193,7 @@ sessions is the schema doing exactly what M08 asked for: *"sessions not yet
 reviewed by the studio are stored and visible, but never counted as attended"*.
 Nothing is broken here; the pipeline is waiting on a human.
 
-### Then appointment attendance was read for the first time — 27 Aug 2026
+### Then appointment attendance was read for the first time — 31 Aug 2026
 
 The backfill above left 4,425 BOOK against 3 ATTEND, and 29 past sessions reading
 `unknown`. That was not WellnessLiving being vague: `/v1/login/attendance/list`
@@ -234,7 +234,37 @@ one and why neither is wired up yet.
 All 19 attended visits are already past, so `is_reviewed` remains the only thing
 between them and being countable.
 
-### Coverage, measured 27 Aug 2026
+### An outcome is only as fresh as the last read AFTER the session ran
+
+Within an hour of the run above, `session_outcome` showed **115 `unknown`** where
+it had shown 0, and `visit_unresolved_past` (0030, applied the same day) reported
+the same 115. Nothing regressed — this is the pass working exactly as designed and
+the design having a consequence nobody had written down:
+
+**A session read while it is still upcoming records BOOK, and nothing re-reads it
+once it has happened.** Those 115 started between 27 and 30 Aug. When the sync ran,
+they were in the future, so `id_visit = 1` was WellnessLiving's correct answer.
+Time passed; the answer went stale; the row did not.
+
+Two things follow.
+
+**The attendance pass has to run on a schedule, not once.** It is not a backfill
+that completes. A session's outcome is settled only after it runs, so the useful
+cadence is "daily, over anything that has started since the last pass" — and
+because every write is an upsert on a WL key, re-reading is always safe.
+
+**`visit_unresolved_past` is the thing that makes this visible**, and it earned its
+place immediately: it went from 0 to 115 and named exactly which sessions had gone
+stale. Without it those rows read `unknown` in a column nobody watches.
+
+A caveat on the dates in this batch. The machine clock moved forward roughly four
+days mid-session — git stamped these commits `27 Aug 2026` while the database and
+the OS now both read `31 Aug`. Measurements taken in this batch are dated **31 Aug
+2026**, which is when they were actually taken; the commit timestamps are wrong and
+were left alone rather than rewriting history. It is also part of why the 115
+appeared: the clock correction moved four days of sessions into the past at once.
+
+### Coverage, measured 31 Aug 2026
 
 Everything below is read-only counting, no WellnessLiving calls:
 

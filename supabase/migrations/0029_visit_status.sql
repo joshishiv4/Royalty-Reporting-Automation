@@ -61,7 +61,7 @@
 --
 -- SECOND CORRECTION, also ours: this header first said a cancellation TIMESTAMP
 -- is "genuinely NOT published anywhere in the 208-path spec". Reviewed against
--- the published spec on 27 Aug 2026, that is wrong - the search had only covered
+-- the published spec on 31 Aug 2026, that is wrong - the search had only covered
 -- the endpoints this project already calls. Two routes publish one:
 --
 --   dt_date_cancel   on Schedule/ScheduleList/StaffApp - "the date/time when the

@@ -14,7 +14,7 @@
 -- That is a real check-in MOMENT, and it is the field that was being looked for
 -- when `is_checkin` was misread as attendance (0029). is_checkin is a capability
 -- - "ready to be checked in" - and was true on 0 of 4,423 sessions. dt_register
--- is the event. Measured on live dev 27 Aug 2026: present on 55 of 55 sampled
+-- is the event. Measured on live dev 31 Aug 2026: present on 55 of 55 sampled
 -- client records, alongside is_penalty, is_pending and id_visit - NONE of which
 -- appear in WellnessLiving's published OpenAPI spec. The spec is dated
 -- 2024-12-24 and under-reports; it is a floor, not a contract.
@@ -27,7 +27,7 @@
 --      not produces nulls on sessions that demonstrably ran.
 --
 --      IT DOES NOT ANSWER Q9. Q9 asks whether check-in is used consistently for
---      PRIVATE LESSONS, and dt_register is class-only: probed live 27 Aug 2026,
+--      PRIVATE LESSONS, and dt_register is class-only: probed live 31 Aug 2026,
 --      the appointment record from this endpoint carries id_visit, k_visit and
 --      uid but NOT dt_register, is_attend, is_visit or is_truancy. Counting nulls
 --      cannot answer a question about a field the endpoint never sends. Q9 needs
@@ -43,7 +43,7 @@
 -- -----------------------------------------------------------------------------
 -- WHY THE VIEW
 -- -----------------------------------------------------------------------------
--- Measured after the id_visit backfill, 27 Aug 2026:
+-- Measured after the id_visit backfill, 31 Aug 2026:
 --
 --   attendance rows                     4,431
 --   id_visit null                           0   (was 4,431)
@@ -77,7 +77,7 @@ comment on column public.attendance.dt_checkin_utc is
   'this column. Null means no check-in was recorded, which is NOT the same as '
   'not attending - a studio that does not use check-in produces nulls on '
   'sessions that happened. CLASS-ONLY: the appointment record from this endpoint '
-  'carries id_visit, k_visit and uid but not dt_register (probed 27 Aug 2026), so '
+  'carries id_visit, k_visit and uid but not dt_register (probed 31 Aug 2026), so '
   'this is always null for private lessons and does NOT answer Q9 - that needs '
   'is_arrive from the StaffApp schedule list. UTC only, like every other dt_ '
   'column here.';
@@ -124,7 +124,7 @@ comment on view public.visit_unresolved_past is
   'as BOOK or WAIT - it happened and no outcome was ever recorded. These read as '
   'outcome ''unknown'' in session_outcome and can never be countable. Distinct '
   'from visit_awaiting_staff, which is WL explicitly asking staff to decide; '
-  'here WL is asking nobody. 29 rows on live dev at 27 Aug 2026, out of 34 '
+  'here WL is asking nobody. 29 rows on live dev at 31 Aug 2026, out of 34 '
   'sessions that had started.';
 
 alter view public.visit_unresolved_past set (security_invoker = on);

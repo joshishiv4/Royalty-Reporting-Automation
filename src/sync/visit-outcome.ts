@@ -12,7 +12,7 @@
  * other one grew its own version: `attendance.ts` derived `is_attended` from
  * `is_visit`/`is_attend` and never wrote `id_visit` at all, so the same visit
  * could be described two ways depending on which pass reached it first. Measured
- * on live dev 27 Aug 2026: `id_visit` was null on 4,431 of 4,431 attendance rows
+ * on live dev 31 Aug 2026: `id_visit` was null on 4,431 of 4,431 attendance rows
  * and `session_outcome.is_countable` was true on 0 - while 4,990 stored
  * page/element payloads each carried the status, and 55 of 55 sampled
  * attendance-list client records carried it too.
