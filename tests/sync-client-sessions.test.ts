@@ -352,3 +352,64 @@ describe('writeClientSession', () => {
     expect(calls.some((c) => c.op === 'upsert')).toBe(false);
   });
 });
+
+describe('the session upsert carries only session columns', () => {
+  /**
+   * THE BUG THIS PINS. `id_visit` is WL's verdict on one client's visit, so
+   * migration 0029 put it on `attendance`. It rides on the parsed session only
+   * because the visit payload is where it arrives. Spreading the parsed session
+   * straight into the `session` upsert therefore sent a column that does not
+   * exist there, and PostgREST answered
+   *
+   *   PGRST204: Could not find the 'id_visit' column of 'session'
+   *
+   * on EVERY visit. That failed the item, failed the pass, and from the outside
+   * looked like an ordinary partial run - so `session` sat frozen at 4,423 rows
+   * for days while raw_wl kept filling up with payloads nobody could store.
+   */
+  function spy() {
+    const calls: Array<{ table: string; rows: unknown[] }> = [];
+    const db = {
+      insert: vi.fn((table: string, rows: unknown[]) =>
+        Promise.resolve(table === 'raw_wl' ? [{ id: 'raw-1' }] : rows),
+      ),
+      upsert: vi.fn((table: string, rows: unknown[]) => {
+        calls.push({ table, rows });
+        return Promise.resolve(rows);
+      }),
+      update: vi.fn(() => Promise.resolve([])),
+      select: vi.fn(() => Promise.resolve([])),
+    };
+    return { db: db as unknown as SupabaseClient, calls };
+  }
+
+  const write = async (body: unknown) => {
+    const { db, calls } = spy();
+    await writeClientSession(db, {
+      kBusiness: K_BUSINESS,
+      uid: UID,
+      kVisit: K_VISIT,
+      response: response(body),
+      runId: 'run-1',
+    });
+    return calls;
+  };
+
+  it('never sends id_visit to the session table', async () => {
+    const calls = await write(appointment());
+    const sessionRows = calls.filter((c) => c.table === 'session').flatMap((c) => c.rows);
+    expect(sessionRows.length).toBeGreaterThan(0);
+    for (const row of sessionRows) {
+      expect(Object.keys(row as Record<string, unknown>)).not.toContain('id_visit');
+    }
+  });
+
+  it('still sends it to attendance, which is where it belongs', async () => {
+    const calls = await write(appointment());
+    const attendanceRows = calls.filter((c) => c.table === 'attendance').flatMap((c) => c.rows);
+    expect(attendanceRows.length).toBeGreaterThan(0);
+    for (const row of attendanceRows) {
+      expect(Object.keys(row as Record<string, unknown>)).toContain('id_visit');
+    }
+  });
+});

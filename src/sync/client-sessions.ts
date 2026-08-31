@@ -245,6 +245,22 @@ export async function writeClientSession(
     });
   }
 
+  // id_visit IS NOT A SESSION COLUMN, and spreading it into this upsert broke the
+  // whole pass silently for days.
+  //
+  // It is WL's verdict on ONE CLIENT'S visit, so migration 0029 put it on
+  // `attendance`. It rides on the parsed session only because this payload is
+  // where it arrives and the attendance write below needs it. Sending it here
+  // earns `PGRST204: Could not find the 'id_visit' column of 'session'`, which
+  // fails the item, fails the pass, and looks from the outside like a partial
+  // run - so `session` sat at 4,423 rows while raw_wl kept growing.
+  //
+  // Destructured rather than deleted: the compiler now refuses to let a new
+  // carrier field reach this table by accident.
+  /* eslint-disable-next-line @typescript-eslint/no-unused-vars -- the point IS to
+     drop it: destructuring is what keeps it out of the row below. */
+  const { id_visit: _idVisit, ...sessionRow } = session;
+
   // The detail counter rides on the same upsert (PRD 7.3). It is passed in
   // rather than incremented here, because "how many times has this been read"
   // is the caller's knowledge - the writer sees one payload and cannot count.
@@ -252,7 +268,7 @@ export async function writeClientSession(
     'session',
     [
       {
-        ...session,
+        ...sessionRow,
         ...(input.detailFetchCount === undefined
           ? {}
           : { detail_fetch_count: input.detailFetchCount, detail_fetched_at: input.fetchedAt }),
