@@ -1012,6 +1012,9 @@ export function runClientSessionSyncPass(
       // Read once per pass, not once per client: it is the same answer for every
       // item and it costs a database round trip.
       let cached: Promise<VisitWindow> | null = null;
+      // One per pass, so location/service stubs are written once rather than
+      // once per visit. Scoped here deliberately - see writeClientSession.
+      const stubbed = new Set<string>();
       const visitWindowOnce = (): Promise<VisitWindow> =>
         (cached ??= readWindowState(db, 'client_session_sync', kBusiness).then((state) =>
           visitWindow({
@@ -1113,6 +1116,7 @@ export function runClientSessionSyncPass(
               runId,
               detailFetchCount: (prior?.detail_fetch_count ?? 0) + 1,
               fetchedAt: nowIso(),
+              stubbed,
             });
             fetched += 1;
           }

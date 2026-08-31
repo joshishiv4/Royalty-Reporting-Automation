@@ -196,6 +196,12 @@ export function parseVisitList(body: unknown): string[] {
 }
 
 export interface WriteClientSessionInput {
+  /**
+   * Keys already stubbed during THIS pass, so a location or service is written
+   * once rather than once per visit. Owned by the caller and discarded with the
+   * pass; omit it and every visit stubs again, which is correct but slower.
+   */
+  readonly stubbed?: Set<string>;
   readonly kBusiness: string;
   /** The client whose list this visit came from - they are the attendee. */
   readonly uid: string;
@@ -233,17 +239,30 @@ export async function writeClientSession(
 
   const { session, staff } = parsed;
 
-  // Stubs FIRST so the FKs resolve, same pattern as everywhere else.
-  if (session.k_location !== null) {
-    await db.upsert('location', [{ k_location: session.k_location, k_business: input.kBusiness }], {
-      onConflict: 'k_location',
+  // Stubs FIRST so the FKs resolve, same pattern as everywhere else - but at most
+  // ONCE PER KEY PER PASS.
+  //
+  // These were re-upserted on every visit, and a client's whole history shares a
+  // handful of locations and services: measured on the 1980 backfill, one studio
+  // location and 75 services across ~9,000 visits. Two of the seven sequential
+  // round trips each visit costs were therefore writing rows that already
+  // existed. At ~460ms of Supabase latency per trip that is most of a second per
+  // visit, which over 39,000 visits is hours.
+  //
+  // The cache is the CALLER'S, not a module-level one: it must live exactly as
+  // long as a pass, or a long-running process would remember a stub it made
+  // before someone truncated the table.
+  const stubbed = input.stubbed;
+  const stub = async (table: string, column: string, key: string): Promise<void> => {
+    const marker = `${table}:${key}`;
+    if (stubbed?.has(marker) === true) return;
+    await db.upsert(table, [{ [column]: key, k_business: input.kBusiness }], {
+      onConflict: column,
     });
-  }
-  if (session.k_service !== null) {
-    await db.upsert('service', [{ k_service: session.k_service, k_business: input.kBusiness }], {
-      onConflict: 'k_service',
-    });
-  }
+    stubbed?.add(marker);
+  };
+  if (session.k_location !== null) await stub('location', 'k_location', session.k_location);
+  if (session.k_service !== null) await stub('service', 'k_service', session.k_service);
 
   // id_visit IS NOT A SESSION COLUMN, and spreading it into this upsert broke the
   // whole pass silently for days.
