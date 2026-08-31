@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '../supabase/client.js';
 import type { WlResponse } from '../wl/client.js';
-import { linkRows, storeRawWl } from './writer.js';
+import { linkRows, storeRawWl, wlDate } from './writer.js';
 import { readVisitCode, visitOutcome } from './visit-outcome.js';
 
 /**
@@ -124,8 +124,11 @@ export function parseVisitElement(body: unknown, kBusiness: string): ParsedVisit
   const b = asRecord(body);
   const kAppointment = readString(b, 'k_appointment');
   const kClassPeriod = readString(b, 'k_class_period');
-  const dtStart = readString(b, 'dt_date_global');
-  const dtlStart = readString(b, 'dt_date_local');
+  // wlDate, so WL's zero date reads as absent - and an absent start date makes
+  // the visit unstorable rather than a row keyed on nothing. `session.dt_start_utc`
+  // is NOT NULL and it is half the primary key.
+  const dtStart = wlDate(readString(b, 'dt_date_global'));
+  const dtlStart = wlDate(readString(b, 'dt_date_local'));
   if (dtStart === null || dtlStart === null) return null;
 
   // Appointment wins when both are somehow present: a private lesson is never a
@@ -162,7 +165,7 @@ export function parseVisitElement(body: unknown, kBusiness: string): ParsedVisit
       is_virtual: wlBool(b?.is_virtual),
       is_checkin: wlBool(b?.is_checkin),
       // Named for what it is. See the header and migration 0017.
-      dt_cancel_by: readString(b, 'dt_cancel'),
+      dt_cancel_by: wlDate(readString(b, 'dt_cancel')),
       // READ FROM BOTH LEVELS. Measured over 200 stored page/element payloads:
       // id_visit arrives at the top level AND inside a_appointment_visit_info,
       // 200 of 200 each, so either position alone would have worked on real

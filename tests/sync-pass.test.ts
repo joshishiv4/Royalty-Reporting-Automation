@@ -186,6 +186,11 @@ describe('runStaffSyncPass', () => {
     });
 
     expect(summary.state).toBe('failed');
-    expect(summary.error).toBe('Error');
+    // NAME *AND* REASON. This used to assert the bare class name, and recording
+    // only that is how a zero date sent to a timestamptz column hid behind the
+    // word "SupabaseError" while attendance_sync died on every batch. The reason
+    // is scrubbed for hosts, not discarded - see scrubMessage.
+    expect(summary.error).toContain('Error');
+    expect(summary.error).toContain('boom');
   });
 });

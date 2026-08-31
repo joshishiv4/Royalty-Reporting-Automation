@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '../supabase/client.js';
 import type { WlResponse } from '../wl/client.js';
-import { linkRows, storeRawWl } from './writer.js';
+import { linkRows, storeRawWl, wlDate } from './writer.js';
 
 /**
  * The purchase writer: /v1/profile/purchase/list -> purchase + purchase_item.
@@ -104,7 +104,7 @@ export function parsePurchaseList(
     const rawLocation = readString(rec, 'k_location');
     const kLocation = rawLocation === '0' ? null : rawLocation;
     const kService = readString(rec, 'k_service');
-    const dtAdd = readString(rec, 'dt_add');
+    const dtAdd = wlDate(readString(rec, 'dt_add'));
     const isActive = wlBool(rec?.is_active);
     if (kLocation !== null) locationKeys.add(kLocation);
     if (kService !== null) {

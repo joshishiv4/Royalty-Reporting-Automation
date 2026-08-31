@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '../supabase/client.js';
 import type { WlResponse } from '../wl/client.js';
-import { linkRows, storeRawWl } from './writer.js';
+import { linkRows, storeRawWl, wlDate } from './writer.js';
 
 /**
  * The profile writer: /v1/user -> contact detail merged onto an existing person.
@@ -60,7 +60,7 @@ export function parseProfile(body: unknown, uid: string, kBusiness: string): Pro
   put('phone_home', readString(b, 's_phone_home'));
   put('phone_work', readString(b, 's_phone_work'));
   // dt_birth is a bare date ("1989-11-14") or "" when unset; never a datetime.
-  put('date_of_birth', readString(b, 'dt_birth'));
+  put('date_of_birth', wlDate(readString(b, 'dt_birth')));
   put('k_login_type', readString(b, 'k_login_type'));
   put('text_login_type', readString(b, 'text_login_type'));
   return row;

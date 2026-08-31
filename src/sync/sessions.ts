@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '../supabase/client.js';
 import type { WlResponse } from '../wl/client.js';
-import { linkRows, storeRawWl } from './writer.js';
+import { linkRows, storeRawWl, wlDate } from './writer.js';
 
 /**
  * The session writer: /v1/schedule/class/list -> session + session_staff.
@@ -85,8 +85,8 @@ export function parseSessionList(body: unknown, kBusiness: string): ParsedSessio
   for (const value of collection(asRecord(body)?.a_session)) {
     const rec = asRecord(value);
     const kPeriod = readString(rec, 'k_class_period');
-    const dtStart = readString(rec, 'dt_date');
-    const dtlStart = readString(rec, 'dtl_date');
+    const dtStart = wlDate(readString(rec, 'dt_date'));
+    const dtlStart = wlDate(readString(rec, 'dtl_date'));
     if (kPeriod === null || dtStart === null || dtlStart === null) {
       skipped += 1;
       continue;

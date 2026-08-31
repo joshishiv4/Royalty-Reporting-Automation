@@ -1,3 +1,4 @@
+import { scrubMessage } from '../logging/redact.js';
 import type { AppConfig } from '../config/schema.js';
 import type { GhlSearchResponse } from '../ghl/client.js';
 import { GhlRequestError } from '../ghl/client.js';
@@ -1791,7 +1792,22 @@ async function runPass(
       if (s.claimed === 0) break; // nothing eligible: the queue is drained
     }
   } catch (error) {
-    failure = error instanceof Error ? error.name : 'unknown error';
+    // NAME *AND* REASON. This recorded only `error.name`, so every failure in
+    // every pass read as the bare word "SupabaseError" and the reason was gone -
+    // which is how a column sent to a table that lacks it hid for days behind
+    // something that looked like an ordinary partial run. scrubMessage keeps the
+    // reason and takes out anything host-shaped, which is why the message was
+    // being dropped in the first place.
+    // The TABLE too, where the error knows it. "which table" is the first
+    // question anybody asks, and SupabaseError already carries the answer.
+    const where =
+      error instanceof Error && 'table' in error && typeof error.table === 'string'
+        ? ` [table=${error.table}]`
+        : '';
+    failure =
+      error instanceof Error
+        ? `${error.name}: ${scrubMessage(error.message, config)}${where}`
+        : 'unknown error';
   }
 
   // A deferred item sits pending with a future next_attempt_at, so countEligible

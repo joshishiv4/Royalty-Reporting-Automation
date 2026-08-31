@@ -182,3 +182,28 @@ function readString(rec: Record<string, unknown> | null, key: string): string | 
   const v = rec?.[key];
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
+
+/**
+ * A WellnessLiving date, with their "not set" spelled as absent.
+ *
+ * WL SENDS MySQL'S ZERO DATE FOR AN EMPTY DATE, and Postgres refuses it:
+ *
+ *   SupabaseError: 22008: date/time field value out of range: "0000-00-00 00:00:00"
+ *
+ * Their own spec says so in as many words - `dt_confirm` "will be zero date +
+ * time in case appointment is not yet confirmed by client" - so this is
+ * documented behaviour, not an anomaly. It went unguarded in all six writers
+ * because the endpoints read until now happened never to send one; the first
+ * appointment attendance records did, and the pass died on every batch.
+ *
+ * Null, not the epoch. "Never checked in" is the absence of a check-in, and
+ * 1970-01-01 is a claim about January 1970.
+ */
+export function wlDate(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  // Any zero date, with or without a time, and the all-zero variant WL also uses.
+  if (/^0{4}-0{2}-0{2}/.test(trimmed)) return null;
+  return trimmed;
+}

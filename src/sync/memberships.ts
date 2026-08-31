@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '../supabase/client.js';
 import type { WlResponse } from '../wl/client.js';
-import { linkRows } from './writer.js';
+import { linkRows, wlDate } from './writer.js';
 
 /**
  * The membership writer: /v1/profile/purchase/list/element -> purchase_item
@@ -90,9 +90,9 @@ export function parseMembership(
   put('sid_value', readString(b, 'sid_value'));
   put('i_payment_period', readInt(b?.i_payment_period));
   put('m_period_price', readMoney(b?.m_period_price));
-  put('dt_hold_start', readString(b, 'dt_hold_start'));
-  put('dt_hold_end', readString(b, 'dt_hold_end'));
-  put('dt_cancel', readString(b, 'dt_cancel'));
+  put('dt_hold_start', wlDate(readString(b, 'dt_hold_start')));
+  put('dt_hold_end', wlDate(readString(b, 'dt_hold_end')));
+  put('dt_cancel', wlDate(readString(b, 'dt_cancel')));
   put('i_renew', readInt(b?.i_renew));
   put('m_refund', readRefund(b?.m_refund));
 

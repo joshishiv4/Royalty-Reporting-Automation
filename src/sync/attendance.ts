@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '../supabase/client.js';
 import type { WlResponse } from '../wl/client.js';
-import { linkRows, storeRawWl } from './writer.js';
+import { linkRows, storeRawWl, wlDate } from './writer.js';
 import { readVisitCode, visitOutcome } from './visit-outcome.js';
 import type { VisitOutcome } from './visit-outcome.js';
 
@@ -130,8 +130,8 @@ export function parseAttendanceList(
         uid,
         k_business: kBusiness,
         k_visit: readString(rec, 'k_visit'),
-        dt_booked_utc: readString(rec, 'dt_book'),
-        dt_checkin_utc: readString(rec, 'dt_register'),
+        dt_booked_utc: wlDate(readString(rec, 'dt_book')),
+        dt_checkin_utc: wlDate(readString(rec, 'dt_register')),
         ...outcomeOf(rec),
         is_waitlisted: isWaitlisted,
         is_unpaid: wlBool(rec?.is_unpaid),
