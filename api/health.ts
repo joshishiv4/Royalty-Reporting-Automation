@@ -1,6 +1,6 @@
 import { loadConfig } from '../src/config/index.js';
 import { checkAll } from '../src/health/index.js';
-import { isAuthorized } from '../src/http/bearer.js';
+import { isAuthorized, isAuthorizedByAny } from '../src/http/bearer.js';
 import type { HttpRequest, HttpResponse } from '../src/http/types.js';
 
 // Re-exported so existing importers keep working now that the check is shared.
@@ -31,7 +31,13 @@ export default async function handler(req: HttpRequest, res: HttpResponse): Prom
     return;
   }
 
-  if (!isAuthorized(req.headers.authorization, process.env.HEALTHCHECK_TOKEN)) {
+  if (
+    !isAuthorizedByAny(req.headers.authorization, [
+      process.env.SYNC_TRIGGER_TOKEN,
+      process.env.HEALTHCHECK_TOKEN,
+      process.env.CRON_SECRET,
+    ])
+  ) {
     // Identical response whether the token is wrong or unconfigured, so the
     // endpoint reveals nothing about its own setup.
     res.status(401).json({ error: 'unauthorized' });

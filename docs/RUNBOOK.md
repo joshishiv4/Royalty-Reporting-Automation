@@ -31,11 +31,20 @@ The deployed HTTP routes are guarded by their own bearer tokens, read straight f
 process environment rather than the secrets bundle - they protect *our* endpoints and are not
 credentials for anyone else's API.
 
-| Variable             | Guards                 | Notes                                                        |
-| -------------------- | ---------------------- | ------------------------------------------------------------ |
-| `HEALTHCHECK_TOKEN`  | `GET /api/health`      | Unset locks the endpoint. It never opens it.                 |
-| `SYNC_TRIGGER_TOKEN` | `/api/wellness-sync`   | Manual trigger. Unset locks the endpoint.                    |
-| `CRON_SECRET`        | `/api/wellness-sync`   | Vercel Cron sends this as the bearer automatically. Either this or `SYNC_TRIGGER_TOKEN` is accepted. |
+| Variable             | Accepted on                              | Notes                                                        |
+| -------------------- | ---------------------------------------- | ------------------------------------------------------------ |
+| `HEALTHCHECK_TOKEN`  | the read-only routes only                | `/api/health`, `/api/sync-status`. Cannot start a sync.      |
+| `SYNC_TRIGGER_TOKEN` | every route                              | The manual trigger.                                          |
+| `CRON_SECRET`        | every route                              | Vercel Cron sends this as the bearer automatically.          |
+
+Each route accepts **any** of the tokens listed for it, compared in constant time and with
+every candidate compared even after a match, so the timing does not reveal which one matched
+([`src/http/bearer.ts`](../src/http/bearer.ts)). The split is deliberate: a token handed out
+so somebody can poll a status page must not also be able to start a backfill.
+
+An unset variable never opens anything - it is skipped as a candidate, and a route whose
+every candidate is unset answers 401 to everyone. There is no "no token configured, so allow
+it" path.
 
 Rotate by generating a new random string, setting it in Vercel's environment variables, and
 redeploying. There is no third party to coordinate with, so rotation is immediate and safe to
