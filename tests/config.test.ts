@@ -146,6 +146,33 @@ describe('loadConfig', () => {
     });
   });
 
+  it('treats an unset, empty or whitespace SMTP_HOST as notifications OFF', async () => {
+    // The empty case is the one that bites. `vercel env add SMTP_HOST <env>`
+    // with a blank value prompt stores "", and an empty string that reaches
+    // `smtp.host` as "" rather than null makes the notifier believe it is
+    // configured - so every run opens a connection to nowhere. Whitespace is
+    // the same mistake with a space bar involved.
+    for (const SMTP_HOST of [undefined, '', '   ']) {
+      const config = await loadConfig({
+        processEnv: { APP_ENV: 'dev', ...(SMTP_HOST === undefined ? {} : { SMTP_HOST }) },
+        provider: new FakeProvider(),
+      });
+      expect(config.smtp.host).toBeNull();
+    }
+  });
+
+  it('switches notifications on when SMTP_HOST has a value', async () => {
+    const config = await loadConfig({
+      processEnv: { APP_ENV: 'dev', SMTP_HOST: 'smtp.example.test', SMTP_PORT: '465' },
+      provider: new FakeProvider(),
+    });
+    expect(config.smtp.host).toBe('smtp.example.test');
+    expect(config.smtp.port).toBe(465);
+    // Recipient survives with no env var at all - a fresh install still reaches
+    // somebody rather than silently mailing nobody.
+    expect(config.smtp.to.length).toBeGreaterThan(0);
+  });
+
   it('returns a frozen config so nothing can mutate it mid-run', async () => {
     const config = await loadConfig({
       processEnv: { APP_ENV: 'dev' },

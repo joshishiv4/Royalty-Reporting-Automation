@@ -68,6 +68,11 @@ export function describeConfig(config: AppConfig): Record<string, string> {
     maxConcurrency: String(config.runtime.maxConcurrency),
     logToFile: String(config.runtime.logToFile),
     logDir: config.runtime.logDir,
+    // The notifier's on/off switch is worth reporting: "why did nobody get an
+    // email" is otherwise answered by opening a dashboard. The password is
+    // fingerprinted like any other credential - never printed.
+    smtpHost: config.smtp.host === null ? 'missing' : 'set',
+    smtpPassword: fingerprint(config.smtp.password),
   };
 }
 

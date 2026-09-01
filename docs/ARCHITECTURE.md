@@ -157,6 +157,19 @@ envelope inside" trap to guard against.
 The CLI and the routes are thin: both resolve config, build a client, and call the
 same functions. Nothing lives only in an entry point.
 
+### Notifications
+
+| Question | File |
+|---|---|
+| Dead-letter digest builder — turns queue rows into plain-English text | [`src/notify/failure-digest.ts`](../src/notify/failure-digest.ts) |
+| SMTP client wrapper — never throws, no-ops when SMTP is unset | [`src/notify/smtp.ts`](../src/notify/smtp.ts) |
+| Orchestration: read dead items, build digest, send via SMTP | [`src/notify/index.ts`](../src/notify/index.ts) |
+
+Notifications are OFF by default: when `SMTP_HOST` is unset, the digest still
+builds and its verdict is returned in the sync response for the log to record,
+but no mail is sent. Setting the SMTP env variables switches it on with no
+code change.
+
 ### Health, HTTP and shared types
 
 | Question | File |

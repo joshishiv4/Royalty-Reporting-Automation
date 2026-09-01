@@ -174,6 +174,40 @@ export const runtimeOptionsSchema = z.object({
    * upserts converge, only the number of stale re-reads changes.
    */
   SYNC_DAILY_LOOKBACK_DAYS: positiveIntFromString.default('3'),
+
+  // --- SMTP notification of dead-letter items --------------------------------
+  // Every field is optional. If SMTP_HOST is unset, the whole notifier stays
+  // OFF: buildDigest still runs and its verdict is available to a caller, but
+  // no mail is ever sent - a quiet dev environment must not need SMTP running.
+  //
+  // EMPTY IS UNSET, and that distinction is not academic. `vercel env add
+  // SMTP_HOST production` with the value prompt left blank stores an empty
+  // string - it happened on this project's first attempt. Without this
+  // transform the empty string is not `undefined`, so the notifier reads as
+  // CONFIGURED and every run tries to open a connection to a host of "",
+  // failing once per pass forever. Rejecting it instead (`.min(1)`) would be
+  // worse still: a blank variable would fail config validation and take the
+  // whole sync down, when the operator's evident intent was "off".
+  SMTP_HOST: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v === undefined || v.length === 0 ? undefined : v)),
+  SMTP_PORT: z
+    .string()
+    .trim()
+    .regex(/^\d+$/, 'SMTP_PORT must be a whole number')
+    .transform((v) => Number.parseInt(v, 10))
+    .refine((v) => v > 0 && v < 65_536, { message: 'SMTP_PORT is out of range' })
+    .optional(),
+  SMTP_USER: z.string().trim().optional(),
+  SMTP_PASSWORD: z.string().trim().optional(),
+  SMTP_FROM: z.string().trim().optional(),
+  /**
+   * The default recipient. Overridable via env, but hardcoded here so a fresh
+   * install still notifies the person who owns the load without touching env.
+   */
+  SMTP_TO: z.string().trim().default('shiv.joshi@aliansoftware.net'),
 });
 
 export const appEnvSchema = z.enum(APP_ENVS);
@@ -194,6 +228,22 @@ export interface WlConfig {
 }
 
 /** How far back each visit sync reaches. See src/sync/visit-window.ts. */
+/**
+ * SMTP notification config, kept beside the rest of the runtime bundle.
+ *
+ * Every field is optional except `to`, which has a hardcoded default. When
+ * `host` is null, the SMTP client is a no-op and no mail is sent - the digest
+ * still runs so its verdict can be logged.
+ */
+export interface SmtpConfig {
+  readonly host: string | null;
+  readonly port: number;
+  readonly user: string;
+  readonly password: string;
+  readonly from: string;
+  readonly to: string;
+}
+
 export interface SyncConfig {
   /** `YYYY-MM-DD`. The floor for the very first (backfill) run. */
   readonly historyStart: string;
@@ -242,6 +292,7 @@ export interface AppConfig {
   readonly ghl: GhlConfig;
   readonly runtime: RuntimeConfig;
   readonly sync: SyncConfig;
+  readonly smtp: SmtpConfig;
 }
 
 /** Thrown when resolved values are present but invalid. Never echoes a value. */

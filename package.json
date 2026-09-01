@@ -22,10 +22,12 @@
     "test:coverage": "vitest run --coverage",
     "verify": "npm run format:check && npm run lint && npm run typecheck && npm run test",
     "start": "node --env-file-if-exists=.env dist/cli/main.js",
-    "dev": "npm run --silent build && node --env-file-if-exists=.env dist/cli/main.js",
-    "healthcheck": "npm run --silent dev -- healthcheck"
+    "cli:dev": "npm run --silent build && node --env-file-if-exists=.env dist/cli/main.js",
+    "healthcheck": "npm run --silent cli:dev -- healthcheck"
   },
   "dependencies": {
+    "@types/nodemailer": "^8.0.1",
+    "nodemailer": "^9.1.0",
     "zod": "^3.23.8"
   },
   "overrides": {

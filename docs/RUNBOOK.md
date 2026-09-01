@@ -50,6 +50,28 @@ Rotate by generating a new random string, setting it in Vercel's environment var
 redeploying. There is no third party to coordinate with, so rotation is immediate and safe to
 do at any time.
 
+### SMTP (separate again, and optional)
+
+The dead-letter notifier reads its own variables straight from the process environment, not
+from the secrets bundle. All six are optional. `SMTP_HOST` is the switch: leave it unset and
+the digest still builds and is returned in the sync response, but no mail is sent.
+
+| Variable        | Kind       | Rotatable | Owner / source                                  |
+| --------------- | ---------- | --------- | ----------------------------------------------- |
+| `SMTP_HOST`     | coordinate | no        | the mail provider (`smtp.gmail.com` today)      |
+| `SMTP_PORT`     | coordinate | no        | 587 for STARTTLS, 465 for implicit TLS          |
+| `SMTP_USER`     | coordinate | no        | the mailbox that authenticates                  |
+| `SMTP_PASSWORD` | credential | yes       | Google App Password — see §4e                   |
+| `SMTP_FROM`     | coordinate | no        | must equal `SMTP_USER` on Gmail; it rewrites any other sender |
+| `SMTP_TO`       | coordinate | no        | recipient; defaults in `schema.ts`, no env needed |
+
+> `SMTP_PASSWORD` is a credential but is **not** in `CREDENTIAL_KEYS`, because that list is
+> typed against the secrets bundle and this value does not come from there. It is not
+> redacted by key name — the protection is that
+> [`src/notify/smtp.ts`](../src/notify/smtp.ts) reports `error.name` and never the message,
+> so a failed login cannot carry the password into a log. Anything that formats an SMTP error
+> in full would break that, which is why nothing does.
+
 The four marked **credential** are also the four in `CREDENTIAL_KEYS` — they are redacted
 from every log line and are the ones the rotation procedures below apply to.
 
@@ -154,6 +176,10 @@ APP_ENV=dev npm start -- healthcheck
 `config:show` prints credentials as `abc...yz (len 219)`. Use the length and the first three
 characters to confirm a rotation took effect without ever printing the value.
 
+`config:show` also reports `smtpHost` as `set`/`missing` and `smtpPassword` as a fingerprint,
+so "are failure emails switched on in this environment, and is it the password I just
+rotated" is answerable without opening the dashboard.
+
 Exit codes: `0` all good · `1` a check failed or startup failed · `2` bad CLI usage.
 
 ---
@@ -216,6 +242,29 @@ third party, treat exposure as an incident — see §5.
 Not rotatable, but they do change — a new WL region, a rebuilt Supabase project, a moved GHL
 location. Update the bundle and restart. No code change is required or permitted; the
 environment-switch test in `tests/config.test.ts` exists to keep it that way.
+
+### 4e. `SMTP_PASSWORD`
+
+A Google App Password, not the account password — the account password will not authenticate
+against `smtp.gmail.com` at all once 2-Step Verification is on, and 2-Step Verification is a
+precondition for App Passwords existing.
+
+1. https://myaccount.google.com/apppasswords — the page is reachable only by direct URL; no
+   link to it appears in the account settings tree.
+2. Create a new password (name it for the service, e.g. `royalty-sync`). Copy it out of the
+   dialog immediately — it is shown once and cannot be retrieved afterwards.
+3. Set it in **both** places, stripped of the spaces the dialog inserts: Vercel
+   (`vercel env add SMTP_PASSWORD production,preview`) and any local `.env`.
+4. Verify before deleting the old one — `transporter.verify()` authenticates without sending
+   mail, so the check costs nobody an inbox item.
+5. Revoke the previous entry on the same page.
+
+An App Password grants **full access to the Google account**, not merely SMTP. Treat an
+exposed one exactly as §5 describes, and note that revoking is instant and free — when in
+doubt, revoke and re-issue rather than reasoning about whether the exposure mattered.
+
+Schedule: every 90 days, and immediately if it appeared in a log, a ticket, a screen share
+or a screenshot.
 
 ---
 

@@ -70,6 +70,12 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
     LOG_DIR: processEnv.LOG_DIR,
     SYNC_HISTORY_START: processEnv.SYNC_HISTORY_START,
     SYNC_DAILY_LOOKBACK_DAYS: processEnv.SYNC_DAILY_LOOKBACK_DAYS,
+    SMTP_HOST: processEnv.SMTP_HOST,
+    SMTP_PORT: processEnv.SMTP_PORT,
+    SMTP_USER: processEnv.SMTP_USER,
+    SMTP_PASSWORD: processEnv.SMTP_PASSWORD,
+    SMTP_FROM: processEnv.SMTP_FROM,
+    SMTP_TO: processEnv.SMTP_TO,
   });
   if (!runtime.success) {
     throw new ConfigValidationError(formatIssues(runtime.error));
@@ -110,6 +116,14 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
     sync: Object.freeze({
       historyStart: runtime.data.SYNC_HISTORY_START,
       dailyLookbackDays: runtime.data.SYNC_DAILY_LOOKBACK_DAYS,
+    }),
+    smtp: Object.freeze({
+      host: runtime.data.SMTP_HOST ?? null,
+      port: runtime.data.SMTP_PORT ?? 587,
+      user: runtime.data.SMTP_USER ?? '',
+      password: runtime.data.SMTP_PASSWORD ?? '',
+      from: runtime.data.SMTP_FROM ?? '',
+      to: runtime.data.SMTP_TO,
     }),
   });
 }

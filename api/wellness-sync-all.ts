@@ -8,6 +8,7 @@ import { runFullSyncPass } from '../src/sync/pass.js';
 import { readSyncProgress } from '../src/sync/progress.js';
 import { readWindowRequest } from '../src/sync/visit-window.js';
 import { SupabaseClient } from '../src/supabase/client.js';
+import { notifyDeadLetter } from '../src/notify/index.js';
 
 /**
  * A config-resolution failure whose message is safe to return: these name the
@@ -124,7 +125,19 @@ export default async function handler(req: HttpRequest, res: HttpResponse): Prom
     // its own limit, so the run must stop STARTING work before that and hand
     // back `partial` rather than being killed mid-item with its leases held.
     // A CLI backfill has no such ceiling and must not inherit this one.
+    const runStartedAt = new Date().toISOString();
     const summary = await runFullSyncPass(config, { budgetMs: FUNCTION_BUDGET_MS });
+
+    // Dead-letter notification. Scoped to items that DIED during this run
+    // (updated_at >= runStartedAt), so a repeat cron on the same day does not
+    // re-mail the same records. When SMTP is unconfigured the digest still
+    // builds and its verdict comes back in the response for the log to record;
+    // no mail is sent. Failures inside the notifier never derail the sync -
+    // notifyDeadLetter never throws.
+    const notify = await notifyDeadLetter(db, config.smtp, {
+      since: runStartedAt,
+      kBusiness: config.wl.kBusiness,
+    });
 
     // HOW MUCH IS LEFT, in the same response. A run summary describes only what
     // THIS invocation managed, which is at most one budget's worth - so on its
@@ -147,6 +160,7 @@ export default async function handler(req: HttpRequest, res: HttpResponse): Prom
       window_applied: window.requested ? { start: window.start, end: window.end } : null,
       remaining: progress.totals,
       stages: progress.stages,
+      notification: notify,
     });
   } catch (error) {
     if (isConfigError(error)) {
