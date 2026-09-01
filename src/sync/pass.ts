@@ -23,6 +23,7 @@ import {
   readReportState,
   saveReportRequested,
   readWindowState,
+  setWindowOverride,
 } from './job-state.js';
 import { writeClientList } from './clients.js';
 import { writeLocationList } from './locations.js';
@@ -696,6 +697,32 @@ export interface MonthChunk {
   readonly dtEnd: string;
 }
 
+/**
+ * The range the MONTHLY run re-reads when nobody has asked for a specific one.
+ *
+ * WHAT "2 MONTHS" MEANS, PRECISELY. The window starts on the FIRST day of the
+ * month `months - 1` months before the current one, and ends today. Firing on
+ * the 1st at the default of 2, that is the whole of last month plus the first
+ * day of this one - so every calendar month is re-read exactly once, in full,
+ * shortly after it has finished. Counting whole months rather than "sixty days"
+ * is what makes that guarantee hold: a day-count window would cut a month in
+ * half and re-read the same half twice while never covering the other one.
+ *
+ * Returns null when the behaviour is switched off (0), which the caller reads as
+ * "seed nothing" - the same as having no request pending.
+ */
+export function monthlyLookbackWindow(
+  now: number,
+  months: number,
+): { readonly start: string; readonly end: string } | null {
+  if (months <= 0) return null;
+  const today = new Date(now);
+  // Date.UTC normalises a negative month index into the previous year, so
+  // January minus two months is November without a special case.
+  const first = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - (months - 1), 1));
+  return { start: first.toISOString().slice(0, 10), end: today.toISOString().slice(0, 10) };
+}
+
 export function monthlyChunks(start: string, end: string): MonthChunk[] {
   const startDate = start.slice(0, 10);
   const endDate = end.slice(0, 10);
@@ -742,13 +769,32 @@ export function monthlyChunks(start: string, end: string): MonthChunk[] {
  * both upsert on (k_period, dt_start_utc), so the writes converge and there is
  * no correctness cost to running one after the other.
  *
- * SEEDED FROM sync_job_state.window_start_override / window_end_override on
- * this job. Not from AppConfig, and not from a default range. A historical
- * backfill is a deliberate act, not a nightly task - the whole point of using
- * the override is that it is set explicitly, honoured once, and cleared on the
- * clean drain. Setting it is the CLI's job (see scratchpad-historical.mjs).
+ * TWO SOURCES FOR THE RANGE, AND THE HUMAN'S WINS. An explicit ask lives in
+ * sync_job_state.window_start_override / window_end_override on this job; it is
+ * honoured exactly as set, and cleared on the clean drain. With no ask pending
+ * the pass derives its own range - the last SYNC_MONTHLY_LOOKBACK_MONTHS
+ * calendar months, default 2.
  *
- * NOT IN FULL_SYNC_WAVES. Backfill mode only. The daily cron ignores it.
+ * WHY A DERIVED RANGE WAS ADDED. This pass used to do nothing at all unless
+ * somebody had recorded an ask, which made a deliberate backfill easy and a
+ * routine re-check impossible. The gap that left is narrow but permanent: the
+ * daily windows are short on purpose - three days for appointments, seven back
+ * for the schedule - so a session edited retroactively weeks after it ran falls
+ * outside every one of them and is never looked at again. Nothing else in the
+ * system has this problem, because nothing else is windowed: purchases, people,
+ * money, reference lists and attendance are enumerated in full every night.
+ * Re-reading whole months on a cadence closes it, and costs only upserts that
+ * converge.
+ *
+ * IT ALSO WIDENS THE VISIT WINDOW, on the derived path only. Appointments are
+ * the other half of the same gap and have their own three-day window, so the
+ * pass sets client_session_sync's override to the same range and lets the next
+ * daily run do the wide read. A human's explicit historical ask does NOT do
+ * this - backfilling schedules from 1980 should not silently re-list every
+ * appointment ever recorded - and an override already sitting on the visit job
+ * is left alone.
+ *
+ * NOT IN FULL_SYNC_WAVES. Its own cron. The daily pass ignores it.
  */
 export function runHistoricalScheduleSyncPass(
   config: AppConfig,
@@ -761,11 +807,22 @@ export function runHistoricalScheduleSyncPass(
       // Range comes from the persisted override, so a killed run resumes on
       // whatever the human previously asked for rather than losing the ask.
       const state = await readWindowState(db, 'historical_schedule_sync', kBusiness);
-      if (state.startOverride === null || state.endOverride === null) {
-        // No override -> nothing to seed. A cron that lands here has nothing to
-        // do; a human intent to backfill has not been recorded yet.
-        return;
-      }
+
+      // TWO WAYS TO GET A RANGE, AND THE HUMAN'S WINS.
+      //
+      // An explicit request is honoured exactly as asked. With none pending the
+      // run derives its own window - the last SYNC_MONTHLY_LOOKBACK_MONTHS
+      // calendar months - so the schedule is re-read on a cadence rather than
+      // only when somebody remembers to ask. That closes the one gap the daily
+      // windows cannot: a session edited retroactively, weeks after it ran,
+      // falls outside every daily window and would otherwise never be re-read.
+      const asked = state.startOverride !== null && state.endOverride !== null;
+      const derived = asked
+        ? null
+        : monthlyLookbackWindow(Date.parse(nowIso()), config.sync.monthlyLookbackMonths);
+      const range = asked ? { start: state.startOverride, end: state.endOverride } : derived;
+      // Nothing asked for and the cadence switched off (0) -> nothing to do.
+      if (range === null) return;
       // Same uid-anchor trick the daily pass uses: WL demands a uid, the
       // schedule returned is the business's.
       const people = await db.select<{ uid: string }>(
@@ -774,7 +831,7 @@ export function runHistoricalScheduleSyncPass(
       );
       const uid = people[0]?.uid;
       if (uid === undefined) return;
-      const chunks = monthlyChunks(state.startOverride, state.endOverride);
+      const chunks = monthlyChunks(range.start, range.end);
       await enqueue(
         db,
         chunks.map((c) => ({
@@ -786,6 +843,31 @@ export function runHistoricalScheduleSyncPass(
         })),
         nowIso(),
       );
+
+      // APPOINTMENTS OVER THE SAME MONTHS, via the window the daily visit pass
+      // already obeys. Class schedules are only half the picture: appointments
+      // are the other half and their daily window is three days, so the same
+      // retroactive edit hides there too. Setting the override hands the wide
+      // read to the next daily run, which clears it on its clean drain - no
+      // second scheduler and no duplicate of the visit pass.
+      //
+      // DERIVED RANGES ONLY. A human backfilling the schedule from 1980 asked
+      // for schedules, not for every appointment ever recorded to be re-listed
+      // in the same breath. And an override already sitting on the visit job is
+      // somebody else's ask: it is left alone rather than overwritten.
+      if (!asked) {
+        const visitState = await readWindowState(db, 'client_session_sync', kBusiness);
+        if (visitState.startOverride === null && visitState.endOverride === null) {
+          await setWindowOverride(
+            db,
+            'client_session_sync',
+            kBusiness,
+            `${range.start} 00:00:00`,
+            null,
+            nowIso(),
+          );
+        }
+      }
     },
     makeHandler:
       ({ wl, db, kBusiness, runId }) =>

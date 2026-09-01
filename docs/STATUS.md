@@ -1,6 +1,6 @@
 # Status and plan
 
-Last updated **31 Aug 2026**. Keep the date honest — a stale status file is worse
+Last updated **1 Sep 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed.
 
 ## The plan
@@ -70,6 +70,16 @@ bookable list is `is_resolved = true`; a service only ever referenced by a trans
 stays `false` and is countable as the Q19 gap (9 bookable vs ~200 referenced). The
 "unresolved service" behaviour is live for **purchases**; the same stub-don't-fail
 pattern now covers **sessions** too - attendance populates (see below).
+
+**Schedule cadence closed the retroactive-edit gap** (1 Sep 2026). The daily
+windows are short by design - 3 days for appointments, 7 back for the class
+schedule - which left a session edited weeks after it ran outside every window
+and never re-read. The monthly route now derives its own range when nobody has
+asked for one (`SYNC_MONTHLY_LOOKBACK_MONTHS`, default 2) and widens the
+appointment window to match, so every calendar month is re-read once in full
+shortly after it ends. An explicit ask still wins; 0 switches the cadence off.
+Nothing else needed it: every other pass is unwindowed and enumerated in full
+each night.
 
 ## Done
 

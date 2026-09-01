@@ -69,6 +69,7 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
     LOG_TO_FILE: processEnv.LOG_TO_FILE,
     LOG_DIR: processEnv.LOG_DIR,
     SYNC_HISTORY_START: processEnv.SYNC_HISTORY_START,
+    SYNC_MONTHLY_LOOKBACK_MONTHS: processEnv.SYNC_MONTHLY_LOOKBACK_MONTHS,
     SYNC_DAILY_LOOKBACK_DAYS: processEnv.SYNC_DAILY_LOOKBACK_DAYS,
     SMTP_HOST: processEnv.SMTP_HOST,
     SMTP_PORT: processEnv.SMTP_PORT,
@@ -116,6 +117,7 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
     sync: Object.freeze({
       historyStart: runtime.data.SYNC_HISTORY_START,
       dailyLookbackDays: runtime.data.SYNC_DAILY_LOOKBACK_DAYS,
+      monthlyLookbackMonths: runtime.data.SYNC_MONTHLY_LOOKBACK_MONTHS,
     }),
     smtp: Object.freeze({
       host: runtime.data.SMTP_HOST ?? null,

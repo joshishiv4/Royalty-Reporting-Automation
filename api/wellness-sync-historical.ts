@@ -19,13 +19,16 @@ import { SupabaseClient } from '../src/supabase/client.js';
  * cadence bounded by wall clock, the other is a deliberate backfill bounded by
  * how far back the studio asked to load.
  *
- * WHY THE CRON STILL FIRES EVEN WHEN THERE IS NOTHING TO BACKFILL. The seed
- * reads sync_job_state.window_start_override / window_end_override for this
- * job. No override → no seed → early exit. So a scheduled invocation without a
- * pending ask is a no-op that costs one config load and one DB read, and a
- * human setting the override (via a POST here, or the CLI) means the next
- * scheduled run picks it up automatically instead of waiting for someone to
- * remember to trigger it.
+ * WHAT THE CRON DOES WITH NO PENDING ASK. It re-reads the last
+ * SYNC_MONTHLY_LOOKBACK_MONTHS calendar months (default 2) rather than exiting.
+ * Firing on the 1st, that is the whole of the month just finished - so every
+ * month is re-checked once, shortly after it ends, and a session edited
+ * retroactively outside the daily windows is still caught. Setting the config
+ * to 0 restores the old behaviour of doing nothing unless asked.
+ *
+ * An explicit ask still wins: an override set via a POST here (or the CLI) is
+ * honoured exactly as given and cleared on the clean drain, so a deliberate
+ * backfill is never widened or narrowed by the cadence.
  *
  * WHY POST ACCEPTS A start/end BODY. Setting a window is the whole point of
  * asking this endpoint anything; making it a one-call flow means a caller

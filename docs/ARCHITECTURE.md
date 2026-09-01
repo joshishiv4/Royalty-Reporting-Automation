@@ -151,7 +151,7 @@ envelope inside" trap to guard against.
 | Vercel sync-PROGRESS route — read-only, built to be polled while a backfill runs | [`api/sync-status.ts`](../api/sync-status.ts) |
 | Vercel sync route — staff only, targeted | [`api/wellness-sync.ts`](../api/wellness-sync.ts) |
 | Vercel FULL sync route — every pass, the daily cron | [`api/wellness-sync-all.ts`](../api/wellness-sync-all.ts) |
-| Vercel HISTORICAL class-schedule route — monthly-chunk backfill, monthly cron | [`api/wellness-sync-historical.ts`](../api/wellness-sync-historical.ts) |
+| Vercel HISTORICAL class-schedule route — monthly-chunk backfill and the monthly re-read cadence | [`api/wellness-sync-historical.ts`](../api/wellness-sync-historical.ts) |
 | Reading and setting the visit sync's date window — GET what the next window will be and why, POST a ONE-SHOT manual `{start,end}`, DELETE to clear | [`api/sync-window.ts`](../api/sync-window.ts) |
 
 The CLI and the routes are thin: both resolve config, build a client, and call the
@@ -169,6 +169,34 @@ Notifications are OFF by default: when `SMTP_HOST` is unset, the digest still
 builds and its verdict is returned in the sync response for the log to record,
 but no mail is sent. Setting the SMTP env variables switches it on with no
 code change.
+
+### How far back each schedule reaches
+
+Only two things in the system are date-windowed. Everything else — purchases,
+people, money, reference lists, attendance — is enumerated in full every night
+and therefore cannot go stale.
+
+| Reads | Window | Set by |
+|---|---|---|
+| Class schedule, daily | 7 days back, 30 forward | `SCHEDULE_LOOKBACK_DAYS` / `SCHEDULE_LOOKAHEAD_DAYS` in [`src/sync/pass.ts`](../src/sync/pass.ts) |
+| Appointments, daily | 3 days back, or the full history until the first clean drain | `SYNC_DAILY_LOOKBACK_DAYS`, and the watermark rule in [`src/sync/visit-window.ts`](../src/sync/visit-window.ts) |
+| Both, monthly | the last N calendar months, N counting the current one | `SYNC_MONTHLY_LOOKBACK_MONTHS`, default 2 |
+
+The daily windows are short on purpose: their job is to catch an outcome that
+settled late, not to re-read history. That leaves one gap they cannot close — a
+session edited retroactively, weeks after it ran, falls outside every daily
+window and would never be looked at again. The monthly run exists for exactly
+that: firing on the 1st at the default of 2, it re-reads the whole of the month
+just finished, so **every calendar month is re-read once, in full, shortly after
+it ends**. Counting whole months rather than days is what makes that guarantee
+hold — a day-count window cuts a month in half and re-reads the same half twice.
+
+It widens the appointment window to the same range while it is at it, because
+appointments carry the identical gap behind a three-day window. That happens on
+the derived path only: an explicit historical ask is honoured exactly as given,
+since backfilling schedules from 1980 must not silently re-list every
+appointment ever recorded. `SYNC_MONTHLY_LOOKBACK_MONTHS=0` restores the older
+behaviour of doing nothing unless asked.
 
 ### Health, HTTP and shared types
 

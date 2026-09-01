@@ -60,6 +60,18 @@ const positiveIntFromString = filledIn
   .refine((v) => v > 0, { message: 'must be greater than zero' });
 
 /**
+ * Same, but zero is a legitimate answer meaning "off".
+ *
+ * Used where a count IS the switch, so turning a scheduled behaviour off is a
+ * config change rather than an edit to vercel.json. A positive-only int would
+ * force the cron itself to be deleted, which is a worse thing to have to undo.
+ */
+const nonNegativeIntFromString = filledIn
+  .refine((v) => /^\d+$/.test(v), { message: 'must be a whole number' })
+  .transform((v) => Number.parseInt(v, 10))
+  .refine((v) => v >= 0, { message: 'must not be negative' });
+
+/**
  * WL `k_` keys are stored and transmitted as text everywhere, never as numbers
  * (PRD M02). Validated as digits but kept a string.
  */
@@ -175,6 +187,27 @@ export const runtimeOptionsSchema = z.object({
    */
   SYNC_DAILY_LOOKBACK_DAYS: positiveIntFromString.default('3'),
 
+  /**
+   * How many calendar months the MONTHLY run re-reads, counting the current one.
+   *
+   * WHY THIS EXISTS. The daily run's windows are short by design - three days
+   * for appointments, seven back for the class schedule - because their job is
+   * to catch an outcome that settled late, not to re-read history. That leaves
+   * one real gap: a session edited retroactively, weeks after it ran, falls
+   * outside every daily window and is never re-read. Nothing else has this
+   * problem - purchases, people, money, reference lists and attendance carry no
+   * date window at all and are enumerated in full every night.
+   *
+   * So the monthly run closes exactly that gap. At the default of 2, firing on
+   * the 1st, the window is the whole of the previous month plus the first day of
+   * the new one: every month gets re-read once, in full, shortly after it ends.
+   * Raise it to re-read further back; 0 turns the behaviour off and returns the
+   * monthly run to doing nothing unless a range is explicitly requested.
+   *
+   * A manual request always wins over this. See runHistoricalScheduleSyncPass.
+   */
+  SYNC_MONTHLY_LOOKBACK_MONTHS: nonNegativeIntFromString.default('2'),
+
   // --- SMTP notification of dead-letter items --------------------------------
   // Every field is optional. If SMTP_HOST is unset, the whole notifier stays
   // OFF: buildDigest still runs and its verdict is available to a caller, but
@@ -249,6 +282,8 @@ export interface SyncConfig {
   readonly historyStart: string;
   /** Days of overlap re-read on every run after the first clean drain. */
   readonly dailyLookbackDays: number;
+  /** Calendar months the monthly run re-reads, counting the current one. 0 = off. */
+  readonly monthlyLookbackMonths: number;
 }
 
 export interface SupabaseConfig {
