@@ -33,6 +33,7 @@ Every table carries:
 
 | Column | Meaning |
 |---|---|
+| `id` | a `uuid` PRIMARY KEY, defaulted (0034, 0035) |
 | `created_at` | when the row first appeared here |
 | `updated_at` | when it last **changed** here — maintained by trigger |
 | `synced_at` | when it was last **read back** from the source, changed or not |
@@ -43,6 +44,22 @@ column defended by a default alone reports the creation time forever and every
 answering a different question: a sync that finds nothing new moves `synced_at`
 and leaves `updated_at` alone, which is how "confirmed unchanged an hour ago"
 differs from "nobody has looked at this in a week".
+
+**`id` is the primary key; the natural key is still what an upsert names.**
+`0034` added a `uuid id` beside every natural key and deliberately left it as
+UNIQUE only. `0035` promoted it to PRIMARY KEY and kept the natural key as a
+UNIQUE constraint called `<table>_natkey_unique`. Nothing about the sync
+changed, and that is the point: Postgres honours `ON CONFLICT` on **any** UNIQUE
+constraint, not only the primary key, so `ON CONFLICT (uid)` still resolves to
+UPDATE and a re-sync still never duplicates.
+
+Hold on to the distinction. `id` is plumbing — one uniform handle for foreign
+keys, tooling and row-level APIs that do not want to know whether this table is
+keyed on one `text` column or three. The source system's key is still the
+**identity**, and it is still the conflict target. Keying an upsert on `id`
+would mint a new row for a record WellnessLiving has already sent, every run —
+which is exactly the failure `0034` was written to avoid, and why it stopped
+short of promoting the column it had just added.
 
 ## People
 
@@ -171,8 +188,8 @@ Three measured reasons, all of which point the same way:
 | | |
 |---|---|
 | `ghl_contact_id` is deliberately non-unique | **307 distinct contacts across 317 matched clients.** A family on one phone shares a contact, so the fields belong to the contact. On `person` the same fact would be stored in N rows, and a partial run can leave them disagreeing — the failure `is_staff` was rejected for |
-| Typed tables key on the source system's id | `uid`, `k_purchase`, `k_service`, `k_login_type` are all `text`. A `uuid` PK appears only where the source gives no key: `lead`, `raw_wl`, `raw_ghl`, `raw_link`, `sync_*` |
-| A surrogate key would hide a re-key | With the natural key, a re-issued GoHighLevel id shows up as a new row and the old one ages visibly. A `uuid` would keep pointing at a contact that no longer exists |
+| Typed tables key on the source system's id | `uid`, `k_purchase`, `k_service`, `k_login_type` are all `text`, and they are what an upsert names. Every base table also carries a `uuid` `id` as its PRIMARY KEY since `0035`, but that is plumbing — the natural key survives as `<table>_natkey_unique` and stays the conflict target |
+| A surrogate key would hide a re-key | With the natural key as the conflict target, a re-issued GoHighLevel id shows up as a new row and the old one ages visibly. Upserting on a `uuid` would keep pointing at a contact that no longer exists — which is why `0035` moved the primary key and left the conflict target alone |
 
 **The agreed field list is data, not schema — and that is what unblocked M06.**
 The ticket sat open because "the agreed fields" was being modelled as columns, so

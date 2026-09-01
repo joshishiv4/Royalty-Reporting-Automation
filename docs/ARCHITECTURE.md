@@ -231,6 +231,7 @@ to re-run.
 | `0032` | `enqueue_sync_items()` — queueing in one atomic statement; PostgREST cannot write `ON CONFLICT DO NOTHING` against a partial index |
 | `0033` | `sync_run.heartbeat_at` and the `abandoned` state — a run whose process died is retired instead of claiming to be alive forever; restores the `ghl_unresolved_48h` branch and the unresolved clock that `0026` dropped |
 | `0034` | a uuid `id` on every base table, UNIQUE and deliberately **not** the primary key — the natural key has to stay the upsert conflict target or every re-sync duplicates every row |
+| `0035` | `id` promoted to primary key on the tables the earlier draft left it as a UNIQUE spare column on — every FK still targets the natural key, so upserts remain conflict-safe |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs, plus case tables for rules that live in SQL. They are not migrations and
