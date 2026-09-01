@@ -129,6 +129,7 @@ function fakeDb(options: { failOn?: string; knownFields?: string[] | undefined }
       return Promise.resolve(rows);
     }),
     update: vi.fn((table: string, patch: Record<string, unknown>, query?: string) => {
+      if (table === 'sync_job_state') return Promise.resolve([{ job_name: 'j' }]);
       guard(table);
       if (table === 'person') patches.push(patch);
       if (table === 'sync_queue' && (query ?? '').includes('id=eq.') && !claimed) {

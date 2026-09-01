@@ -79,7 +79,11 @@ function fakeDb(windows: Record<string, WindowRow>) {
       Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows),
     ),
     // The claim CAS finds nothing, so the pass drains immediately after seeding.
-    update: vi.fn(() => Promise.resolve([])),
+    // The job lock is also a conditional UPDATE (0035): answering [] for it would
+    // make the pass stand down as already-running and seed nothing at all.
+    update: vi.fn((table: string) =>
+      Promise.resolve(table === 'sync_job_state' ? [{ job_name: 'j' }] : []),
+    ),
     upsert: vi.fn((table: string, rows: Array<Record<string, unknown>>) => {
       if (table === 'sync_job_state') stateWrites.push(...rows);
       return Promise.resolve(rows);

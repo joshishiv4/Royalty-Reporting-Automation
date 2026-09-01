@@ -32,7 +32,9 @@ function fakeDb() {
     insert: vi.fn((table: string, rows: unknown[]) =>
       Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows),
     ),
-    update: vi.fn(() => Promise.resolve([])), // claim CAS finds nothing
+    update: vi.fn((table: string) =>
+      Promise.resolve(table === 'sync_job_state' ? [{ job_name: 'j' }] : []),
+    ), // claim CAS finds nothing
     upsert: vi.fn((_table: string, rows: unknown[]) => Promise.resolve(rows)),
     select: vi.fn(() => Promise.resolve([])), // no seed rows, nothing eligible
     // selectAll pages in production (PostgREST caps a read at 1,000 rows);
@@ -97,19 +99,21 @@ describe('runFullSyncPass', () => {
       insert: vi.fn((table: string, rows: unknown[]) =>
         Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows),
       ),
-      update: vi.fn((_t: string, _p: unknown, query: string) =>
+      update: vi.fn((table: string, _p: unknown, query: string) =>
         Promise.resolve(
-          query.includes('id=eq.') && query.includes('select=')
-            ? [
-                {
-                  id: 'q1',
-                  work_type: 'staff_list',
-                  target_key: 'all',
-                  k_business: '111111',
-                  attempt_count: 0,
-                },
-              ]
-            : [],
+          table === 'sync_job_state'
+            ? [{ job_name: 'j' }]
+            : query.includes('id=eq.') && query.includes('select=')
+              ? [
+                  {
+                    id: 'q1',
+                    work_type: 'staff_list',
+                    target_key: 'all',
+                    k_business: '111111',
+                    attempt_count: 0,
+                  },
+                ]
+              : [],
         ),
       ),
       upsert: vi.fn((_table: string, rows: unknown[]) => Promise.resolve(rows)),
@@ -216,19 +220,21 @@ describe('runFullSyncPassParallel', () => {
       insert: vi.fn((table: string, rows: unknown[]) =>
         Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows),
       ),
-      update: vi.fn((_t: string, _p: unknown, query: string) =>
+      update: vi.fn((table: string, _p: unknown, query: string) =>
         Promise.resolve(
-          query.includes('id=eq.') && query.includes('select=')
-            ? [
-                {
-                  id: 'q1',
-                  work_type: 'staff_list',
-                  target_key: 'all',
-                  k_business: '111111',
-                  attempt_count: 0,
-                },
-              ]
-            : [],
+          table === 'sync_job_state'
+            ? [{ job_name: 'j' }]
+            : query.includes('id=eq.') && query.includes('select=')
+              ? [
+                  {
+                    id: 'q1',
+                    work_type: 'staff_list',
+                    target_key: 'all',
+                    k_business: '111111',
+                    attempt_count: 0,
+                  },
+                ]
+              : [],
         ),
       ),
       upsert: vi.fn((_table: string, rows: unknown[]) => Promise.resolve(rows)),
@@ -286,7 +292,9 @@ describe('runFullSyncPassParallel', () => {
       insert: vi.fn((table: string, rows: unknown[]) =>
         Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows),
       ),
-      update: vi.fn(() => Promise.resolve([])),
+      update: vi.fn((table: string) =>
+        Promise.resolve(table === 'sync_job_state' ? [{ job_name: 'j' }] : []),
+      ),
       upsert: vi.fn((_table: string, rows: unknown[]) => Promise.resolve(rows)),
       select: vi.fn(() => {
         const t = ticks++;

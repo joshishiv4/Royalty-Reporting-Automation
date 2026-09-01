@@ -41,7 +41,9 @@ function fakeDbTracking(rowsByTable: Record<string, unknown[]>) {
     insert: vi.fn((table: string, rows: unknown[]) =>
       Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows),
     ),
-    update: vi.fn(() => Promise.resolve([])),
+    update: vi.fn((table: string) =>
+      Promise.resolve(table === 'sync_job_state' ? [{ job_name: 'j' }] : []),
+    ),
     upsert: vi.fn((_t: string, rows: unknown[]) => Promise.resolve(rows)),
     select: vi.fn((table: string, query: string) => {
       calls.push({ op: 'select', table, query });

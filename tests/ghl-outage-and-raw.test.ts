@@ -75,6 +75,7 @@ function harness(ghl: { searchContacts: () => Promise<GhlSearchResponse> }) {
     }),
     upsert: vi.fn((_t: string, rows: unknown[]) => Promise.resolve(rows)),
     update: vi.fn((table: string, patch: Record<string, unknown>, query?: string) => {
+      if (table === 'sync_job_state') return Promise.resolve([{ job_name: 'j' }]);
       if (table === 'person') patches.push(patch);
       if (table === 'sync_queue' && (query ?? '').includes('id=eq.') && !claimed) {
         claimed = true;

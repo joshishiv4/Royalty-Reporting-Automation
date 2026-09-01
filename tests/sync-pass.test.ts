@@ -42,6 +42,7 @@ function fakeDb(script: DbScript = {}) {
       return Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows);
     }),
     update: vi.fn((table: string, patch: Record<string, unknown>, query: string) => {
+      if (table === 'sync_job_state') return Promise.resolve([{ job_name: 'j' }]);
       calls.push({ op: 'update', table, patch, query });
       // The claim compare-and-swap is the only update that reads back a row.
       const isClaim = query.includes('id=eq.') && query.includes('select=');
@@ -146,6 +147,7 @@ describe('runStaffSyncPass', () => {
         return Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows);
       }),
       update: vi.fn((table: string, patch: Record<string, unknown>, query: string) => {
+        if (table === 'sync_job_state') return Promise.resolve([{ job_name: 'j' }]);
         calls.push({ op: 'update', table, patch });
         const isClaim = query.includes('id=eq.') && query.includes('select=');
         if (isClaim && !claimed) {
@@ -206,5 +208,76 @@ describe('runStaffSyncPass', () => {
     // is scrubbed for hosts, not discarded - see scrubMessage.
     expect(summary.error).toContain('Error');
     expect(summary.error).toContain('boom');
+  });
+});
+
+/**
+ * The pass-level half of the job lease (migration 0035). The unit rules are in
+ * job-lock.test.ts; these pin what a pass DOES with them.
+ */
+describe('a pass stands down when another run holds its job', () => {
+  function lockedDb() {
+    const seeded: unknown[] = [];
+    const runs: Array<Record<string, unknown>> = [];
+    return {
+      seeded,
+      runs,
+      db: {
+        // The lock is the only UPDATE that matters here: [] means "somebody
+        // else has it", which is exactly the state being tested.
+        update: vi.fn(() => Promise.resolve([])),
+        upsert: vi.fn((_t: string, rows: unknown[]) => Promise.resolve(rows)),
+        insert: vi.fn((table: string, rows: Array<Record<string, unknown>>) => {
+          if (table === 'sync_run') runs.push(...rows);
+          if (table === 'sync_queue') seeded.push(...rows);
+          return Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows);
+        }),
+        rpc: vi.fn((_fn: string, args: { items: unknown[] }) => {
+          seeded.push(...args.items);
+          return Promise.resolve(args.items.length);
+        }),
+        select: vi.fn(() => Promise.resolve([])),
+        selectAll: vi.fn(() => Promise.resolve([])),
+      } as unknown as SupabaseClient,
+    };
+  }
+
+  it('reports skipped, not failed - nothing is wrong, it is running elsewhere', async () => {
+    const h = lockedDb();
+    const summary = await runStaffSyncPass(config, {
+      wl: fakeWl(() => Promise.reject(new Error('no WL call may happen'))),
+      db: h.db,
+      now: () => 0,
+    });
+
+    expect(summary.state).toBe('skipped');
+  });
+
+  // Failing would page somebody at 3am for a cron overlapping a manual
+  // backfill, and would make `failed` mean two entirely different things.
+  it('does no work at all rather than racing the run that holds the lock', async () => {
+    const h = lockedDb();
+    const summary = await runStaffSyncPass(config, {
+      wl: fakeWl(() => Promise.reject(new Error('no WL call may happen'))),
+      db: h.db,
+      now: () => 0,
+    });
+
+    expect(h.seeded).toEqual([]);
+    expect(summary.claimed).toBe(0);
+    expect(summary.done).toBe(0);
+  });
+
+  // The attempt is still recorded. A job quietly not running is the thing that
+  // hides for days; a skipped run in sync_run says so.
+  it('still writes a run record saying why it stood down', async () => {
+    const h = lockedDb();
+    await runStaffSyncPass(config, {
+      wl: fakeWl(() => Promise.reject(new Error('no WL call may happen'))),
+      db: h.db,
+      now: () => 0,
+    });
+
+    expect(h.runs).toHaveLength(1);
   });
 });

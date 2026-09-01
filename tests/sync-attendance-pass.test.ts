@@ -84,6 +84,7 @@ function harness(session: { k_period: string; dt_start_utc: string; session_kind
       Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : [{ id: 'raw-1' }, ...rows]),
     ),
     update: vi.fn((table: string, _patch: unknown, query: string) => {
+      if (table === 'sync_job_state') return Promise.resolve([{ job_name: 'j' }]);
       // The claim is a compare-and-swap that returns the row it won.
       if (table === 'sync_queue' && query.includes('state=eq.pending') && !claimed) {
         claimed = true;

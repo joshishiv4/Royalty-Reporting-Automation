@@ -28,7 +28,9 @@ function spy() {
     // tests are about what gets queued, not how Postgres resolves a clash.
     rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
     insert: vi.fn(() => Promise.resolve([])),
-    update: vi.fn(() => Promise.resolve([])),
+    update: vi.fn((table: string) =>
+      Promise.resolve(table === 'sync_job_state' ? [{ job_name: 'j' }] : []),
+    ),
   } as unknown as SupabaseClient;
   return { db, upserts };
 }

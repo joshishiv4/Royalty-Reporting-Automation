@@ -18,8 +18,11 @@ import { contactSnapshot } from '../ghl/snapshot.js';
 import {
   bumpReportPoll,
   clearReportState,
+  acquireJobLock,
   closeJobState,
   openJobState,
+  releaseJobLock,
+  renewJobLock,
   readReportState,
   saveReportRequested,
   readWindowState,
@@ -93,7 +96,7 @@ export interface SyncPassDeps {
 
 export interface SyncPassSummary {
   readonly runId: string;
-  readonly state: 'ok' | 'partial' | 'failed';
+  readonly state: 'ok' | 'partial' | 'failed' | 'skipped';
   readonly claimed: number;
   readonly done: number;
   readonly requeued: number;
@@ -1807,7 +1810,7 @@ export interface FullSyncPassResult {
 
 export interface FullSyncSummary {
   readonly runId: string;
-  readonly state: 'ok' | 'partial' | 'failed';
+  readonly state: 'ok' | 'partial' | 'failed' | 'skipped';
   readonly durationMs: number;
   readonly passes: readonly FullSyncPassResult[];
 }
@@ -2037,6 +2040,36 @@ async function runPass(
   await openRun(db, ctx.runId, ctx.kBusiness, spec.jobName, iso());
   await openJobState(db, spec.jobName, ctx.kBusiness, iso());
 
+  // TAKE THE JOB'S LEASE, OR STAND DOWN.
+  //
+  // Two runs of one pass overlapped on 31 Aug 2026 - one draining rows while the
+  // other paged enqueue's dedupe read - and the collision killed attendance_sync
+  // with 32,440 items unqueued. This is what stops the second run starting.
+  //
+  // Standing down is 'skipped', NOT 'failed'. Nothing is wrong: the job is
+  // running, just not here. Reporting failure would page somebody at 3am for a
+  // cron overlapping a manual backfill, and would make `state: 'failed'` on the
+  // full sync mean two entirely different things.
+  const locked = await acquireJobLock(db, spec.jobName, ctx.kBusiness, ctx.runId, iso());
+  if (!locked) {
+    await closeRun(db, ctx.runId, iso(), {
+      state: 'skipped',
+      rowsFailed: 0,
+      itemsRemaining: 0,
+      tokenFetches: 0,
+      error: 'another run holds this job',
+    });
+    return {
+      runId: ctx.runId,
+      state: 'skipped',
+      claimed: 0,
+      done: 0,
+      requeued: 0,
+      dead: 0,
+      itemsRemaining: 0,
+    };
+  }
+
   const totals = { claimed: 0, done: 0, requeued: 0, dead: 0 };
   let deferred = 0;
   let failure: string | null = null;
@@ -2045,6 +2078,15 @@ async function runPass(
     for (;;) {
       // Budget is checked before starting a batch, never mid-item.
       if (now() - startedAt >= budgetMs) break;
+
+      // KEEP OUR OWN LEASE ALIVE. A CLI backfill runs for hours against a
+      // five-minute lease; without this it would let the lock expire, the next
+      // scheduled run would take the job, and the two would overlap - the exact
+      // failure the lock exists to prevent, just arriving later.
+      //
+      // Renewed per batch, not per item: a batch is seconds and the lease is
+      // minutes, so this is cheap and cannot drift close to expiry.
+      await renewJobLock(db, spec.jobName, ctx.kBusiness, ctx.runId, iso());
       const s = await runQueue(db, handler, {
         now: iso(),
         workerId: ctx.runId,
@@ -2097,6 +2139,10 @@ async function runPass(
     error: failure,
   });
   await closeJobState(db, spec.jobName, ctx.kBusiness, iso(), state);
+  // Released only if we still hold it - see releaseJobLock. A run that overran
+  // its lease has been superseded, and clearing the lock then would unlock the
+  // job out from under whoever took over.
+  await releaseJobLock(db, spec.jobName, ctx.kBusiness, ctx.runId);
 
   return {
     runId: ctx.runId,

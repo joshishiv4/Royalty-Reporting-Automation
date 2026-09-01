@@ -94,7 +94,8 @@ function harness(
       Promise.resolve(table === 'sync_run' ? [{ run_id: 'run-x' }] : rows),
     ),
     upsert: vi.fn((_t: string, rows: unknown[]) => Promise.resolve(rows)),
-    update: vi.fn((_t: string, _patch: unknown, query: string) => {
+    update: vi.fn((t: string, _patch: unknown, query: string) => {
+      if (t === 'sync_job_state') return Promise.resolve([{ job_name: 'j' }]);
       // The claim CAS: hand out the one queue item exactly once.
       if (query.includes('id=eq.') && query.includes('select=') && !claimed) {
         claimed = true;

@@ -58,6 +58,7 @@ function harness(
     ),
     upsert: vi.fn((_t: string, rows: unknown[]) => Promise.resolve(rows)),
     update: vi.fn((table: string, patch: Record<string, unknown>, query?: string) => {
+      if (table === 'sync_job_state') return Promise.resolve([{ job_name: 'j' }]);
       if (table === 'person') patches.push(patch);
       // The claim CAS, handed out exactly once.
       if (table === 'sync_queue' && (query ?? '').includes('id=eq.') && !claimed) {

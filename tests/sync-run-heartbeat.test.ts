@@ -45,6 +45,7 @@ function harness() {
     upsert: vi.fn((_t: string, rows: unknown[]) => Promise.resolve(rows)),
     rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
     update: vi.fn((table: string, patch: Record<string, unknown>, query: string = '') => {
+      if (table === 'sync_job_state') return Promise.resolve([{ job_name: 'j' }]);
       if (table === 'sync_run') {
         if (patch.state === 'abandoned') order.push('sweep');
         else if (Object.keys(patch).length === 1 && 'heartbeat_at' in patch) order.push('beat');

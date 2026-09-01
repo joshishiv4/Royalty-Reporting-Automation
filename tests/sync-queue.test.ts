@@ -34,6 +34,7 @@ function fakeDb(responses: Responses = {}) {
       return Promise.resolve(responses.select?.(table, query) ?? []);
     }),
     update: vi.fn((table: string, patch: Record<string, unknown>, query: string) => {
+      if (table === 'sync_job_state') return Promise.resolve([{ job_name: 'j' }]);
       calls.push({ op: 'update', table, patch, query });
       return Promise.resolve(responses.update?.(table, patch, query) ?? []);
     }),

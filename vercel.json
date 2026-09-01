@@ -16,25 +16,64 @@
     },
     "api/wellness-sync-historical.ts": {
       "maxDuration": 60
+    },
+    "api/sync-job.ts": {
+      "maxDuration": 60
+    },
+    "api/sync-status.ts": {
+      "maxDuration": 60
     }
   },
   "crons": [
     {
-      "path": "/api/wellness-sync-all",
+      "path": "/api/sync-job?job=schedule-window",
+      "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/sync-job?job=catalogue",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/sync-job?job=clients",
+      "schedule": "30 2 * * *"
+    },
+    {
+      "path": "/api/sync-job?job=teachers",
+      "schedule": "45 2 * * *"
+    },
+    {
+      "path": "/api/sync-job?job=attendance-close",
       "schedule": "0 3 * * *"
     },
     {
+      "path": "/api/sync-job?job=purchases",
+      "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/wellness-sync-all",
+      "schedule": "0 4 * * *"
+    },
+    {
       "path": "/api/wellness-sync-historical",
-      "schedule": "0 4 1 * *"
+      "schedule": "0 5 1 * *"
     }
   ],
   "headers": [
     {
       "source": "/api/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store" },
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Referrer-Policy", "value": "no-referrer" }
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "no-referrer"
+        }
       ]
     }
   ]

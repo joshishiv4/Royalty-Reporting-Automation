@@ -240,3 +240,97 @@ export async function clearReportState(
     { onConflict: 'job_name,k_business' },
   );
 }
+
+/**
+ * How long a lease lasts before another run may take the job.
+ *
+ * Comfortably longer than a serverless invocation can live (60s on Vercel
+ * Hobby), so a healthy run never loses its own lock mid-flight; short enough
+ * that a died process does not block the next scheduled run. A CLI backfill runs
+ * far longer than this and refreshes as it goes - see renewJobLock.
+ */
+export const JOB_LEASE_MS = 300_000;
+
+/**
+ * Takes the job's lease, or reports that somebody else holds it.
+ *
+ * A SINGLE CONDITIONAL UPDATE, not a read followed by a write. Read-then-write
+ * cannot lock anything: two callers both read "free" and both proceed, which is
+ * exactly the overlap this exists to stop. The condition lives in the WHERE
+ * clause and PostgREST returns the rows it changed - one row means the lock is
+ * ours, zero means it is not. Postgres decides. The same compare-and-swap
+ * claimBatch already uses for queue items.
+ *
+ * `or=(locked_until.is.null,locked_until.lt.now)` is the whole rule: free, or
+ * the previous holder's lease has expired. Expiry matters because the process
+ * that took the lock is the only thing that would release it, and a process that
+ * dies releases nothing - forty runs sat open on live dev, the oldest ten days.
+ *
+ * The row must already exist; openJobState upserts it. A job whose row is
+ * missing therefore cannot be locked, and the caller is told it did not get the
+ * lock rather than proceeding unprotected.
+ */
+export async function acquireJobLock(
+  db: SupabaseClient,
+  jobName: string,
+  kBusiness: string,
+  runId: string,
+  now: string,
+  leaseMs = JOB_LEASE_MS,
+): Promise<boolean> {
+  const until = new Date(Date.parse(now) + leaseMs).toISOString();
+  const rows = await db.update(
+    'sync_job_state',
+    { locked_until: until, locked_by: runId },
+    `job_name=eq.${jobName}&k_business=eq.${kBusiness}` +
+      `&or=(locked_until.is.null,locked_until.lt.${now})&select=job_name`,
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Extends a lease we already hold.
+ *
+ * A CLI backfill outlives any sane lease, and a run that let its own lock expire
+ * would be overtaken by the next scheduled run - the overlap again, just slower.
+ * Scoped to `locked_by` so this can only ever extend OUR lease, never steal
+ * somebody else's.
+ */
+export async function renewJobLock(
+  db: SupabaseClient,
+  jobName: string,
+  kBusiness: string,
+  runId: string,
+  now: string,
+  leaseMs = JOB_LEASE_MS,
+): Promise<boolean> {
+  const until = new Date(Date.parse(now) + leaseMs).toISOString();
+  const rows = await db.update(
+    'sync_job_state',
+    { locked_until: until },
+    `job_name=eq.${jobName}&k_business=eq.${kBusiness}&locked_by=eq.${runId}&select=job_name`,
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Releases the lease, but ONLY if we still hold it.
+ *
+ * The `locked_by` filter is the point. A run that overran its lease has already
+ * been superseded; if it then released unconditionally it would unlock the job
+ * out from under whoever legitimately took over, and the next scheduled run
+ * would overlap with that one instead. Better to leave a lease to expire than to
+ * clear somebody else's.
+ */
+export async function releaseJobLock(
+  db: SupabaseClient,
+  jobName: string,
+  kBusiness: string,
+  runId: string,
+): Promise<void> {
+  await db.update(
+    'sync_job_state',
+    { locked_until: null, locked_by: null },
+    `job_name=eq.${jobName}&k_business=eq.${kBusiness}&locked_by=eq.${runId}&select=job_name`,
+  );
+}

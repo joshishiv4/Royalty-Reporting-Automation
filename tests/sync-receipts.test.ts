@@ -151,6 +151,7 @@ describe('writeReceipt', () => {
         return Promise.resolve(rows);
       }),
       update: vi.fn((table: string, _p: unknown, query: string) => {
+        if (table === 'sync_job_state') return Promise.resolve([{ job_name: 'j' }]);
         calls.push({ op: 'update', table, query });
         return Promise.resolve([]);
       }),

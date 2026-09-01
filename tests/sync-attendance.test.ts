@@ -174,7 +174,9 @@ describe('writeAttendanceList', () => {
         calls.push({ op: 'upsert', table, rows, options });
         return Promise.resolve(rows);
       }),
-      update: vi.fn(() => Promise.resolve([])),
+      update: vi.fn((table: string) =>
+        Promise.resolve(table === 'sync_job_state' ? [{ job_name: 'j' }] : []),
+      ),
       select: vi.fn(() => Promise.resolve([])),
     };
     return { db: db as unknown as SupabaseClient, calls };

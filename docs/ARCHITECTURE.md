@@ -84,6 +84,7 @@ correctly does not start.
 | Writing WL responses to Supabase (raw_wl → typed rows → raw_link) | [`src/sync/writer.ts`](../src/sync/writer.ts) |
 | Writing GHL responses to Supabase (raw_ghl), and the recorder that makes every search store itself | [`src/sync/ghl-writer.ts`](../src/sync/ghl-writer.ts) |
 | Reading how far the sync has got, from the queue rather than from a run summary | [`src/sync/progress.ts`](../src/sync/progress.ts) |
+| The six scheduled jobs — which passes each one runs, and in what order | [`src/sync/jobs.ts`](../src/sync/jobs.ts) |
 | Writing purchases (list → purchase + purchase_item, stub FKs) | [`src/sync/purchases.ts`](../src/sync/purchases.ts) |
 | Enriching purchases with money (receipt → totals, payments, credit) | [`src/sync/receipts.ts`](../src/sync/receipts.ts) |
 | Enriching purchases with the recipient (purchase/list/element → uid_recipient, person stub, conflict on disagreement) | [`src/sync/recipients.ts`](../src/sync/recipients.ts) |
@@ -159,6 +160,7 @@ envelope inside" trap to guard against.
 | Everything the package exports | [`src/index.ts`](../src/index.ts) |
 | Vercel health route | [`api/health.ts`](../api/health.ts) |
 | Vercel sync-PROGRESS route — read-only, built to be polled while a backfill runs | [`api/sync-status.ts`](../api/sync-status.ts) |
+| Vercel scheduled-JOB route — one named job per call (`?job=`), six cron entries | [`api/sync-job.ts`](../api/sync-job.ts) |
 | Vercel sync route — staff only, targeted | [`api/wellness-sync.ts`](../api/wellness-sync.ts) |
 | Vercel FULL sync route — every pass, the daily cron | [`api/wellness-sync-all.ts`](../api/wellness-sync-all.ts) |
 | Vercel HISTORICAL class-schedule route — monthly-chunk backfill and the monthly re-read cadence | [`api/wellness-sync-historical.ts`](../api/wellness-sync-historical.ts) |
@@ -282,6 +284,7 @@ to re-run.
 | `0032` | `enqueue_sync_items()` — queueing in one atomic statement; PostgREST cannot write `ON CONFLICT DO NOTHING` against a partial index |
 | `0033` | `sync_run.heartbeat_at` and the `abandoned` state — a run whose process died is retired instead of claiming to be alive forever; restores the `ghl_unresolved_48h` branch and the unresolved clock that `0026` dropped |
 | `0034` | a uuid `id` on every base table, UNIQUE and deliberately **not** the primary key — the natural key has to stay the upsert conflict target or every re-sync duplicates every row |
+| `0035` | `sync_job_state.locked_until` / `locked_by` — a lease, so two runs of one job cannot overlap; the overlap on 31 Aug 2026 is what killed `attendance_sync` |
 | `0035` | `id` promoted to primary key on the tables the earlier draft left it as a UNIQUE spare column on — every FK still targets the natural key, so upserts remain conflict-safe |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
