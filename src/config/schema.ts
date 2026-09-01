@@ -166,8 +166,14 @@ export const runtimeOptionsSchema = z.object({
    * and WL may leave it PENDING for staff for a while - so a one-day window can
    * miss the moment the answer arrives. Every write is an upsert on a WL key, so
    * the overlap is free of consequence.
+   *
+   * Not 2 either, observed live: at exactly 2 days, an outcome that WL settled
+   * more than 24 hours after the session ran fell OUT of the next day's window
+   * before the daily run picked it up, and no later run ever re-fetched that
+   * date. Three days catches the same slip without adding meaningful cost - the
+   * upserts converge, only the number of stale re-reads changes.
    */
-  SYNC_DAILY_LOOKBACK_DAYS: positiveIntFromString.default('2'),
+  SYNC_DAILY_LOOKBACK_DAYS: positiveIntFromString.default('3'),
 });
 
 export const appEnvSchema = z.enum(APP_ENVS);
