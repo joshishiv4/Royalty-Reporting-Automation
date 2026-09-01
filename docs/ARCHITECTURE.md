@@ -33,8 +33,18 @@ api/             Vercel serverless routes
 supabase/
   migrations/    schema, applied in numeric order
   checks/        read-only verification scripts
+scripts/         operator tools for whoever is on call
 tests/           one file per concern, mirroring src/
 ```
+
+`scripts/` is four general tools, not a scratch drawer: queue status, parked
+items, re-queueing, and the date-window lever behind every manual backfill. They
+are tracked precisely because the recovery procedures in
+[RUNBOOK.md](RUNBOOK.md) reference them, and a procedure that depends on a file
+missing from a fresh clone is not a procedure. The one-off diagnostics that
+accumulate during development stay out of the repository — each was written
+against one question on one day and most hardcode a single `work_type`. See
+[`scripts/README.md`](../scripts/README.md).
 
 ## Where things are defined
 

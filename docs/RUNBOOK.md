@@ -294,3 +294,280 @@ gitleaks protect --staged --config .gitleaks.toml --redact
 
 Wire it into `.git/hooks/pre-commit` if you want it automatic. The hook is local and
 intentionally not committed — CI is the enforcement point.
+
+---
+
+## 7. The scheduled jobs
+
+Two schedules, both in [`vercel.json`](../vercel.json). Nothing else is scheduled.
+
+| Cron | Route | Fires | What it does |
+| ---- | ----- | ----- | ------------ |
+| `0 3 * * *` | `/api/wellness-sync-all` | 03:00 UTC daily | Every pass, in dependency order |
+| `0 4 1 * *` | `/api/wellness-sync-historical` | 04:00 UTC on the 1st | Re-reads the last `SYNC_MONTHLY_LOOKBACK_MONTHS` calendar months, or an explicitly requested range |
+
+Vercel Cron sends `CRON_SECRET` as the bearer automatically. Neither route can be
+reached without a token.
+
+### What each pass does, and how long it takes
+
+Measured over 26,516 `sync_run` rows, 31 Aug – 1 Sep 2026. These are steady-state
+durations against an already-populated database — a first backfill is very much
+longer, and the `max` column is where those show up.
+
+| # | Pass | Reads | median | p90 | observed max |
+|---|---|---|---|---|---|
+| 1 | `login_type_sync` | membership/login types | 2.5s | 2.9s | 8.7s |
+| 2 | `client_list_sync` | every activated client | 2.5s | 2.8s | 41.2s |
+| 3 | `staff_sync` | staff → `person` | 2.5s | 2.8s | 7.8s |
+| 4 | `location_sync` | locations | 2.5s | 2.8s | 7.3s |
+| 5 | `shop_category_sync` | shop categories | 2.5s | 2.9s | 6.9s |
+| 6 | `promotion_sync` | promotions, per location | 2.8s | 3.1s | 16.9s |
+| 7 | `service_category_sync` | bookable service categories | 2.8s | 3.1s | 8.7s |
+| 8 | `purchase_sync` | purchases, per person | 3.4s | 3.8s | 7.3m |
+| 9 | `receipt_sync` | the money on each purchase | 2.0s | 2.4s | **90.4m** |
+| 10 | `purchase_element_sync` | item detail, recipient, membership state | **17.3s** | 18.9s | 17.4m |
+| 11 | `profile_sync` | contact detail, per person | 3.4s | 3.8s | 6.0m |
+| 12 | `schedule_sync` | class schedule, −7 / +30 days | 2.8s | 3.1s | 8.3s |
+| 13 | `client_session_sync` | appointments | 3.4s | 3.8s | **80.3m** |
+| 14 | `attendance_sync` | attendance, **every** session | **31.1s** | 33.6s | 58.7m |
+| 15 | `ghl_match_sync` | GoHighLevel contact matching | 2.0s | 2.2s | 7.3m |
+| 16 | `service_sync` | bookable service catalogue | 2.8s | 3.1s | 8.3s |
+
+`historical_schedule_sync` is not in that order — it has its own cron. One month
+chunk measured at 9.3s.
+
+> **The medians sum to roughly 85 seconds, and the function budget is 50.**
+> `FUNCTION_BUDGET_MS` stops the run *starting* new passes at 50s, under Vercel's
+> 60s ceiling, so a nightly invocation reports `partial` with the trailing passes
+> marked `ran: false`. That is safe — the queue is the cursor and the next
+> invocation resumes — but with **one cron per day** the trailing passes
+> (`ghl_match_sync`, `service_sync`) fall a day behind each time the run is full.
+> Raising the cron frequency is the fix, and it needs a Vercel plan that permits
+> sub-daily crons. **Open — see section 9.**
+
+`attendance_sync` is the expensive one and will stay that way: it re-seeds from
+**every** session row rather than a recent window, so its cost grows with the
+schedule's history, not with what changed.
+
+### Is it healthy right now
+
+```bash
+node scripts/queue-status.mjs
+```
+
+or, with only a browser and the database:
+
+```sql
+select * from sync_queue_progress where k_business = '<k_business>' order by work_type;
+select job_name, state, last_seen_at, last_clean_completion_at
+  from sync_job_state where k_business = '<k_business>' order by job_name;
+```
+
+`pct_done = 100` on every row with `pending = 0` and `in_progress = 0` means the
+queue has drained. `last_clean_completion_at` moves **only** on a clean drain, so
+a stale value there with a recent `last_seen_at` means the job is running but has
+not finished cleanly in a while.
+
+---
+
+## 8. Recovery procedures
+
+Read section 7 first: most of what looks like a failure is a budgeted run doing
+exactly what it was built to do.
+
+### 8a. A run reported `partial`, or the queue has items outstanding
+
+**Usually: do nothing.** `partial` is the normal way a long run ends. The queue is
+durable, the next invocation resumes from exactly what was left, and no work is
+lost. Act only if `pending` has not fallen across several consecutive runs.
+
+To push it along without waiting for the schedule:
+
+```bash
+curl -X POST https://<deployment>/api/wellness-sync-all -H "Authorization: Bearer $SYNC_TRIGGER_TOKEN"
+```
+
+Repeat until `/api/sync-status` reports `"complete": true`. Each call does one
+budget's worth. For a large backfill, run it locally instead — there is no
+50-second ceiling outside the platform:
+
+```bash
+APP_ENV=prod npm start -- sync:full-parallel
+```
+
+### 8b. Triggering the historical load
+
+The monthly route re-reads the last two months on its own. To load a **specific**
+range — a year of history, or one month that needs re-checking — ask for it, and
+that request takes priority over the routine re-read.
+
+```bash
+curl -X POST https://<deployment>/api/wellness-sync-historical -H "Authorization: Bearer $SYNC_TRIGGER_TOKEN" -H "Content-Type: application/json" -d '{"start":"2024-01-01","end":"2024-12-31"}'
+```
+
+or set the window and let the next run pick it up:
+
+```bash
+node scripts/window.mjs --job=historical_schedule_sync --start=2024-01-01 --end=2024-12-31 --apply
+```
+
+The range is cut into calendar months, one queue item each, so an interrupted run
+resumes at the month it reached rather than restarting. The request clears itself
+once the job drains cleanly — it is an instruction, not a setting.
+
+To do the same for **appointments** rather than classes, point at
+`client_session_sync`. A start with no end means "from there to now":
+
+```bash
+node scripts/window.mjs --job=client_session_sync --start=2024-01-01 --apply
+```
+
+### 8c. Reading the parked queue
+
+An item that exhausted its three attempts (1, 5 and 25 minutes apart) is parked in
+state `dead` and will not be retried by anything.
+
+```bash
+node scripts/dead-items.mjs
+```
+
+Add `--work-type=purchase_receipt` to narrow it, or `--verbose` for the full error
+text. Without a clone:
+
+```sql
+select work_type, last_error_sid, last_http_status, count(*)
+  from sync_queue
+ where k_business = '<k_business>' and state = 'dead'
+ group by 1, 2, 3 order by 4 desc;
+```
+
+Read `last_error_sid` before deciding anything. `id-nx` means WellnessLiving says
+the record does not exist — almost always an upstream deletion, and re-queueing it
+just burns three more attempts every run.
+
+### 8d. Re-queueing
+
+```bash
+node scripts/requeue.mjs --work-type=user_profile
+```
+
+That is a dry run: it prints what it would change and exits. Add `--apply` to make
+it happen. `--sid=id-nx --invert` re-queues everything except the deletions.
+
+Without a clone:
+
+```sql
+update sync_queue
+   set state = 'pending', attempt_count = 0, next_attempt_at = now()
+ where k_business = '<k_business>'
+   and state = 'dead'
+   and work_type = 'user_profile'
+   and coalesce(last_error_sid, '') <> 'id-nx';
+```
+
+The error columns are deliberately left in place: if the item dies again, the old
+error still on the row is what shows it is the same failure and not a new one.
+
+### 8e. A run died and left its items claimed
+
+A process killed mid-item leaves rows in `in_progress` holding a lease. This
+recovers on its own — `sync_run.heartbeat_at` and the `abandoned` state (migration
+`0033`) retire a run whose process died, and the lease expires. Wait one run cycle
+before intervening.
+
+If it is genuinely stuck, release the claims:
+
+```sql
+update sync_queue
+   set state = 'pending', next_attempt_at = now()
+ where k_business = '<k_business>'
+   and state = 'in_progress'
+   and updated_at < now() - interval '1 hour';
+```
+
+Do this only when no run is active — check `sync_job_state.state` first. Releasing
+a lease a live run still holds means two workers on the same item; the writes are
+upserts so the data survives, but the work is done twice.
+
+### 8f. Forcing a full re-read from the beginning
+
+The appointment pass decides between "full history" and "last three days" by
+whether it has ever drained cleanly. Clearing the watermark sends it back to a
+full backfill:
+
+```sql
+update sync_job_state
+   set last_clean_completion_at = null
+ where k_business = '<k_business>' and job_name = 'client_session_sync';
+```
+
+Expect hours, not minutes — the observed first backfill was 80 minutes. Run it
+locally rather than through the deployed route.
+
+### 8g. Nothing works and the credentials are suspect
+
+```bash
+APP_ENV=prod npm start -- config:check
+```
+
+That makes no network calls and proves every key is present and well-formed. Then
+`config:show` for what actually resolved, credentials fingerprinted, and
+`healthcheck` for whether every dependency answers.
+
+A 401 or 403 in `last_http_status` across many items at once is a credential
+problem, not a data problem. Go to section 4.
+
+---
+
+## 9. Data traps and open questions
+
+What is unresolved, and which numbers are provisional. Anyone inheriting this
+needs this section more than any other.
+
+### Traps that will bite
+
+| Trap | What happens | Where |
+|---|---|---|
+| WL answers **HTTP 200 for errors** | The failure is inside the body. Every call must assert `status === "ok"` — a structural test fails the build if any module outside the client calls `fetch` | [WL-API-NOTES.md](WL-API-NOTES.md) |
+| `dt_date` needs a time component | `2026-08-19` is rejected; `2026-08-19 00:00:00` works. Silent | [WL-API-NOTES.md](WL-API-NOTES.md) |
+| …except where it must **not** have one | The class-schedule endpoint wants bare dates. The two are not interchangeable | `src/sync/pass.ts` |
+| WL keys are **text**, never integers | A leading zero is lost as an integer, and the record is then unfindable | [DATA-MODEL.md](DATA-MODEL.md) |
+| Money is `numeric(12,2)`, never float | WL sends `"280.00"` as a string. Float drift in a royalty figure is not recoverable | [DATA-MODEL.md](DATA-MODEL.md) |
+| List endpoints return **keyed objects**, not arrays | Iterate with `Object.values()`. Two endpoints — promotions and shop categories — return real arrays instead | [WL-API-NOTES.md](WL-API-NOTES.md) |
+| Hosts never appear in source, logs or records | Enforced by `tests/no-hardcoded-config.test.ts` | [CLAUDE.md](../CLAUDE.md) |
+
+### Open with WellnessLiving
+
+| Question | Status | What it blocks |
+|---|---|---|
+| A way to enumerate **all clients** | **Open.** No list endpoint; search requires a term. People are discovered through staff records, purchases and attendance | Coverage is everyone who has transacted, **not** the full client base. Any client count is a floor, not a total |
+| **Staff pay amounts** | **Open.** WL returns which pay rate applies, never the amount, and no documented endpoint resolves it | Revenue per class is available. **Profit per class is not.** Any margin figure is unavailable, not zero |
+
+Before recording a new WL blocker, check the parameter names first. Two of the
+four originally recorded turned out to be our own mistakes — `dt_date` versus
+`dt_date_local`, and `k_class_period` versus `k_appointment`.
+
+### Open with the client
+
+| Question | Status |
+|---|---|
+| Which GoHighLevel custom fields may be reported | **Open.** `ghl_custom_field.is_reported` defaults to false, so nothing reaches a client record until somebody says it should. Confirming the list is an `UPDATE`, not a migration |
+| Raw payload retention | **Open.** Every response is kept indefinitely. No retention period has been agreed |
+
+### Open on our side
+
+| Question | Status |
+|---|---|
+| One cron per day against an ~85s pass | **Open.** See the note in section 7. The trailing passes fall a day behind whenever a run is full. Needs either a more frequent cron or a longer `maxDuration` — both are plan-dependent, and `FUNCTION_BUDGET_MS` must move with `maxDuration` |
+| `sync_job_state` page cursor | Built, unused. Waits on a paginated WL endpoint |
+| Royalty calculation itself | Not started. The inputs are being collected; the calculation is the next piece of work |
+
+### Numbers that are provisional
+
+Say so when reporting these:
+
+- **Any client count** — bounded by who we can enumerate, not by who exists
+- **Any margin or profit figure** — staff pay amounts are unavailable
+- **Service names** — 9 services are in the bookable catalogue against ~200 referenced by transactions. The rest are stubs named from the purchase that referenced them, and are countable via the `unresolved_service` view
+- **Anything older than the loaded history** — the daily run covers a recent window; older periods exist only if they were deliberately loaded
