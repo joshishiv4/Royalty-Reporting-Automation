@@ -670,6 +670,168 @@ function scheduleDay(now: number, offsetDays: number): string {
 }
 
 /**
+ * Splits a date range into month-bounded chunks the historical schedule loop
+ * enumerates one queue item per.
+ *
+ * A chunk is (ymKey, dtStart, dtEnd) where dtStart/dtEnd are the bare dates WL
+ * accepts. Boundary rules:
+ *
+ *   - The first chunk starts at the caller's `start` and ends on the last day
+ *     of that month.
+ *   - Every middle chunk covers a full calendar month, 1st to last day.
+ *   - The last chunk starts on the 1st of its month and ends on the caller's
+ *     `end` - so a range that ends mid-month doesn't over-read.
+ *
+ * NO GAPS AND NO DUPLICATES BY CONSTRUCTION. The first-of-next-month is the day
+ * AFTER the previous chunk's dtEnd, and sessions upsert on
+ * (k_period, dt_start_utc) so even an accidental overlap converges rather than
+ * duplicates.
+ *
+ * @param start `YYYY-MM-DD`
+ * @param end   `YYYY-MM-DD`
+ */
+export interface MonthChunk {
+  readonly ymKey: string;
+  readonly dtStart: string;
+  readonly dtEnd: string;
+}
+
+export function monthlyChunks(start: string, end: string): MonthChunk[] {
+  const startDate = start.slice(0, 10);
+  const endDate = end.slice(0, 10);
+  if (endDate < startDate) return [];
+
+  const [sY, sM] = startDate.slice(0, 7).split('-').map(Number);
+  const [eY, eM] = endDate.slice(0, 7).split('-').map(Number);
+  if (sY === undefined || sM === undefined || eY === undefined || eM === undefined) return [];
+
+  const chunks: MonthChunk[] = [];
+  let y = sY;
+  let m = sM;
+  for (;;) {
+    const ym = `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}`;
+    const firstOfMonth = `${ym}-01`;
+    // day 0 of the next month is the last day of this one (JS Date UTC math)
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const lastOfMonth = `${ym}-${String(lastDay).padStart(2, '0')}`;
+    const dtStart = ym === startDate.slice(0, 7) ? startDate : firstOfMonth;
+    const dtEnd = ym === endDate.slice(0, 7) ? endDate : lastOfMonth;
+    chunks.push({ ymKey: ym, dtStart, dtEnd });
+    if (y === eY && m === eM) break;
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  return chunks;
+}
+
+/**
+ * The historical class-schedule loop. Reads a date range from the pass's
+ * `sync_job_state` window override, cuts it into month-bounded chunks, and
+ * enqueues one queue item per chunk. The handler pulls that month's schedule
+ * with the same WL call the daily rolling pass uses.
+ *
+ * WHY THIS IS SEPARATE FROM runScheduleSyncPass. The daily pass covers a rolling
+ * -7 / +30 day window: what happened recently plus what is coming. That is the
+ * cron's shape and it is bounded by wall clock rather than by history. A
+ * historical backfill needs the OPPOSITE shape - a fixed range far in the past,
+ * cut into pieces small enough that a killed run resumes on the same month
+ * rather than restarting the whole range. Both use the same WL endpoint and
+ * both upsert on (k_period, dt_start_utc), so the writes converge and there is
+ * no correctness cost to running one after the other.
+ *
+ * SEEDED FROM sync_job_state.window_start_override / window_end_override on
+ * this job. Not from AppConfig, and not from a default range. A historical
+ * backfill is a deliberate act, not a nightly task - the whole point of using
+ * the override is that it is set explicitly, honoured once, and cleared on the
+ * clean drain. Setting it is the CLI's job (see scratchpad-historical.mjs).
+ *
+ * NOT IN FULL_SYNC_WAVES. Backfill mode only. The daily cron ignores it.
+ */
+export function runHistoricalScheduleSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'historical_schedule_sync',
+    workType: 'historical_month_window',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      // Range comes from the persisted override, so a killed run resumes on
+      // whatever the human previously asked for rather than losing the ask.
+      const state = await readWindowState(db, 'historical_schedule_sync', kBusiness);
+      if (state.startOverride === null || state.endOverride === null) {
+        // No override -> nothing to seed. A cron that lands here has nothing to
+        // do; a human intent to backfill has not been recorded yet.
+        return;
+      }
+      // Same uid-anchor trick the daily pass uses: WL demands a uid, the
+      // schedule returned is the business's.
+      const people = await db.select<{ uid: string }>(
+        'person',
+        `k_business=eq.${kBusiness}&select=uid&limit=1`,
+      );
+      const uid = people[0]?.uid;
+      if (uid === undefined) return;
+      const chunks = monthlyChunks(state.startOverride, state.endOverride);
+      await enqueue(
+        db,
+        chunks.map((c) => ({
+          work_type: 'historical_month_window',
+          // target_key is "uid|YYYY-MM" so the handler can rebuild dt_date/dt_end
+          // from the chunk key and recover the anchor uid without touching state.
+          target_key: `${uid}|${c.ymKey}`,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId }) =>
+      async (item) => {
+        try {
+          const [uid, ymKey] = item.target_key.split('|');
+          if (uid === undefined || ymKey === undefined || !/^\d{4}-\d{2}$/.test(ymKey)) {
+            return {
+              kind: 'dead',
+              failure: internalFailure(
+                runId,
+                `historical schedule key is not uid|YYYY-MM: ${item.target_key}`,
+              ),
+            };
+          }
+          // We recomputed range from the persisted override to avoid drift if
+          // it was widened between seeding and claiming. The chunk key names
+          // the month; the override supplies the endpoints of the whole load
+          // so the first/last chunks stay honest to what the caller asked for.
+          const state = await readWindowState(db, 'historical_schedule_sync', kBusiness);
+          const start = state.startOverride ?? `${ymKey}-01`;
+          const end = state.endOverride ?? `${ymKey}-01`;
+          const chunk =
+            monthlyChunks(start, end).find((c) => c.ymKey === ymKey) ??
+            monthlyChunks(`${ymKey}-01`, `${ymKey}-01`)[0]!;
+          const response = await wl.request(WL_PATHS.scheduleClassList, {
+            query: { uid, dt_date: chunk.dtStart, dt_end: chunk.dtEnd, is_tab_all: 'true' },
+            priorAttempt: item.attempt_count,
+          });
+          await writeSessionList(db, {
+            kBusiness,
+            response,
+            runId,
+            windowKey: `${chunk.dtStart}|${chunk.dtEnd}`,
+          });
+          return { kind: 'done' };
+        } catch (error) {
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
+          throw error;
+        }
+      },
+  });
+}
+
+/**
  * Runs the schedule sync: one job that pulls the class schedule for a rolling
  * window of -7 to +30 days.
  *
