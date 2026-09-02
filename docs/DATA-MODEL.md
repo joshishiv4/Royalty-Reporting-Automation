@@ -178,6 +178,25 @@ created in GoHighLevel to fill the gap** — which is why `matched` always means
 contact that already existed. `ambiguous` is never auto-resolved: choosing
 between candidates would put one person's royalties on another person's record.
 
+**A crowded phone asks the email, and that is not the same as choosing.** The
+match tries phone first and email second. It used to stop dead when the phone
+returned more than one contact, on the reasoning that the person was already
+unidentifiable. Live data said otherwise: measured 2 Sep 2026 across six people
+sitting as `ambiguous`, the phone returned **2 every time** and the email
+returned **exactly 1 for five of them**. The extra contact on each number is a
+duplicate record in GoHighLevel — usually the same person again with no email
+on it — not a second human. So a crowded phone now falls through to the email,
+exactly as an empty one always did, and only an email that is itself
+inconclusive leaves the row `ambiguous`.
+
+Nothing about the no-guessing rule moved. A single email match is as strong here
+as on the ordinary path, and the shared household address still returns two and
+still parks. Re-running the retry after the change took **25 ambiguous rows to
+4**, and the four that remain are the ones a human genuinely has to settle: two
+siblings sharing one address and one handset, an organisation rather than a
+person, and a client whose GoHighLevel contact carries a different address to
+the one WellnessLiving holds.
+
 ### The GoHighLevel fields and tags are a table, not columns (0026)
 
 `ghl_contact` holds one row **per contact**, and `person` joins it through the

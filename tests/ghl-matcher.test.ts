@@ -94,14 +94,52 @@ describe('matchPerson: a crowded field identifies nobody', () => {
     expect(out).toMatchObject({ state: 'ambiguous', ghlContactId: null, matchedOn: 'phone' });
   });
 
-  // An ambiguous phone must NOT quietly fall through to email and produce a
-  // match - the person is already known to be unidentifiable.
-  it('does not fall through to email after an ambiguous phone', async () => {
+  /**
+   * REPLACES a test that asserted the opposite, and the reason it was wrong is
+   * worth keeping. It read "an ambiguous phone must NOT fall through to email -
+   * the person is already known to be unidentifiable", and that premise is what
+   * live data disproved. Measured 2 Sep 2026 on six people parked as ambiguous:
+   * the phone returned 2 for all six and the email returned exactly 1 for five.
+   * The second contact on each number is a GoHighLevel duplicate, not a second
+   * person, so "unidentifiable" was never true - the identifying answer was
+   * simply never asked for.
+   */
+  it('falls through to email when the phone found too many, and matches on it', async () => {
     const { ghl, searches } = fakeGhl([contact('a'), contact('b')], [contact('c')]);
     const out = await matchPerson(ghl, subject());
 
+    expect(searches).toEqual([{ phone: '+15162720782' }, { email: 'jared@spindjacademy.com' }]);
+    expect(out).toMatchObject({ state: 'matched', ghlContactId: 'c', matchedOn: 'email' });
+    // The verdict has to say the phone was crowded, or the row reads as an
+    // ordinary email match and the duplicate in GoHighLevel stays invisible.
+    expect(out.detail).toContain('2');
+  });
+
+  it('stays ambiguous when the email is crowded too', async () => {
+    const { ghl } = fakeGhl([contact('a'), contact('b')], [contact('c'), contact('d')]);
+    const out = await matchPerson(ghl, subject());
+
+    // The shared household address on a shared handset: the case the
+    // no-guessing rule was actually written for.
+    expect(out).toMatchObject({ state: 'ambiguous', ghlContactId: null });
+  });
+
+  // Annais Leacock, live: phone 2, email 0 - her GoHighLevel contact carries a
+  // different address to the one WellnessLiving holds.
+  it('stays AMBIGUOUS, not unmatched, when the phone was crowded and the email found nobody', async () => {
+    const { ghl } = fakeGhl([contact('a'), contact('b')], []);
+    const out = await matchPerson(ghl, subject());
+
+    // 'unmatched' would say we looked and there was nobody. There were two.
+    expect(out).toMatchObject({ state: 'ambiguous', matchedOn: 'phone', candidates: 2 });
+  });
+
+  it('stays ambiguous when the phone was crowded and there is no email to try', async () => {
+    const { ghl, searches } = fakeGhl([contact('a'), contact('b')]);
+    const out = await matchPerson(ghl, subject({ email: null }));
+
     expect(searches).toEqual([{ phone: '+15162720782' }]);
-    expect(out.state).toBe('ambiguous');
+    expect(out).toMatchObject({ state: 'ambiguous', candidates: 2 });
   });
 });
 
