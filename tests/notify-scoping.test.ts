@@ -23,6 +23,9 @@ import { notifyDeadLetter } from '../src/notify/index.js';
  * the caller that scopes everything together.
  */
 
+// host: null is the whole point - SMTP off, so the digest builds and reports
+// its verdict without anything being sent. These tests are about which reads
+// happen, not about mail.
 const SMTP_OFF: SmtpConfig = {
   host: null,
   port: 587,
@@ -30,7 +33,7 @@ const SMTP_OFF: SmtpConfig = {
   password: '',
   from: '',
   to: 'nobody@example.test',
-} as unknown as SmtpConfig;
+};
 
 /** Records the PostgREST query string each table was read with. */
 function spyDb() {
