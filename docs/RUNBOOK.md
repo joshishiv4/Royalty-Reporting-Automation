@@ -299,15 +299,53 @@ intentionally not committed — CI is the enforcement point.
 
 ## 7. The scheduled jobs
 
-Two schedules, both in [`vercel.json`](../vercel.json). Nothing else is scheduled.
+Eight cron entries, all in [`vercel.json`](../vercel.json). Nothing else is
+scheduled.
 
-| Cron | Route | Fires | What it does |
-| ---- | ----- | ----- | ------------ |
-| `0 3 * * *` | `/api/wellness-sync-all` | 03:00 UTC daily | Every pass, in dependency order |
-| `0 4 1 * *` | `/api/wellness-sync-historical` | 04:00 UTC on the 1st | Re-reads the last `SYNC_MONTHLY_LOOKBACK_MONTHS` calendar months, or an explicitly requested range |
+Six of them are **named jobs** through one route, `/api/sync-job?job=<name>`.
+Each one owns a group of passes and runs on its own clock, so a slow group
+cannot push the others out of a single invocation's budget. The remaining two
+are the full sweep and the monthly re-read.
 
-Vercel Cron sends `CRON_SECRET` as the bearer automatically. Neither route can be
+| Cron (UTC) | Route | Job | What it does |
+| --- | --- | --- | --- |
+| `0 1 * * *` | `/api/sync-job?job=schedule-window` | `schedule-window` | The class/appointment schedule, −7 / +30 days |
+| `0 2 * * *` | `/api/sync-job?job=catalogue` | `catalogue` | Locations, shop categories, promotions, service categories, services |
+| `30 2 * * *` | `/api/sync-job?job=clients` | `clients` | Every client WL lists, plus the GoHighLevel match |
+| `45 2 * * *` | `/api/sync-job?job=teachers` | `teachers` | Staff, their teaching flags and services |
+| `0 3 * * *` | `/api/sync-job?job=attendance-close` | `attendance-close` | Who actually turned up, for sessions that have ended |
+| `30 3 * * *` | `/api/sync-job?job=purchases` | `purchases` | Purchases, receipts, per-item detail |
+| `0 4 * * *` | `/api/wellness-sync-all` | — | Every pass in dependency order — the safety net under the six above |
+| `0 5 1 * *` | `/api/wellness-sync-historical` | — | Re-reads the last `SYNC_MONTHLY_LOOKBACK_MONTHS` calendar months, or an explicitly requested range |
+
+Vercel Cron sends `CRON_SECRET` as the bearer automatically. No route can be
 reached without a token.
+
+**The clock is the dependency order.** `schedule-window` runs at 01:00 and
+`catalogue` at 02:00 so sessions reference services that are already current;
+that hour is the whole reason they are two jobs and not one. Inside a group the
+listed order is also dependency order — the catalogue ends with `service_sync`
+because that pass writes authoritative titles over the stubs the purchase writer
+left, and running it first would put the stub over the real thing.
+
+**A job that overlaps itself stands down.** Every pass takes its job's lease
+(migration 0035), so a run still going when the next one fires does not double
+up — the second one reports `skipped` for those passes and carries on. Two jobs
+that share a pass behave the same way. `skipped` in a cron log is therefore not
+a failure.
+
+To see the jobs the deployment actually knows about, ask it — the list comes
+from `JOB_GROUPS`, not from this table:
+
+```bash
+curl https://<deployment>/api/sync-job -H "Authorization: Bearer $SYNC_TRIGGER_TOKEN"
+```
+
+Running one by hand is the same call with `?job=`:
+
+```bash
+curl -X POST "https://<deployment>/api/sync-job?job=purchases" -H "Authorization: Bearer $SYNC_TRIGGER_TOKEN"
+```
 
 ### What each pass does, and how long it takes
 
@@ -315,40 +353,68 @@ Measured over 26,516 `sync_run` rows, 31 Aug – 1 Sep 2026. These are steady-st
 durations against an already-populated database — a first backfill is very much
 longer, and the `max` column is where those show up.
 
-| # | Pass | Reads | median | p90 | observed max |
+Grouped by the job that owns each pass, in the order that job runs them.
+
+| Job | Pass | Reads | median | p90 | observed max |
 |---|---|---|---|---|---|
-| 1 | `login_type_sync` | membership/login types | 2.5s | 2.9s | 8.7s |
-| 2 | `client_list_sync` | every activated client | 2.5s | 2.8s | 41.2s |
-| 3 | `staff_sync` | staff → `person` | 2.5s | 2.8s | 7.8s |
-| 4 | `location_sync` | locations | 2.5s | 2.8s | 7.3s |
-| 5 | `shop_category_sync` | shop categories | 2.5s | 2.9s | 6.9s |
-| 6 | `promotion_sync` | promotions, per location | 2.8s | 3.1s | 16.9s |
-| 7 | `service_category_sync` | bookable service categories | 2.8s | 3.1s | 8.7s |
-| 8 | `purchase_sync` | purchases, per person | 3.4s | 3.8s | 7.3m |
-| 9 | `receipt_sync` | the money on each purchase | 2.0s | 2.4s | **90.4m** |
-| 10 | `purchase_element_sync` | item detail, recipient, membership state | **17.3s** | 18.9s | 17.4m |
-| 11 | `profile_sync` | contact detail, per person | 3.4s | 3.8s | 6.0m |
-| 12 | `schedule_sync` | class schedule, −7 / +30 days | 2.8s | 3.1s | 8.3s |
-| 13 | `client_session_sync` | appointments | 3.4s | 3.8s | **80.3m** |
-| 14 | `attendance_sync` | attendance, **every** session | **31.1s** | 33.6s | 58.7m |
-| 15 | `ghl_match_sync` | GoHighLevel contact matching | 2.0s | 2.2s | 7.3m |
-| 16 | `service_sync` | bookable service catalogue | 2.8s | 3.1s | 8.3s |
+| `schedule-window` | `schedule_sync` | class schedule, −7 / +30 days | 2.8s | 3.1s | 8.3s |
+| `catalogue` | `location_sync` | locations | 2.5s | 2.8s | 7.3s |
+| `catalogue` | `shop_category_sync` | shop categories | 2.5s | 2.9s | 6.9s |
+| `catalogue` | `promotion_sync` | promotions, per location | 2.8s | 3.1s | 16.9s |
+| `catalogue` | `service_category_sync` | bookable service categories | 2.8s | 3.1s | 8.7s |
+| `catalogue` | `service_sync` | bookable service catalogue — **last, on purpose** | 2.8s | 3.1s | 8.3s |
+| `clients` | `login_type_sync` | membership/login types — **first, on purpose** | 2.5s | 2.9s | 8.7s |
+| `clients` | `client_list_sync` | every activated client | 2.5s | 2.8s | 41.2s |
+| `clients` | `profile_sync` | contact detail, per person | 3.4s | 3.8s | 6.0m |
+| `clients` | `ghl_match_sync` | GoHighLevel contact matching | 2.0s | 2.2s | 7.3m |
+| `teachers` | `staff_sync` | staff → `person` | 2.5s | 2.8s | 7.8s |
+| `attendance-close` | `client_session_sync` | appointments | 3.4s | 3.8s | **80.3m** |
+| `attendance-close` | `attendance_sync` | attendance, **every** session | **31.1s** | 33.6s | 58.7m |
+| `purchases` | `purchase_sync` | purchases, per person | 3.4s | 3.8s | 7.3m |
+| `purchases` | `receipt_sync` | the money on each purchase | 2.0s | 2.4s | **90.4m** |
+| `purchases` | `purchase_element_sync` | item detail, recipient, membership state | **17.3s** | 18.9s | 17.4m |
 
-`historical_schedule_sync` is not in that order — it has its own cron. One month
-chunk measured at 9.3s.
+`login_type_sync` runs before the client list because the teacher view joins on
+`is_teacher_type` — without it nobody is a teacher, however well everything else
+synced.
 
-> **The medians sum to roughly 85 seconds, and the function budget is 50.**
-> `FUNCTION_BUDGET_MS` stops the run *starting* new passes at 50s, under Vercel's
-> 60s ceiling, so a nightly invocation reports `partial` with the trailing passes
-> marked `ran: false`. That is safe — the queue is the cursor and the next
-> invocation resumes — but with **one cron per day** the trailing passes
-> (`ghl_match_sync`, `service_sync`) fall a day behind each time the run is full.
-> Raising the cron frequency is the fix, and it needs a Vercel plan that permits
-> sub-daily crons. **Open — see section 9.**
+`historical_schedule_sync` belongs to no group — it has its own cron and its own
+route. One month chunk measured at 9.3s.
 
-`attendance_sync` is the expensive one and will stay that way: it re-seeds from
-**every** session row rather than a recent window, so its cost grows with the
-schedule's history, not with what changed.
+### What "expected runtime" means here
+
+`FUNCTION_BUDGET_MS` stops a run **starting** new passes at 50s, under Vercel's
+60s ceiling. So the number that matters per job is the sum of its medians:
+
+| Job | Median sum | Fits one invocation? |
+|---|---|---|
+| `schedule-window` | ~3s | Yes |
+| `catalogue` | ~13s | Yes |
+| `clients` | ~10s | Yes |
+| `teachers` | ~3s | Yes |
+| `attendance-close` | ~35s | Yes, with little room |
+| `purchases` | ~23s | Yes |
+| `/api/wellness-sync-all` | ~85s | **No — always `partial`** |
+
+That table is the point of splitting the schedule into six jobs. The full sweep
+at 04:00 sums to roughly 85 seconds against a 50-second budget, so it reports
+`partial` with its trailing passes marked `ran: false` — which is safe, because
+the queue is the cursor, but on its own it meant the trailing passes fell a day
+behind every time a run was full. Each named job now fits inside one invocation,
+and `/api/wellness-sync-all` is kept as the safety net that catches anything a
+named job missed rather than the thing the system depends on.
+
+A job taking materially longer than its median sum, repeatedly, is the signal
+worth acting on — not a single `partial`. `attendance-close` is the one to watch:
+`attendance_sync` re-seeds from **every** session row rather than a recent
+window, so its cost grows with the schedule's history, not with what changed, and
+it is the first job that will outgrow the budget.
+
+Each group also declares `expectedEveryHours` in
+[`src/sync/jobs.ts`](../src/sync/jobs.ts) — 24 for all six — and the overdue
+alert compares that against `last_clean_completion_at`. If you change a cron in
+`vercel.json`, change that number in the same commit; nothing at runtime can read
+the schedule, so the two are kept in step by a test, not by inference.
 
 ### Is it healthy right now
 
@@ -374,7 +440,9 @@ not finished cleanly in a while.
 ## 8. Recovery procedures
 
 Read section 7 first: most of what looks like a failure is a budgeted run doing
-exactly what it was built to do.
+exactly what it was built to do. In particular, `partial` from
+`/api/wellness-sync-all` is expected every night, and `skipped` means a lease
+was held by a run still going — neither is an incident.
 
 ### 8a. A run reported `partial`, or the queue has items outstanding
 
@@ -386,6 +454,13 @@ To push it along without waiting for the schedule:
 
 ```bash
 curl -X POST https://<deployment>/api/wellness-sync-all -H "Authorization: Bearer $SYNC_TRIGGER_TOKEN"
+```
+
+Or push just the job that is behind, which is cheaper and does not re-touch
+everything else:
+
+```bash
+curl -X POST "https://<deployment>/api/sync-job?job=<name>" -H "Authorization: Bearer $SYNC_TRIGGER_TOKEN"
 ```
 
 Repeat until `/api/sync-status` reports `"complete": true`. Each call does one
@@ -559,7 +634,7 @@ four originally recorded turned out to be our own mistakes — `dt_date` versus
 
 | Question | Status |
 |---|---|
-| One cron per day against an ~85s pass | **Open.** See the note in section 7. The trailing passes fall a day behind whenever a run is full. Needs either a more frequent cron or a longer `maxDuration` — both are plan-dependent, and `FUNCTION_BUDGET_MS` must move with `maxDuration` |
+| One cron per day against an ~85s pass | **Closed**, migration 0035 / six named jobs. The schedule is now six jobs that each fit one 50s invocation, with `/api/wellness-sync-all` kept as the safety net. `attendance-close` (~35s of median) is the one with least headroom and will need splitting next — see section 7 |
 | `sync_job_state` page cursor | Built, unused. Waits on a paginated WL endpoint |
 | Royalty calculation itself | Not started. The inputs are being collected; the calculation is the next piece of work |
 

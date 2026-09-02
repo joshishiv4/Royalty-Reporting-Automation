@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { notifyDeadLetter } from '../notify/index.js';
+import { SupabaseClient } from '../supabase/client.js';
 import { loadConfig } from '../config/index.js';
 import { ConfigValidationError } from '../config/schema.js';
 import { createDefaultFileSinks } from '../logging/file-sink.js';
@@ -13,6 +15,8 @@ const USAGE = `royalty-sync <command>
 
 Commands:
   healthcheck        Resolve config, then probe every dependency. Exit 1 on failure.
+  alert:test         Send the alert digest now, even when nothing is wrong, to prove
+                     the channel reaches a real inbox. Exit 1 if nothing was sent.
   sync:wellness      Authenticate against WellnessLiving, then run one read-only pass.
   sync:full-parallel Run every sync pass in dependency waves, in parallel within each
                      wave. Aimed at a local backfill: each pass seeds ONCE and drains
@@ -27,6 +31,23 @@ Environment:
 
 See .env.example and docs/RUNBOOK.md.`;
 
+/**
+ * Every command this CLI accepts.
+ *
+ * ONE list, checked in main() and switched on below. It used to be an inline
+ * array that the switch could - and did - drift from: a case added to the
+ * switch without a matching entry here is rejected as "Unknown command" while
+ * looking perfectly present in the code.
+ */
+const COMMANDS: readonly string[] = [
+  'healthcheck',
+  'config:check',
+  'config:show',
+  'sync:wellness',
+  'sync:full-parallel',
+  'alert:test',
+];
+
 async function main(argv: readonly string[]): Promise<number> {
   const command = argv[0] ?? 'help';
 
@@ -35,11 +56,11 @@ async function main(argv: readonly string[]): Promise<number> {
     return 0;
   }
 
-  if (
-    !['healthcheck', 'config:check', 'config:show', 'sync:wellness', 'sync:full-parallel'].includes(
-      command,
-    )
-  ) {
+  // ONE list, checked here and switched on below. Kept as a named constant
+  // because it used to be an inline array that the switch could - and did -
+  // drift from: a case added to the switch without a matching entry here is
+  // rejected as "Unknown command" while looking perfectly present in the code.
+  if (!COMMANDS.includes(command)) {
     console.error(`Unknown command: ${command}\n\n${USAGE}`);
     return 2;
   }
@@ -129,6 +150,31 @@ async function main(argv: readonly string[]): Promise<number> {
       }
       console.log(JSON.stringify(summary, null, 2));
       return summary.state === 'failed' ? 1 : 0;
+    }
+
+    case 'alert:test': {
+      /**
+       * Proves the alert channel actually reaches somebody.
+       *
+       * WHY THIS EXISTS AS A COMMAND. Every other alert in this system fires
+       * only when something is wrong, which means the FIRST time anyone learns
+       * whether the mail is configured correctly is the night it matters. A
+       * silent alerting path is worse than none: it is the same "looks fine, is
+       * not" failure the alerts were built to catch, one level up.
+       *
+       * It sends the real digest built from the real database, so it exercises
+       * the whole path - reads, wording, SMTP - not a hardcoded "hello".
+       */
+      const db = new SupabaseClient(config.supabase);
+      const result = await notifyDeadLetter(db, config.smtp, {
+        kBusiness: config.wl.kBusiness,
+        force: true,
+      });
+      logger.info('alert test', { ...result });
+      console.log(JSON.stringify({ env: config.env, ...result }, null, 2));
+      // Non-zero when nothing was sent: a test that cannot fail proves nothing,
+      // and "SMTP is unconfigured" must not read as success in CI or a script.
+      return result.sent ? 0 : 1;
     }
 
     case 'healthcheck': {

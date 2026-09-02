@@ -1,6 +1,7 @@
 import type { SmtpConfig } from '../config/schema.js';
 import type { SupabaseClient } from '../supabase/client.js';
-import { buildDigest, type DeadItem } from './failure-digest.js';
+import { buildDigest, type DeadItem, type ReviewEntry } from './failure-digest.js';
+import { findOverdueJobs } from './overdue.js';
 import { createSmtpClient, nullSmtpClient, type MailResult } from './smtp.js';
 
 /**
@@ -34,15 +35,45 @@ export interface NotifyOptions {
   readonly since?: string;
   /** Which businesses to include; omit to include every one on the DB. */
   readonly kBusiness?: string;
+  /**
+   * Send even when there is nothing to report.
+   *
+   * Only `alert:test` sets this. A healthy run must never mail anybody - that
+   * is what keeps the inbox worth reading - but a test that only works while
+   * something is broken cannot be run on demand, which defeats the point of
+   * having one.
+   */
+  readonly force?: boolean;
 }
 
 export interface NotifyResult {
   readonly deadCount: number;
   /** How many whole passes crashed - separate from dead items. */
   readonly crashedPassCount: number;
+  /** Jobs that should have run and did not. See notify/overdue.ts. */
+  readonly overdueCount: number;
+  /** Records a human has to look at, summed across issue types. */
+  readonly reviewCount: number;
+  /** Everything currently parked, not just what died on this run. */
+  readonly parkedTotal: number;
   readonly sent: boolean;
   readonly detail?: string;
 }
+
+/**
+ * The data_health issues that mean "a person has to decide this".
+ *
+ * Deliberately NOT every issue in the view. `unreviewed_session` sits at 39,104
+ * and is the studio's own housekeeping, not a sync problem - mailing it nightly
+ * would bury the four rows that actually need somebody. Stale-record issues are
+ * excluded for the same reason: they clear themselves on the next run.
+ */
+const REVIEW_ISSUES = [
+  'ghl_unresolved_48h',
+  'ambiguous_contact',
+  'failed_contact_match',
+  'open_conflict',
+] as const;
 
 interface FailedRun {
   readonly job_name: string;
@@ -73,6 +104,9 @@ export async function notifyDeadLetter(
       deadCount: 0,
       crashedPassCount: 0,
       sent: false,
+      overdueCount: 0,
+      reviewCount: 0,
+      parkedTotal: 0,
       detail: 'could not read dead-letter items',
     };
   }
@@ -95,21 +129,80 @@ export async function notifyDeadLetter(
     // fall through with an empty list - dead items are still worth mailing.
   }
 
-  const digest = buildDigest(deadItems, failedRuns);
-  if (!digest.hasIssues) {
-    return { deadCount: 0, crashedPassCount: 0, sent: false };
+  // JOBS THAT NEVER STARTED. Read even when nothing failed - that is the whole
+  // point: a job that does not run produces no dead item and no failed run, so
+  // every other source above is silent about it.
+  let overdue: Awaited<ReturnType<typeof findOverdueJobs>> = [];
+  if (opts.kBusiness !== undefined) {
+    try {
+      overdue = await findOverdueJobs(db, opts.kBusiness);
+    } catch {
+      // A read that fails says nothing about the jobs. Reporting them overdue
+      // would be inventing an alert out of our own outage.
+    }
+  }
+
+  // Records parked for a human, and the standing parked total. Both answer
+  // "what is sitting there", which the per-run dead list cannot.
+  let review: ReviewEntry[] = [];
+  try {
+    const rows = await db.select<{ issue: string; issue_count: number; oldest: string | null }>(
+      'data_health',
+      `issue=in.(${REVIEW_ISSUES.join(',')})&select=issue,issue_count,oldest&limit=50`,
+    );
+    review = rows
+      .filter((r) => r.issue_count > 0)
+      .map((r) => ({ issue: r.issue, count: r.issue_count, oldest: r.oldest }));
+  } catch {
+    // fall through - the rest of the digest is still worth sending.
+  }
+
+  let parkedTotal = 0;
+  try {
+    const all = await db.select<{ id: string }>('sync_queue', `state=eq.dead&select=id&limit=1000`);
+    parkedTotal = all.length;
+  } catch {
+    // fall through.
+  }
+
+  const digest = buildDigest(deadItems, failedRuns, {
+    overdue: overdue.map((o) => ({
+      job: o.job,
+      expectedEveryHours: o.expectedEveryHours,
+      hoursSince: o.hoursSince,
+    })),
+    review,
+    parkedTotal,
+  });
+  const counts = {
+    deadCount: deadItems.length,
+    crashedPassCount: failedRuns.length,
+    overdueCount: overdue.length,
+    reviewCount: review.reduce((n, r) => n + r.count, 0),
+    parkedTotal,
+  };
+  if (!digest.hasIssues && opts.force !== true) {
+    return { ...counts, sent: false };
   }
 
   const client = smtp.host === null ? nullSmtpClient() : createSmtpClient(smtp);
   const result: MailResult = await client.send({
     to: smtp.to,
-    subject: digest.subject,
-    text: digest.body,
+    subject: digest.hasIssues ? digest.subject : 'Royalty sync: alert test, nothing is wrong',
+    text: digest.hasIssues
+      ? digest.body
+      : [
+          'This is a test of the royalty sync alert channel.',
+          '',
+          'Nothing is wrong. Every check came back clean: no failed runs, no jobs ' +
+            'overdue, nothing parked, and nothing waiting on a human.',
+          '',
+          'If you are reading this, alerts reach you.',
+        ].join('\n'),
   });
 
   return {
-    deadCount: deadItems.length,
-    crashedPassCount: failedRuns.length,
+    ...counts,
     sent: result.ok && smtp.host !== null,
     ...(result.detail === undefined ? {} : { detail: result.detail }),
   };

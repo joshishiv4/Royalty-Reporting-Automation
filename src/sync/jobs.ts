@@ -49,6 +49,15 @@ export interface JobGroup {
   readonly name: string;
   /** One line, for the route's own listing and for an operator reading a log. */
   readonly summary: string;
+  /**
+   * How often this job is scheduled, in hours. The overdue alert compares it
+   * against the last clean run - see src/notify/overdue.ts.
+   *
+   * Declared HERE and not parsed out of vercel.json: the schedule is deployment
+   * configuration and nothing at runtime can read it, so inferring it would be
+   * guessing. Two places to keep in step, and a test that pins them together.
+   */
+  readonly expectedEveryHours: number;
   /** Passes, in dependency order. */
   readonly passes: ReadonlyArray<{
     readonly job: string;
@@ -59,11 +68,13 @@ export interface JobGroup {
 export const JOB_GROUPS: readonly JobGroup[] = [
   {
     name: 'schedule-window',
+    expectedEveryHours: 24,
     summary: 'The class/appointment schedule for the current window. Runs BEFORE the catalogue.',
     passes: [{ job: 'schedule_sync', run: runScheduleSyncPass }],
   },
   {
     name: 'catalogue',
+    expectedEveryHours: 24,
     summary: 'Locations, shop categories, promotions, service categories, services.',
     passes: [
       { job: 'location_sync', run: runLocationSyncPass },
@@ -76,6 +87,7 @@ export const JOB_GROUPS: readonly JobGroup[] = [
   },
   {
     name: 'clients',
+    expectedEveryHours: 24,
     summary: 'Every client WellnessLiving lists, and the GoHighLevel match for new ones.',
     passes: [
       // The login types first: the teacher view joins on is_teacher_type, so
@@ -88,11 +100,13 @@ export const JOB_GROUPS: readonly JobGroup[] = [
   },
   {
     name: 'teachers',
+    expectedEveryHours: 24,
     summary: 'Staff, their teaching flags and services.',
     passes: [{ job: 'staff_sync', run: runStaffSyncPass }],
   },
   {
     name: 'attendance-close',
+    expectedEveryHours: 24,
     summary: 'Who actually turned up, for sessions that have ended.',
     passes: [
       { job: 'client_session_sync', run: runClientSessionSyncPass },
@@ -101,6 +115,7 @@ export const JOB_GROUPS: readonly JobGroup[] = [
   },
   {
     name: 'purchases',
+    expectedEveryHours: 24,
     summary: 'Purchases, their receipts, and the per-item detail.',
     passes: [
       { job: 'purchase_sync', run: runPurchaseSyncPass },

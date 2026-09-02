@@ -139,11 +139,72 @@ export interface CrashedPass {
   readonly error: string | null;
 }
 
+/** A job that should have run by now and has not. See notify/overdue.ts. */
+export interface OverdueEntry {
+  readonly job: string;
+  readonly expectedEveryHours: number;
+  readonly hoursSince: number | null;
+}
+
+/** Records a human has to look at, from the data_health view. */
+export interface ReviewEntry {
+  readonly issue: string;
+  readonly count: number;
+  readonly oldest: string | null;
+}
+
+export interface DigestExtras {
+  readonly overdue?: readonly OverdueEntry[];
+  readonly review?: readonly ReviewEntry[];
+  /** Everything currently parked, not just what died on this run. */
+  readonly parkedTotal?: number;
+}
+
+/**
+ * How many parked items count as a backlog worth mentioning.
+ *
+ * The per-run dead list already reports what died TODAY. This is the different
+ * question - "how much is sitting there unattended" - and it needs a floor, or
+ * a single stubborn record would be reported as a backlog every night until
+ * somebody deleted it, which is how an inbox gets ignored.
+ */
+const PARKED_BACKLOG_THRESHOLD = 25;
+
+/**
+ * Plain English for a data_health issue name.
+ *
+ * The same rule the rest of this file follows: the reader is somebody with an
+ * inbox, not somebody with the schema open. `ghl_unresolved_48h` means nothing
+ * to them; "clients whose GoHighLevel link is still unresolved after 48 hours"
+ * does.
+ */
+function reviewLabel(issue: string): string {
+  const known: Record<string, string> = {
+    ghl_unresolved_48h: 'client(s) whose GoHighLevel link has been unresolved for over 48 hours',
+    ambiguous_contact: 'client(s) matching more than one GoHighLevel contact, so nobody was chosen',
+    failed_contact_match: 'client(s) whose GoHighLevel match could not be completed',
+    open_conflict: 'record(s) with a conflict parked for a human',
+  };
+  return known[issue] ?? `record(s) flagged as "${issue}"`;
+}
+
 export function buildDigest(
   deadItems: readonly DeadItem[],
   crashedPasses: readonly CrashedPass[] = [],
+  extras: DigestExtras = {},
 ): DeadDigest {
-  if (deadItems.length === 0 && crashedPasses.length === 0) {
+  const overdue = extras.overdue ?? [];
+  const review = extras.review ?? [];
+  const parked = extras.parkedTotal ?? 0;
+  const backlog = parked >= PARKED_BACKLOG_THRESHOLD ? parked : 0;
+
+  if (
+    deadItems.length === 0 &&
+    crashedPasses.length === 0 &&
+    overdue.length === 0 &&
+    review.length === 0 &&
+    backlog === 0
+  ) {
     return {
       hasIssues: false,
       subject: '',
@@ -159,9 +220,76 @@ export function buildDigest(
   if (totalItems > 0) subjectParts.push(`${String(totalItems)} record(s) could not be updated`);
   if (crashedPasses.length > 0)
     subjectParts.push(`${String(crashedPasses.length)} stage(s) crashed`);
-  const subject = `Royalty sync: ${subjectParts.join(' and ')}`;
+  // Overdue leads the subject when present. A job that never started is the
+  // failure nothing else can report, so it must not be buried behind a count of
+  // records that at least got as far as being tried.
+  if (overdue.length > 0) {
+    subjectParts.unshift(`${String(overdue.length)} job(s) did not run`);
+  }
+  if (review.length > 0) {
+    const total = review.reduce((n, r) => n + r.count, 0);
+    subjectParts.push(`${String(total)} record(s) waiting on a human`);
+  }
+  if (backlog > 0) subjectParts.push(`${String(backlog)} parked`);
+  const subject =
+    subjectParts.length === 0
+      ? 'Royalty sync: something needs a look'
+      : `Royalty sync: ${subjectParts.join(', ')}`;
 
   const lines: string[] = [];
+
+  // OVERDUE FIRST, ALWAYS. A job that never started is the only failure here
+  // that produced no error of its own, so it is the one most likely to have
+  // been going on unnoticed. Everything below it at least got as far as being
+  // attempted.
+  if (overdue.length > 0) {
+    lines.push('SOME JOBS HAVE NOT RUN WHEN THEY SHOULD HAVE.');
+    lines.push('');
+    lines.push(
+      'This is the most important part of this email. A job that does not start ' +
+        'reports no error, so the data simply stops updating while still looking ' +
+        'normal. Nothing below would have told you about it.',
+    );
+    lines.push('');
+    for (const o of overdue) {
+      const label = stageLabel(o.job.replace(/_sync$/, ''));
+      lines.push(
+        o.hoursSince === null
+          ? `• ${label} has never completed successfully.`
+          : `• ${label} last completed ${String(o.hoursSince)} hours ago; it is meant to run every ${String(o.expectedEveryHours)}.`,
+      );
+    }
+    lines.push('');
+  }
+
+  if (review.length > 0) {
+    lines.push('RECORDS WAITING ON SOMEBODY TO LOOK AT THEM.');
+    lines.push('');
+    lines.push(
+      'These are not errors. The sync did its job and could not decide on its ' +
+        'own, so it stopped rather than guessing - a wrong guess here puts one ' +
+        "person's money on somebody else's record.",
+    );
+    lines.push('');
+    for (const r of review) {
+      lines.push(
+        `• ${String(r.count)} ${reviewLabel(r.issue)}${
+          r.oldest === null ? '' : `, the oldest waiting since ${r.oldest.slice(0, 10)}`
+        }.`,
+      );
+    }
+    lines.push('');
+  }
+
+  if (backlog > 0) {
+    lines.push(
+      `PARKED BACKLOG: ${String(backlog)} record(s) in total are parked and will not be ` +
+        'retried without someone looking at them. This is the running total, not ' +
+        'just what stopped today, so it only grows until it is dealt with.',
+    );
+    lines.push('');
+  }
+
   const summaryParts: string[] = [];
   if (totalItems > 0)
     summaryParts.push(
@@ -171,10 +299,12 @@ export function buildDigest(
     summaryParts.push(
       `${String(crashedPasses.length)} stage(s) stopped before finishing because of an unexpected error`,
     );
-  lines.push(`The most recent royalty sync finished, but ${summaryParts.join(', and ')}.`);
-  lines.push('');
-  lines.push('Here is what happened, grouped by what needs the same next step:');
-  lines.push('');
+  if (summaryParts.length > 0) {
+    lines.push(`The most recent royalty sync finished, but ${summaryParts.join(', and ')}.`);
+    lines.push('');
+    lines.push('Here is what happened, grouped by what needs the same next step:');
+    lines.push('');
+  }
 
   for (const g of groups) {
     lines.push(`• ${String(g.count)} record(s) in ${g.stage}.`);
