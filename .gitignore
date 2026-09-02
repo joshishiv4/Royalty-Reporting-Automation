@@ -54,3 +54,9 @@ scratchpad/
 scratchpad-*.mjs
 .vercel
 .env*
+
+# Client-facing deliverables. Built from a source that is not in the repository
+# and rebuilt whenever the numbers move, so a committed copy is a copy that goes
+# stale silently - and it carries client figures that do not need to live in
+# every clone.
+client-handover/
