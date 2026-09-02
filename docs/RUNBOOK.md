@@ -299,13 +299,13 @@ intentionally not committed — CI is the enforcement point.
 
 ## 7. The scheduled jobs
 
-Eight cron entries, all in [`vercel.json`](../vercel.json). Nothing else is
+Nine cron entries, all in [`vercel.json`](../vercel.json). Nothing else is
 scheduled.
 
 Six of them are **named jobs** through one route, `/api/sync-job?job=<name>`.
 Each one owns a group of passes and runs on its own clock, so a slow group
-cannot push the others out of a single invocation's budget. The remaining two
-are the full sweep and the monthly re-read.
+cannot push the others out of a single invocation's budget. The other three are
+the full sweep, the monthly re-read, and the alert sweep.
 
 | Cron (UTC) | Route | Job | What it does |
 | --- | --- | --- | --- |
@@ -317,9 +317,29 @@ are the full sweep and the monthly re-read.
 | `30 3 * * *` | `/api/sync-job?job=purchases` | `purchases` | Purchases, receipts, per-item detail |
 | `0 4 * * *` | `/api/wellness-sync-all` | — | Every pass in dependency order — the safety net under the six above |
 | `0 5 1 * *` | `/api/wellness-sync-historical` | — | Re-reads the last `SYNC_MONTHLY_LOOKBACK_MONTHS` calendar months, or an explicitly requested range |
+| `0 */6 * * *` | `/api/alerts` | — | The alert sweep: overdue jobs, parked backlog, review items past 48h. Sends nothing when there is nothing |
+| `0 */6 * * *` | `/api/alerts` | — | Mails standing conditions: overdue jobs, the parked backlog, records flagged for review. Sends nothing when there is nothing |
 
 Vercel Cron sends `CRON_SECRET` as the bearer automatically. No route can be
-reached without a token.
+reached without a token. `/api/alerts` accepts `SYNC_TRIGGER_TOKEN` or
+`CRON_SECRET` but deliberately **not** `HEALTHCHECK_TOKEN` — a token handed out
+for polling a status page should not be able to mail anybody.
+
+**Why the alert sweep is its own cron and not part of a sync.** The sync routes
+already mail a digest of what died during their own run, which covers failures.
+It cannot cover the failure this one exists for: if the thing that stops running
+*is* the sync, an alert hosted inside the sync never executes — the one check
+designed to notice that nothing happened is the check that does not happen. Its
+own function on its own schedule is what breaks that circle. It runs every six
+hours rather than daily because a condition it reports is still true the next
+time somebody looks, so re-checking is cheap and a missed sweep is not a gap.
+
+**What it still cannot catch.** If the deployment itself is gone, paused, or
+never received these crons, this function does not run either and nobody is
+told. No internal check can cover that — something outside the platform has to
+notice the platform. An external uptime monitor against `/api/health` is the
+other half, and it is not in this repository because it is not code. **Open —
+see section 9.**
 
 **The clock is the dependency order.** `schedule-window` runs at 01:00 and
 `catalogue` at 02:00 so sessions reference services that are already current;
@@ -415,6 +435,40 @@ Each group also declares `expectedEveryHours` in
 alert compares that against `last_clean_completion_at`. If you change a cron in
 `vercel.json`, change that number in the same commit; nothing at runtime can read
 the schedule, so the two are kept in step by a test, not by inference.
+
+### Why the alert sweep has its own cron
+
+The sync routes already mail a digest of what died during their own run, and
+that covers failures. It cannot cover the failure the sweep exists for: if the
+thing that stops running IS the sync, an alert hosted inside the sync never
+executes. The check designed to notice that nothing happened would be the check
+that does not happen. Its own function on its own schedule breaks that circle.
+
+It is scoped differently from the sync's own call, deliberately. The sync passes
+`since` so it mails about items that died in that run and does not re-mail
+yesterday's news. The sweep passes none, because it reports **conditions** and
+not events - a job overdue against its cadence, a parked backlog past the
+threshold, a record flagged for review beyond 48 hours - and a condition is
+still true the next time somebody looks.
+
+`HEALTHCHECK_TOKEN` is **not** accepted here, though it is accepted by
+`/api/health` and `/api/sync-status`. Sending mail is an action, and a token
+handed out so somebody can poll a status page should not be able to mail people.
+
+> **What no internal check can catch.** If the deployment is gone, paused, or
+> never received these crons, the sweep does not run either and nobody is told.
+> Something outside the platform has to notice the platform. An external uptime
+> monitor against `/api/health` is the other half of this, and it is not in the
+> repository because it is not code. **It is not set up yet — see section 9.**
+
+Prove the channel works, on demand, without waiting for something to break:
+
+```bash
+APP_ENV=prod npm start -- alert:test
+```
+
+That sends the real digest built from the real database, so it exercises reads,
+wording and SMTP together. It exits 1 if nothing was sent.
 
 ### Is it healthy right now
 
@@ -635,6 +689,8 @@ four originally recorded turned out to be our own mistakes — `dt_date` versus
 | Question | Status |
 |---|---|
 | One cron per day against an ~85s pass | **Closed**, migration 0035 / six named jobs. The schedule is now six jobs that each fit one 50s invocation, with `/api/wellness-sync-all` kept as the safety net. `attendance-close` (~35s of median) is the one with least headroom and will need splitting next — see section 7 |
+| No external uptime monitor | **Open.** `/api/alerts` notices a job that stopped running, but nothing notices the deployment itself being paused, deleted or never given these crons — in that case the alert sweep does not run either and nobody is told. Needs a monitor outside the platform polling `/api/health`; it is configuration, not code, so it cannot live in this repository |
+| No external uptime monitor | **Open.** Every alert in this system runs inside the system. If the deployment is paused or the crons never registered, nothing runs and nothing is sent. An external monitor pinging `/api/health` is the only thing that catches that |
 | `sync_job_state` page cursor | Built, unused. Waits on a paginated WL endpoint |
 | Royalty calculation itself | Not started. The inputs are being collected; the calculation is the next piece of work |
 

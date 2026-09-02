@@ -165,6 +165,7 @@ envelope inside" trap to guard against.
 | Vercel sync route — staff only, targeted | [`api/wellness-sync.ts`](../api/wellness-sync.ts) |
 | Vercel FULL sync route — every pass, the daily cron | [`api/wellness-sync-all.ts`](../api/wellness-sync-all.ts) |
 | Vercel HISTORICAL class-schedule route — monthly-chunk backfill and the monthly re-read cadence | [`api/wellness-sync-historical.ts`](../api/wellness-sync-historical.ts) |
+| Vercel ALERT SWEEP route — standing conditions, on its own cron so it cannot share the sync's fate | [`api/alerts.ts`](../api/alerts.ts) |
 | Reading and setting the visit sync's date window — GET what the next window will be and why, POST a ONE-SHOT manual `{start,end}`, DELETE to clear | [`api/sync-window.ts`](../api/sync-window.ts) |
 
 The CLI and the routes are thin: both resolve config, build a client, and call the

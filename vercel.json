@@ -17,6 +17,9 @@
     "api/wellness-sync-historical.ts": {
       "maxDuration": 60
     },
+    "api/alerts.ts": {
+      "maxDuration": 60
+    },
     "api/sync-job.ts": {
       "maxDuration": 60
     },
@@ -56,6 +59,10 @@
     {
       "path": "/api/wellness-sync-historical",
       "schedule": "0 5 1 * *"
+    },
+    {
+      "path": "/api/alerts",
+      "schedule": "0 */6 * * *"
     }
   ],
   "headers": [
