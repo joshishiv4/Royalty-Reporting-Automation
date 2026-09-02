@@ -42,6 +42,17 @@ import { SupabaseClient } from '../src/supabase/client.js';
 /** GET because Vercel Cron issues GET; POST for a manual sweep. */
 const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST']);
 
+/**
+ * How far back the sweep looks for crashed passes.
+ *
+ * Deliberately WIDER than the six-hour cron interval. Equal to it would mean a
+ * crash landing either side of a sweep boundary is reported by neither, and an
+ * alert that can miss the thing it is watching for is worse than no alert. The
+ * overlap costs a repeat of at most one sweep's worth, which is a fair trade
+ * against silence.
+ */
+const CRASH_WINDOW_MS = 8 * 60 * 60 * 1000;
+
 export default async function handler(req: HttpRequest, res: HttpResponse): Promise<void> {
   res.setHeader('Cache-Control', 'no-store');
 
@@ -66,9 +77,21 @@ export default async function handler(req: HttpRequest, res: HttpResponse): Prom
     const config = await loadConfig();
     const db = new SupabaseClient(config.supabase);
 
-    // No `since`: standing conditions, not this-run events. See the note above.
+    // No `since`: the standing conditions - overdue jobs, the parked backlog,
+    // records waiting on a human - are read unbounded because each is still
+    // true the next time anybody looks.
+    //
+    // `crashedSince` is the exception, and it was learned the hard way. A
+    // crashed pass is an EVENT, not a condition: the row stays in sync_run for
+    // ever, so an unbounded read re-reports the same crash on every sweep. The
+    // first live sweep mailed 45 crashes from a loop that had already been
+    // stopped, and would have mailed those same 45 every six hours from then
+    // on. One window wider than the sweep interval, so a crash cannot fall
+    // between two sweeps and go unreported.
+    const crashedSince = new Date(Date.now() - CRASH_WINDOW_MS).toISOString();
     const result = await notifyDeadLetter(db, config.smtp, {
       kBusiness: config.wl.kBusiness,
+      crashedSince,
     });
 
     // 200 whether or not anything was sent. "Nothing to report" is the healthy

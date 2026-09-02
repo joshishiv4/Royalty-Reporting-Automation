@@ -33,6 +33,27 @@ import { createSmtpClient, nullSmtpClient, type MailResult } from './smtp.js';
 export interface NotifyOptions {
   /** ISO timestamp. Only failures whose updated_at >= this are included. */
   readonly since?: string;
+  /**
+   * ISO timestamp bounding the CRASHED-PASS read alone.
+   *
+   * WHY THIS IS SEPARATE FROM `since`. The three other things this digest
+   * reports are CONDITIONS - a job overdue against its cadence, a parked
+   * backlog, a record waiting on a human - and a condition is still true the
+   * next time anybody looks, so the standing sweep reads them unbounded on
+   * purpose. A crashed pass is not a condition. It is an EVENT, and an event
+   * that happened once stays in sync_run for ever.
+   *
+   * Reading it unbounded is what the first sweep actually did, and it mailed
+   * 45 crashes from a loop that had already been stopped - the same 45 it would
+   * have re-mailed every six hours from then on. That is precisely the habit
+   * this digest is built to avoid: an inbox that repeats yesterday's news stops
+   * being read, and then the one alert that matters arrives into a channel
+   * nobody opens.
+   *
+   * Falls back to `since`, so a caller that scopes everything the same way -
+   * the sync's own post-run digest - needs no second argument.
+   */
+  readonly crashedSince?: string;
   /** Which businesses to include; omit to include every one on the DB. */
   readonly kBusiness?: string;
   /**
@@ -117,7 +138,10 @@ export async function notifyDeadLetter(
   // dead-letter digest is still sent - one broken read must not silence the
   // other.
   const runFilters = ['state=eq.failed'];
-  if (opts.since !== undefined) runFilters.push(`started_at=gte.${opts.since}`);
+  // crashedSince first: a crash is an event, so the standing sweep bounds it
+  // even though it reads every other condition unbounded. See NotifyOptions.
+  const crashedFrom = opts.crashedSince ?? opts.since;
+  if (crashedFrom !== undefined) runFilters.push(`started_at=gte.${crashedFrom}`);
   if (opts.kBusiness !== undefined) runFilters.push(`k_business=eq.${opts.kBusiness}`);
   let failedRuns: FailedRun[] = [];
   try {
