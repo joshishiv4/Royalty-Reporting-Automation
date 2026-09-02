@@ -1,6 +1,6 @@
 # Status and plan
 
-Last updated **1 Sep 2026**. Keep the date honest — a stale status file is worse
+Last updated **2 Sep 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed.
 
 ## The plan
@@ -9,11 +9,28 @@ than none, because it is believed.
 |---|---|---|
 | **M01** foundation | Config, secrets, auth, HTTP client, retry, logging, health | ✅ done |
 | **M02** schema | Tables for people, money, sessions, control plane, raw payloads | ✅ done |
-| **M03** sync engine | The code that reads WL and writes to those tables | 🔨 in progress — staff path live |
-| **M04** GHL + royalty | Contact matching, royalty calculation | ⬜ not started |
+| **M03** sync engine | The code that reads WL and writes to those tables | ✅ done — 17 passes, 6 scheduled jobs, live |
+| **M04a** GHL matching | Contact matching against GoHighLevel | ✅ done — `src/ghl/`, `ghl_match_sync` runs nightly |
+| **M04b** royalty calculation | The number this project exists to produce | ⬜ **not started — this is the next work** |
 | **M05** portal | Student portal reading the same database | ⬜ not started |
 
-**M03 is running staff and purchases against dev.** The staff path (`person`) and
+**M03 is complete and running unattended.** Seventeen passes read WellnessLiving
+into eighteen tables, grouped into six named jobs on their own crons, with a lease
+so no job overlaps itself, a durable queue as the cursor, a monthly re-read for
+retroactive edits, and an alert sweep that mails when a job stops running. Operating
+it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
+[DATA-MODEL.md](DATA-MODEL.md).
+
+**What is left is the calculation itself.** Everything above is input. The royalty
+number — the thing the project is named for — has not been written. See "Not
+started" below.
+
+### How M03 got here
+
+The rest of this section is the record of how each piece landed and what was
+measured at the time. It is history, not current state.
+
+The staff path (`person`) and
 the purchase path (`purchase` + `purchase_item`, the royalty rows) both run end to
 end — Supabase write client, writers with `raw_link`, the durable `sync_queue` loop
 with per-work-type claiming, and bounded `sync_run` passes. A live run wrote 109
@@ -99,12 +116,12 @@ each night.
 | Shared constant-time bearer check for routes | `src/http/bearer.ts` |
 | Vercel health endpoint | `api/health.ts` |
 
-**208 tests across 17 files.** CI runs format, lint, typecheck, tests, a
+**782 tests across 66 files.** CI runs format, lint, typecheck, tests, a
 fail-closed startup assertion, and gitleaks over full history on every push.
 
 ### Schema — 18 tables live on dev Supabase
 
-`0001`–`0009` applied. See [DATA-MODEL.md](DATA-MODEL.md) for what each holds and
+`0001`–`0035` applied (37 migration files). See [DATA-MODEL.md](DATA-MODEL.md) for what each holds and
 why it is shaped that way.
 
 ### Tickets closed
@@ -127,7 +144,15 @@ why it is shaped that way.
 
 ## In progress
 
-Nothing. `0010_health_views_and_rls.sql` is applied to the live database and its
+**Nothing in flight.** The next work is the royalty calculation — see below.
+
+One item is carried, and it is not code: **nobody unfamiliar with this system has
+yet tried to recover it using the runbook alone.** Every other check on that
+runbook confirms the document exists and its commands are real; only that one
+tests whether it can be followed under pressure. 30 minutes, one engineer who did
+not build this.
+
+Historical note: `0010_health_views_and_rls.sql` is applied to the live database and its
 isolation proof passed (task 007): the five SELECT policies exist, all six views
 (`client`, `teacher`, `data_health`, `data_health_issue`, `customer_journey`,
 `enrollment_margin`) run with `security_invoker = on`, and the isolation test
@@ -136,19 +161,27 @@ the Supabase SQL editor with no error and no test data left behind.
 
 ## Not started
 
-**M03, the sync engine.** This is the next real piece of work:
+**The royalty calculation.** This is the next real piece of work, and the only
+part of the original scope not built:
 
 ```
-WL call ──> raw_wl ──> parse ──> typed tables + raw_link
-                                      │
-                                 sync_run / sync_queue updated
+purchase_item (the royalty row) ──> calculation ──> a reportable figure
 ```
 
-The pieces it needs already exist — client, retry, batch, trace, and every table.
-What is missing is the writer.
+Every input it needs is being collected nightly. What is missing is the rule: which
+purchase items count, how they are grouped, and what the studio is actually billed
+on. That rule is not recorded anywhere in this repository — it needs the client, not
+more code, and it should go through a PRD before anything is written.
 
-**M04**, GoHighLevel matching and royalty calculation. Credentials work; there is no
-`src/ghl/` yet.
+Two limits are already known and will not be removed by writing the calculation.
+Say them when reporting any number (they are also in RUNBOOK.md section 9):
+
+- **Any client count is a floor, not a total** — WL has no endpoint that enumerates
+  clients (blocker 1).
+- **Margin and profit cannot be computed at all** — WL never returns staff pay
+  amounts (blocker 2). Revenue per class is available; profit per class is not.
+
+**M05**, the student portal, remains not started.
 
 ## Measured 31 Aug 2026 — `id_visit` is read by the view but written by nothing
 
@@ -441,7 +474,11 @@ materially, ask WL what the real limits are rather than discovering them.
 
 ## Reference numbers
 
-Useful for sizing anything in M03:
+These are the **pre-build estimates**, kept because they are what the design was
+sized against. They are no longer the best source for how the sync behaves: it now
+runs in production, and RUNBOOK.md section 7 carries per-pass medians, p90s and
+observed maxima measured over 26,516 `sync_run` rows. Prefer those when sizing
+anything new.
 
 | | |
 |---|---|
