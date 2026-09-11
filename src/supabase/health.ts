@@ -1,21 +1,10 @@
-import type { AppConfig, SupabaseConfig } from '../config/schema.js';
+import type { SupabaseConfig } from '../config/schema.js';
+import type { HealthCheckResult, HealthProbeDeps } from '../health/types.js';
 
-export interface HealthCheckResult {
-  /** What was probed, in words safe to print. */
-  readonly target: string;
-  readonly ok: boolean;
-  /** Human-readable outcome. Never contains a credential or a host. */
-  readonly detail: string;
-  readonly httpStatus?: number;
-  readonly latencyMs: number;
-}
+export type { HealthCheckResult } from '../health/types.js';
 
-export interface SupabaseHealthDeps {
-  fetch?: typeof globalThis.fetch;
-  timeoutMs?: number;
-  /** Injectable clock so tests do not depend on wall time. */
-  now?: () => number;
-}
+/** Retained name for this module's callers; the shape is shared by every probe. */
+export type SupabaseHealthDeps = HealthProbeDeps;
 
 /**
  * Confirms the Supabase project is reachable AND that the service role key is
@@ -85,19 +74,6 @@ export async function checkSupabaseReachable(
       latencyMs,
     };
   }
-}
-
-/** Runs every reachability check the foundation layer owns. */
-export async function checkAll(
-  config: AppConfig,
-  deps: SupabaseHealthDeps = {},
-): Promise<HealthCheckResult[]> {
-  return [
-    await checkSupabaseReachable(config.supabase, {
-      ...deps,
-      timeoutMs: deps.timeoutMs ?? config.runtime.httpTimeoutMs,
-    }),
-  ];
 }
 
 function describeFetchFailure(cause: unknown, timeoutMs: number): string {

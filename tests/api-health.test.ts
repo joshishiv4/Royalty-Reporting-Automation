@@ -105,6 +105,7 @@ describe('health handler', () => {
     vi.stubEnv('APP_ENV', 'dev');
     for (const key of [
       'WL_API_HOST',
+      'WL_AUTH_HOST',
       'WL_ID_REGION',
       'WL_K_BUSINESS',
       'WL_CLIENT_ID',

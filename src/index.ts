@@ -12,6 +12,7 @@ export type {
 export { ConfigValidationError } from './config/schema.js';
 
 export { createLogger, type Logger } from './logging/logger.js';
+export { createDefaultFileSinks, createFileSink, type LogSink } from './logging/file-sink.js';
 export {
   credentialValues,
   describeConfig,
@@ -38,5 +39,49 @@ export {
   type SecretsProvider,
 } from './secrets/types.js';
 
-export { checkAll, checkSupabaseReachable, type HealthCheckResult } from './supabase/health.js';
-export { buildWlUrl, WL_PATHS, type WlPathName } from './wl/endpoint.js';
+export { checkAll, type HealthCheckResult, type HealthProbeDeps } from './health/index.js';
+export { checkSupabaseReachable } from './supabase/health.js';
+export {
+  WlClient,
+  WlRequestError,
+  type WlClientDeps,
+  type WlErrorDetails,
+  type WlFailureKind,
+  type WlRequestOptions,
+  type WlResponse,
+} from './wl/client.js';
+export { buildWlAuthUrl, buildWlUrl, WL_PATHS, type WlPathName } from './wl/endpoint.js';
+export {
+  runWellnessSync,
+  type WellnessSyncDeps,
+  type WellnessSyncStep,
+  type WellnessSyncSummary,
+} from './wl/sync.js';
+export {
+  runFullSyncPass,
+  runFullSyncPassParallel,
+  type FullSyncPassResult,
+  type FullSyncSummary,
+} from './sync/pass.js';
+export { isAuthorized, isAuthorizedByAny } from './http/bearer.js';
+export type { HttpRequest, HttpResponse } from './http/types.js';
+export { checkWlAuth, type WlHealthDeps } from './wl/health.js';
+export {
+  WlAuthError,
+  WlTokenClient,
+  type WlAuthFailureKind,
+  type WlTokenClientDeps,
+  type WlTokenStatus,
+} from './wl/token.js';
+export {
+  GhlClient,
+  GhlRequestError,
+  type ContactSearchFilters,
+  type GhlClientDeps,
+  type GhlContact,
+  type GhlErrorDetails,
+  type GhlFailureKind,
+  type GhlSearchResponse,
+} from './ghl/client.js';
+export { buildGhlUrl, GHL_PATHS, type GhlPathName } from './ghl/endpoint.js';
+export { checkGhlAuth, type GhlHealthDeps } from './ghl/health.js';

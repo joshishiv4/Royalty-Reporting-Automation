@@ -9,12 +9,15 @@ import { SECRET_KEYS, SecretsProviderError, type SecretBundle, type SecretKey } 
  */
 export const SETTINGS_PATHS = {
   'wellnessliving.host': 'WL_API_HOST',
+  'wellnessliving.authHost': 'WL_AUTH_HOST',
   'wellnessliving.idRegion': 'WL_ID_REGION',
   'wellnessliving.kBusiness': 'WL_K_BUSINESS',
   'wellnessliving.clientId': 'WL_CLIENT_ID',
   'wellnessliving.clientSecret': 'WL_CLIENT_SECRET',
   'supabase.url': 'SUPABASE_URL',
   'supabase.serviceRoleKey': 'SUPABASE_SERVICE_ROLE_KEY',
+  'gohighlevel.host': 'GHL_API_HOST',
+  'gohighlevel.version': 'GHL_API_VERSION',
   'gohighlevel.apiToken': 'GHL_API_TOKEN',
   'gohighlevel.locationId': 'GHL_LOCATION_ID',
 } as const satisfies Record<string, SecretKey>;

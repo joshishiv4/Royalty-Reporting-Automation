@@ -20,17 +20,24 @@ const PLACEHOLDER_MESSAGE =
  * and the issue is fatal so an unfilled key reports once instead of also
  * failing every format rule downstream of it.
  */
-const filledIn = z.string().superRefine((value, ctx) => {
-  if (value.length === 0) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'must not be empty', fatal: true });
-    return z.NEVER;
-  }
-  if (PLACEHOLDER_PATTERN.test(value)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: PLACEHOLDER_MESSAGE, fatal: true });
-    return z.NEVER;
-  }
-  return undefined;
-});
+const filledIn = z
+  .string()
+  // Trimmed before any other rule: a value that arrives with stray whitespace -
+  // a copy-paste artefact, or a CRLF line ending in a hand-edited settings file
+  // - must be judged on its content. Every provider trims as well; this is the
+  // backstop for a future one that forgets.
+  .transform((value) => value.trim())
+  .superRefine((value, ctx) => {
+    if (value.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'must not be empty', fatal: true });
+      return z.NEVER;
+    }
+    if (PLACEHOLDER_PATTERN.test(value)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: PLACEHOLDER_MESSAGE, fatal: true });
+      return z.NEVER;
+    }
+    return undefined;
+  });
 
 /**
  * A bare hostname: no scheme, no path, no trailing slash, no query.
@@ -51,6 +58,18 @@ const positiveIntFromString = filledIn
   .refine((v) => /^\d+$/.test(v), { message: 'must be a whole number' })
   .transform((v) => Number.parseInt(v, 10))
   .refine((v) => v > 0, { message: 'must be greater than zero' });
+
+/**
+ * Same, but zero is a legitimate answer meaning "off".
+ *
+ * Used where a count IS the switch, so turning a scheduled behaviour off is a
+ * config change rather than an edit to vercel.json. A positive-only int would
+ * force the cron itself to be deleted, which is a worse thing to have to undo.
+ */
+const nonNegativeIntFromString = filledIn
+  .refine((v) => /^\d+$/.test(v), { message: 'must be a whole number' })
+  .transform((v) => Number.parseInt(v, 10))
+  .refine((v) => v >= 0, { message: 'must not be negative' });
 
 /**
  * WL `k_` keys are stored and transmitted as text everywhere, never as numbers
@@ -75,19 +94,48 @@ const httpsUrl = filledIn
   )
   .transform((v) => v.replace(/\/+$/, ''));
 
+/**
+ * A flag written the way an env file writes one.
+ *
+ * Accepts the four spellings people actually type. Anything else is rejected
+ * rather than silently read as false: a typo that quietly disables logging is
+ * the kind of thing only noticed when the log is needed.
+ */
+const booleanFromString = z
+  .enum(['true', 'false', '1', '0'])
+  .default('false')
+  .transform((v) => v === 'true' || v === '1');
+
 const opaqueSecret = filledIn.refine((v) => v.length >= 8, {
   message: 'is too short to be a real credential',
+});
+
+/**
+ * GoHighLevel's date-stamped API version, e.g. 2021-07-28.
+ *
+ * Shape-checked, not value-checked: a typo like "2021-7-28" (single-digit month)
+ * fails here rather than at the first live call, where it comes back as an
+ * uninformative 400. The value itself is intentionally not pinned - a rollout of
+ * a new supported version must be a coordinated code + config bump, and pinning
+ * the accepted list here would defeat the whole point of putting the version in
+ * the bundle.
+ */
+const apiVersionDate = filledIn.refine((v) => /^\d{4}-\d{2}-\d{2}$/.test(v), {
+  message: "must be an ISO date (YYYY-MM-DD), matching GoHighLevel's version scheme",
 });
 
 /** Shape of the resolved secret bundle, after validation and coercion. */
 export const secretBundleSchema = z.object({
   WL_API_HOST: bareHost,
+  WL_AUTH_HOST: bareHost,
   WL_ID_REGION: positiveIntFromString,
   WL_K_BUSINESS: wlKey,
   WL_CLIENT_ID: opaqueSecret,
   WL_CLIENT_SECRET: opaqueSecret,
   SUPABASE_URL: httpsUrl,
   SUPABASE_SERVICE_ROLE_KEY: opaqueSecret,
+  GHL_API_HOST: bareHost,
+  GHL_API_VERSION: apiVersionDate,
   GHL_API_TOKEN: opaqueSecret,
   GHL_LOCATION_ID: filledIn,
 });
@@ -101,21 +149,141 @@ export type ValidatedSecrets = z.output<typeof secretBundleSchema>;
 export const runtimeOptionsSchema = z.object({
   LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
   WL_MAX_CONCURRENCY: positiveIntFromString.default('5'),
-  WL_REQUESTS_PER_SECOND: positiveIntFromString.default('5'),
   HTTP_TIMEOUT_MS: positiveIntFromString.default('30000'),
+  // Off by default: on Vercel the filesystem is read-only apart from /tmp, and
+  // /tmp does not survive the invocation. Deployed environments read the
+  // platform log stream; file logs are for local runs and long-lived hosts.
+  LOG_TO_FILE: booleanFromString,
+  LOG_DIR: z.string().trim().min(1).default('logs'),
+
+  /**
+   * How far back the first visit sync reaches. `YYYY-MM-DD`.
+   *
+   * Config, not a constant: it is a business decision about how much history is
+   * worth paying for, and the studio's answer (1980) is older than the studio.
+   * Measured against the portal on 31 Aug 2026, the real span is ~38,839
+   * appointments and 435 classes, so the floor only has to be early enough - it
+   * costs nothing to be earlier than the data.
+   */
+  SYNC_HISTORY_START: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'SYNC_HISTORY_START must be YYYY-MM-DD')
+    .default('1980-01-01'),
+
+  /**
+   * Days of overlap the DAILY visit sync re-reads.
+   *
+   * Not 1. A session's outcome is settled after it runs, not when it is booked,
+   * and WL may leave it PENDING for staff for a while - so a one-day window can
+   * miss the moment the answer arrives. Every write is an upsert on a WL key, so
+   * the overlap is free of consequence.
+   *
+   * Not 2 either, observed live: at exactly 2 days, an outcome that WL settled
+   * more than 24 hours after the session ran fell OUT of the next day's window
+   * before the daily run picked it up, and no later run ever re-fetched that
+   * date. Three days catches the same slip without adding meaningful cost - the
+   * upserts converge, only the number of stale re-reads changes.
+   */
+  SYNC_DAILY_LOOKBACK_DAYS: positiveIntFromString.default('3'),
+
+  /**
+   * How many calendar months the MONTHLY run re-reads, counting the current one.
+   *
+   * WHY THIS EXISTS. The daily run's windows are short by design - three days
+   * for appointments, seven back for the class schedule - because their job is
+   * to catch an outcome that settled late, not to re-read history. That leaves
+   * one real gap: a session edited retroactively, weeks after it ran, falls
+   * outside every daily window and is never re-read. Nothing else has this
+   * problem - purchases, people, money, reference lists and attendance carry no
+   * date window at all and are enumerated in full every night.
+   *
+   * So the monthly run closes exactly that gap. At the default of 2, firing on
+   * the 1st, the window is the whole of the previous month plus the first day of
+   * the new one: every month gets re-read once, in full, shortly after it ends.
+   * Raise it to re-read further back; 0 turns the behaviour off and returns the
+   * monthly run to doing nothing unless a range is explicitly requested.
+   *
+   * A manual request always wins over this. See runHistoricalScheduleSyncPass.
+   */
+  SYNC_MONTHLY_LOOKBACK_MONTHS: nonNegativeIntFromString.default('2'),
+
+  // --- SMTP notification of dead-letter items --------------------------------
+  // Every field is optional. If SMTP_HOST is unset, the whole notifier stays
+  // OFF: buildDigest still runs and its verdict is available to a caller, but
+  // no mail is ever sent - a quiet dev environment must not need SMTP running.
+  //
+  // EMPTY IS UNSET, and that distinction is not academic. `vercel env add
+  // SMTP_HOST production` with the value prompt left blank stores an empty
+  // string - it happened on this project's first attempt. Without this
+  // transform the empty string is not `undefined`, so the notifier reads as
+  // CONFIGURED and every run tries to open a connection to a host of "",
+  // failing once per pass forever. Rejecting it instead (`.min(1)`) would be
+  // worse still: a blank variable would fail config validation and take the
+  // whole sync down, when the operator's evident intent was "off".
+  SMTP_HOST: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v === undefined || v.length === 0 ? undefined : v)),
+  SMTP_PORT: z
+    .string()
+    .trim()
+    .regex(/^\d+$/, 'SMTP_PORT must be a whole number')
+    .transform((v) => Number.parseInt(v, 10))
+    .refine((v) => v > 0 && v < 65_536, { message: 'SMTP_PORT is out of range' })
+    .optional(),
+  SMTP_USER: z.string().trim().optional(),
+  SMTP_PASSWORD: z.string().trim().optional(),
+  SMTP_FROM: z.string().trim().optional(),
+  /**
+   * The default recipient. Overridable via env, but hardcoded here so a fresh
+   * install still notifies the person who owns the load without touching env.
+   */
+  SMTP_TO: z.string().trim().default('shiv.joshi@aliansoftware.net'),
 });
 
 export const appEnvSchema = z.enum(APP_ENVS);
 
 export interface WlConfig {
-  /** Bare host, e.g. the value of WL_API_HOST for this environment. */
+  /** Bare DATA host, e.g. the value of WL_API_HOST for this environment. */
   readonly host: string;
-  /** `https://<host>` with no trailing slash. */
+  /** `https://<host>` with no trailing slash. Data endpoints only. */
   readonly baseUrl: string;
+  /** Bare AUTH host. WL serves /oauth2/token from a different host than data. */
+  readonly authHost: string;
+  /** `https://<authHost>` with no trailing slash. Token endpoint only. */
+  readonly authBaseUrl: string;
   readonly idRegion: number;
   readonly kBusiness: string;
   readonly clientId: string;
   readonly clientSecret: string;
+}
+
+/** How far back each visit sync reaches. See src/sync/visit-window.ts. */
+/**
+ * SMTP notification config, kept beside the rest of the runtime bundle.
+ *
+ * Every field is optional except `to`, which has a hardcoded default. When
+ * `host` is null, the SMTP client is a no-op and no mail is sent - the digest
+ * still runs so its verdict can be logged.
+ */
+export interface SmtpConfig {
+  readonly host: string | null;
+  readonly port: number;
+  readonly user: string;
+  readonly password: string;
+  readonly from: string;
+  readonly to: string;
+}
+
+export interface SyncConfig {
+  /** `YYYY-MM-DD`. The floor for the very first (backfill) run. */
+  readonly historyStart: string;
+  /** Days of overlap re-read on every run after the first clean drain. */
+  readonly dailyLookbackDays: number;
+  /** Calendar months the monthly run re-reads, counting the current one. 0 = off. */
+  readonly monthlyLookbackMonths: number;
 }
 
 export interface SupabaseConfig {
@@ -124,6 +292,18 @@ export interface SupabaseConfig {
 }
 
 export interface GhlConfig {
+  /** Bare host, e.g. the value of GHL_API_HOST for this environment. */
+  readonly host: string;
+  /** `https://<host>` with no trailing slash. */
+  readonly baseUrl: string;
+  /**
+   * Date-stamped API contract this build parses, sent as the `Version` header
+   * on every call. Kept beside the host in the same bundle because the parsers
+   * in this build are pinned to it: bumping this without a code change is a
+   * silent shape drift, and pinning it without a config change would freeze the
+   * whole fleet at whatever version was hardcoded.
+   */
+  readonly version: string;
   readonly apiToken: string;
   readonly locationId: string;
 }
@@ -131,8 +311,11 @@ export interface GhlConfig {
 export interface RuntimeConfig {
   readonly logLevel: LogLevel;
   readonly maxConcurrency: number;
-  readonly requestsPerSecond: number;
   readonly httpTimeoutMs: number;
+  /** Whether to also append every line to files under `logDir`. */
+  readonly logToFile: boolean;
+  /** Directory for app.log and error.log. Relative paths resolve from cwd. */
+  readonly logDir: string;
 }
 
 export interface AppConfig {
@@ -143,6 +326,8 @@ export interface AppConfig {
   readonly supabase: SupabaseConfig;
   readonly ghl: GhlConfig;
   readonly runtime: RuntimeConfig;
+  readonly sync: SyncConfig;
+  readonly smtp: SmtpConfig;
 }
 
 /** Thrown when resolved values are present but invalid. Never echoes a value. */

@@ -1,6 +1,10 @@
-import { timingSafeEqual } from 'node:crypto';
 import { loadConfig } from '../src/config/index.js';
-import { checkAll } from '../src/supabase/health.js';
+import { checkAll } from '../src/health/index.js';
+import { isAuthorized, isAuthorizedByAny } from '../src/http/bearer.js';
+import type { HttpRequest, HttpResponse } from '../src/http/types.js';
+
+// Re-exported so existing importers keep working now that the check is shared.
+export { isAuthorized };
 
 /**
  * Token-protected health probe, deployed as a Vercel Serverless Function.
@@ -15,52 +19,11 @@ import { checkAll } from '../src/supabase/health.js';
  * Requires: Authorization: Bearer <HEALTHCHECK_TOKEN>
  */
 
-/**
- * Minimal structural types for the Vercel Node runtime.
- *
- * Declared locally rather than depending on @vercel/node: these three members
- * are all this handler touches, and a types-only dependency on the platform is
- * not worth carrying for them.
- */
-export interface HealthRequest {
-  readonly method?: string | undefined;
-  readonly headers: Readonly<Record<string, string | string[] | undefined>>;
-}
+/** Retained names for this route's existing importers. */
+export type HealthRequest = HttpRequest;
+export type HealthResponse = HttpResponse;
 
-export interface HealthResponse {
-  status(code: number): HealthResponse;
-  json(body: unknown): void;
-  setHeader(name: string, value: string): void;
-}
-
-/**
- * Constant-time bearer token comparison.
- *
- * Returns false when no token is configured: an unset HEALTHCHECK_TOKEN must
- * lock the endpoint, never open it.
- */
-export function isAuthorized(
-  headerValue: string | string[] | undefined,
-  expected: string | undefined,
-): boolean {
-  if (expected === undefined || expected.length === 0) return false;
-
-  const header = Array.isArray(headerValue) ? headerValue[0] : headerValue;
-  if (header === undefined) return false;
-
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-  const presented = match?.[1];
-  if (presented === undefined) return false;
-
-  const a = Buffer.from(presented);
-  const b = Buffer.from(expected);
-  // timingSafeEqual throws on length mismatch, so length is checked first. The
-  // length of a token is not a useful secret.
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
-
-export default async function handler(req: HealthRequest, res: HealthResponse): Promise<void> {
+export default async function handler(req: HttpRequest, res: HttpResponse): Promise<void> {
   res.setHeader('Cache-Control', 'no-store');
 
   if (req.method !== undefined && req.method !== 'GET' && req.method !== 'HEAD') {
@@ -68,7 +31,13 @@ export default async function handler(req: HealthRequest, res: HealthResponse): 
     return;
   }
 
-  if (!isAuthorized(req.headers.authorization, process.env.HEALTHCHECK_TOKEN)) {
+  if (
+    !isAuthorizedByAny(req.headers.authorization, [
+      process.env.SYNC_TRIGGER_TOKEN,
+      process.env.HEALTHCHECK_TOKEN,
+      process.env.CRON_SECRET,
+    ])
+  ) {
     // Identical response whether the token is wrong or unconfigured, so the
     // endpoint reveals nothing about its own setup.
     res.status(401).json({ error: 'unauthorized' });

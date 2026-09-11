@@ -13,18 +13,30 @@ export type AppEnv = (typeof APP_ENVS)[number];
 /**
  * Every key the application resolves from the secrets manager.
  *
- * WL_API_HOST, WL_ID_REGION and WL_K_BUSINESS are deliberately in here rather
- * than in source: they differ between dev and prod (architecture doc section
- * 2a), and hardcoding them is a named project risk.
+ * WL_API_HOST, WL_AUTH_HOST, WL_ID_REGION and WL_K_BUSINESS are deliberately in
+ * here rather than in source: they differ between dev and prod (architecture doc
+ * section 2a), and hardcoding them is a named project risk.
+ *
+ * WL_AUTH_HOST is separate from WL_API_HOST because WL serves /oauth2/token from
+ * a different host than the data endpoints. Pointing the token request at the
+ * data host returns a challenge page, not a token.
  */
 export const SECRET_KEYS = [
   'WL_API_HOST',
+  'WL_AUTH_HOST',
   'WL_ID_REGION',
   'WL_K_BUSINESS',
   'WL_CLIENT_ID',
   'WL_CLIENT_SECRET',
   'SUPABASE_URL',
   'SUPABASE_SERVICE_ROLE_KEY',
+  // GoHighLevel. GHL_API_HOST is per-environment for the same reason WL_API_HOST
+  // is: hardcoding it is a named project risk. GHL_API_VERSION is stored beside
+  // it so the date-stamped API contract that this client parses moves with the
+  // config bundle; a schema-shape change is a coordinated code+config bump, not
+  // a code deploy the config side sleeps through.
+  'GHL_API_HOST',
+  'GHL_API_VERSION',
   'GHL_API_TOKEN',
   'GHL_LOCATION_ID',
 ] as const;

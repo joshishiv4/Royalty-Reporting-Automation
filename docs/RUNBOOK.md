@@ -9,12 +9,13 @@ Reference: `2026-08-06_HRRAFEBAV_Sync-Architecture_v1.md` §2a · PRD module M01
 
 ## 1. The secret inventory
 
-Nine keys per environment. `dev` and `prod` values are **all** different — assume nothing
+Ten keys per environment. `dev` and `prod` values are **all** different — assume nothing
 carries over.
 
 | Key                         | Kind                   | Rotatable | Owner / source                                 |
 | --------------------------- | ---------------------- | --------- | ---------------------------------------------- |
-| `WL_API_HOST`               | environment coordinate | no        | WellnessLiving (UAT host vs production host)   |
+| `WL_API_HOST`               | environment coordinate | no        | WellnessLiving (data host)                     |
+| `WL_AUTH_HOST`              | environment coordinate | no        | WellnessLiving (token host — NOT the data host) |
 | `WL_ID_REGION`              | environment coordinate | no        | WellnessLiving (docs use 2, production uses 1) |
 | `WL_K_BUSINESS`             | environment coordinate | no        | WellnessLiving business record                 |
 | `WL_CLIENT_ID`              | credential             | yes       | WL Integrations team                           |
@@ -24,8 +25,61 @@ carries over.
 | `GHL_API_TOKEN`             | credential             | yes       | GoHighLevel private integration                |
 | `GHL_LOCATION_ID`           | environment coordinate | no        | GoHighLevel location                           |
 
+### Route tokens (separate from the ten above)
+
+The deployed HTTP routes are guarded by their own bearer tokens, read straight from the
+process environment rather than the secrets bundle - they protect *our* endpoints and are not
+credentials for anyone else's API.
+
+| Variable             | Accepted on                              | Notes                                                        |
+| -------------------- | ---------------------------------------- | ------------------------------------------------------------ |
+| `HEALTHCHECK_TOKEN`  | the read-only routes only                | `/api/health`, `/api/sync-status`. Cannot start a sync.      |
+| `SYNC_TRIGGER_TOKEN` | every route                              | The manual trigger.                                          |
+| `CRON_SECRET`        | every route                              | Vercel Cron sends this as the bearer automatically.          |
+
+Each route accepts **any** of the tokens listed for it, compared in constant time and with
+every candidate compared even after a match, so the timing does not reveal which one matched
+([`src/http/bearer.ts`](../src/http/bearer.ts)). The split is deliberate: a token handed out
+so somebody can poll a status page must not also be able to start a backfill.
+
+An unset variable never opens anything - it is skipped as a candidate, and a route whose
+every candidate is unset answers 401 to everyone. There is no "no token configured, so allow
+it" path.
+
+Rotate by generating a new random string, setting it in Vercel's environment variables, and
+redeploying. There is no third party to coordinate with, so rotation is immediate and safe to
+do at any time.
+
+### SMTP (separate again, and optional)
+
+The dead-letter notifier reads its own variables straight from the process environment, not
+from the secrets bundle. All six are optional. `SMTP_HOST` is the switch: leave it unset and
+the digest still builds and is returned in the sync response, but no mail is sent.
+
+| Variable        | Kind       | Rotatable | Owner / source                                  |
+| --------------- | ---------- | --------- | ----------------------------------------------- |
+| `SMTP_HOST`     | coordinate | no        | the mail provider (`smtp.gmail.com` today)      |
+| `SMTP_PORT`     | coordinate | no        | 587 for STARTTLS, 465 for implicit TLS          |
+| `SMTP_USER`     | coordinate | no        | the mailbox that authenticates                  |
+| `SMTP_PASSWORD` | credential | yes       | Google App Password — see §4e                   |
+| `SMTP_FROM`     | coordinate | no        | must equal `SMTP_USER` on Gmail; it rewrites any other sender |
+| `SMTP_TO`       | coordinate | no        | recipient; defaults in `schema.ts`, no env needed |
+
+> `SMTP_PASSWORD` is a credential but is **not** in `CREDENTIAL_KEYS`, because that list is
+> typed against the secrets bundle and this value does not come from there. It is not
+> redacted by key name — the protection is that
+> [`src/notify/smtp.ts`](../src/notify/smtp.ts) reports `error.name` and never the message,
+> so a failed login cannot carry the password into a log. Anything that formats an SMTP error
+> in full would break that, which is why nothing does.
+
 The four marked **credential** are also the four in `CREDENTIAL_KEYS` — they are redacted
 from every log line and are the ones the rotation procedures below apply to.
+
+> `WL_AUTH_HOST` and `WL_API_HOST` are **different hosts**. WellnessLiving serves
+> `/oauth2/token` from the auth host only — sending the token request to the data host
+> returns an HTTP 403 challenge page, not a token (verified 18 Aug 2026). Both values come
+> from the WL Integrations team; the Postman collection they ship carries them as `auth_url`
+> and `proxy_url` respectively.
 
 > `SUPABASE_SERVICE_ROLE_KEY` bypasses row-level security. Sync workers only. It must never
 > reach the portal, a browser bundle, or any client-side code.
@@ -51,6 +105,7 @@ the stored secret are byte-identical documents:
   "environment": "prod",
   "wellnessliving": {
     "host": "...",
+    "authHost": "...",
     "idRegion": 1,
     "kBusiness": "...",
     "clientId": "...",
@@ -121,6 +176,10 @@ APP_ENV=dev npm start -- healthcheck
 `config:show` prints credentials as `abc...yz (len 219)`. Use the length and the first three
 characters to confirm a rotation took effect without ever printing the value.
 
+`config:show` also reports `smtpHost` as `set`/`missing` and `smtpPassword` as a fingerprint,
+so "are failure emails switched on in this environment, and is it the password I just
+rotated" is answerable without opening the dashboard.
+
 Exit codes: `0` all good · `1` a check failed or startup failed · `2` bad CLI usage.
 
 ---
@@ -178,11 +237,34 @@ WellnessLiving issues these; they cannot be self-rotated.
 Schedule: annually, or immediately on suspected exposure. Because rotation depends on a
 third party, treat exposure as an incident — see §5.
 
-### 4d. Environment coordinates (`WL_API_HOST`, `WL_ID_REGION`, `WL_K_BUSINESS`, `SUPABASE_URL`, `GHL_LOCATION_ID`)
+### 4d. Environment coordinates (`WL_API_HOST`, `WL_AUTH_HOST`, `WL_ID_REGION`, `WL_K_BUSINESS`, `SUPABASE_URL`, `GHL_LOCATION_ID`)
 
 Not rotatable, but they do change — a new WL region, a rebuilt Supabase project, a moved GHL
 location. Update the bundle and restart. No code change is required or permitted; the
 environment-switch test in `tests/config.test.ts` exists to keep it that way.
+
+### 4e. `SMTP_PASSWORD`
+
+A Google App Password, not the account password — the account password will not authenticate
+against `smtp.gmail.com` at all once 2-Step Verification is on, and 2-Step Verification is a
+precondition for App Passwords existing.
+
+1. https://myaccount.google.com/apppasswords — the page is reachable only by direct URL; no
+   link to it appears in the account settings tree.
+2. Create a new password (name it for the service, e.g. `royalty-sync`). Copy it out of the
+   dialog immediately — it is shown once and cannot be retrieved afterwards.
+3. Set it in **both** places, stripped of the spaces the dialog inserts: Vercel
+   (`vercel env add SMTP_PASSWORD production,preview`) and any local `.env`.
+4. Verify before deleting the old one — `transporter.verify()` authenticates without sending
+   mail, so the check costs nobody an inbox item.
+5. Revoke the previous entry on the same page.
+
+An App Password grants **full access to the Google account**, not merely SMTP. Treat an
+exposed one exactly as §5 describes, and note that revoking is instant and free — when in
+doubt, revoke and re-issue rather than reasoning about whether the exposure mattered.
+
+Schedule: every 90 days, and immediately if it appeared in a log, a ticket, a screen share
+or a screenshot.
 
 ---
 
@@ -212,3 +294,411 @@ gitleaks protect --staged --config .gitleaks.toml --redact
 
 Wire it into `.git/hooks/pre-commit` if you want it automatic. The hook is local and
 intentionally not committed — CI is the enforcement point.
+
+---
+
+## 7. The scheduled jobs
+
+Nine cron entries, all in [`vercel.json`](../vercel.json). Nothing else is
+scheduled.
+
+Six of them are **named jobs** through one route, `/api/sync-job?job=<name>`.
+Each one owns a group of passes and runs on its own clock, so a slow group
+cannot push the others out of a single invocation's budget. The other three are
+the full sweep, the monthly re-read, and the alert sweep.
+
+| Cron (UTC) | Route | Job | What it does |
+| --- | --- | --- | --- |
+| `0 1 * * *` | `/api/sync-job?job=schedule-window` | `schedule-window` | The class/appointment schedule, −7 / +30 days |
+| `0 2 * * *` | `/api/sync-job?job=catalogue` | `catalogue` | Locations, shop categories, promotions, service categories, services |
+| `30 2 * * *` | `/api/sync-job?job=clients` | `clients` | Every client WL lists, plus the GoHighLevel match |
+| `45 2 * * *` | `/api/sync-job?job=teachers` | `teachers` | Staff, their teaching flags and services |
+| `0 3 * * *` | `/api/sync-job?job=attendance-close` | `attendance-close` | Who actually turned up, for sessions that have ended |
+| `30 3 * * *` | `/api/sync-job?job=purchases` | `purchases` | Purchases, receipts, per-item detail |
+| `0 4 * * *` | `/api/wellness-sync-all` | — | Every pass in dependency order — the safety net under the six above |
+| `0 5 1 * *` | `/api/wellness-sync-historical` | — | Re-reads the last `SYNC_MONTHLY_LOOKBACK_MONTHS` calendar months, or an explicitly requested range |
+| `0 */6 * * *` | `/api/alerts` | — | The alert sweep: overdue jobs, parked backlog, review items past 48h. Sends nothing when there is nothing |
+| `0 */6 * * *` | `/api/alerts` | — | Mails standing conditions: overdue jobs, the parked backlog, records flagged for review. Sends nothing when there is nothing |
+
+Vercel Cron sends `CRON_SECRET` as the bearer automatically. No route can be
+reached without a token. `/api/alerts` accepts `SYNC_TRIGGER_TOKEN` or
+`CRON_SECRET` but deliberately **not** `HEALTHCHECK_TOKEN` — a token handed out
+for polling a status page should not be able to mail anybody.
+
+**Why the alert sweep is its own cron and not part of a sync.** The sync routes
+already mail a digest of what died during their own run, which covers failures.
+It cannot cover the failure this one exists for: if the thing that stops running
+*is* the sync, an alert hosted inside the sync never executes — the one check
+designed to notice that nothing happened is the check that does not happen. Its
+own function on its own schedule is what breaks that circle. It runs every six
+hours rather than daily because a condition it reports is still true the next
+time somebody looks, so re-checking is cheap and a missed sweep is not a gap.
+
+**What it still cannot catch.** If the deployment itself is gone, paused, or
+never received these crons, this function does not run either and nobody is
+told. No internal check can cover that — something outside the platform has to
+notice the platform. An external uptime monitor against `/api/health` is the
+other half, and it is not in this repository because it is not code. **Open —
+see section 9.**
+
+**The clock is the dependency order.** `schedule-window` runs at 01:00 and
+`catalogue` at 02:00 so sessions reference services that are already current;
+that hour is the whole reason they are two jobs and not one. Inside a group the
+listed order is also dependency order — the catalogue ends with `service_sync`
+because that pass writes authoritative titles over the stubs the purchase writer
+left, and running it first would put the stub over the real thing.
+
+**A job that overlaps itself stands down.** Every pass takes its job's lease
+(migration 0035), so a run still going when the next one fires does not double
+up — the second one reports `skipped` for those passes and carries on. Two jobs
+that share a pass behave the same way. `skipped` in a cron log is therefore not
+a failure.
+
+To see the jobs the deployment actually knows about, ask it — the list comes
+from `JOB_GROUPS`, not from this table:
+
+```bash
+curl https://<deployment>/api/sync-job -H "Authorization: Bearer $SYNC_TRIGGER_TOKEN"
+```
+
+Running one by hand is the same call with `?job=`:
+
+```bash
+curl -X POST "https://<deployment>/api/sync-job?job=purchases" -H "Authorization: Bearer $SYNC_TRIGGER_TOKEN"
+```
+
+### What each pass does, and how long it takes
+
+Measured over 26,516 `sync_run` rows, 31 Aug – 1 Sep 2026. These are steady-state
+durations against an already-populated database — a first backfill is very much
+longer, and the `max` column is where those show up.
+
+Grouped by the job that owns each pass, in the order that job runs them.
+
+| Job | Pass | Reads | median | p90 | observed max |
+|---|---|---|---|---|---|
+| `schedule-window` | `schedule_sync` | class schedule, −7 / +30 days | 2.8s | 3.1s | 8.3s |
+| `catalogue` | `location_sync` | locations | 2.5s | 2.8s | 7.3s |
+| `catalogue` | `shop_category_sync` | shop categories | 2.5s | 2.9s | 6.9s |
+| `catalogue` | `promotion_sync` | promotions, per location | 2.8s | 3.1s | 16.9s |
+| `catalogue` | `service_category_sync` | bookable service categories | 2.8s | 3.1s | 8.7s |
+| `catalogue` | `service_sync` | bookable service catalogue — **last, on purpose** | 2.8s | 3.1s | 8.3s |
+| `clients` | `login_type_sync` | membership/login types — **first, on purpose** | 2.5s | 2.9s | 8.7s |
+| `clients` | `client_list_sync` | every activated client | 2.5s | 2.8s | 41.2s |
+| `clients` | `profile_sync` | contact detail, per person | 3.4s | 3.8s | 6.0m |
+| `clients` | `ghl_match_sync` | GoHighLevel contact matching | 2.0s | 2.2s | 7.3m |
+| `teachers` | `staff_sync` | staff → `person` | 2.5s | 2.8s | 7.8s |
+| `attendance-close` | `client_session_sync` | appointments | 3.4s | 3.8s | **80.3m** |
+| `attendance-close` | `attendance_sync` | attendance, **every** session | **31.1s** | 33.6s | 58.7m |
+| `purchases` | `purchase_sync` | purchases, per person | 3.4s | 3.8s | 7.3m |
+| `purchases` | `receipt_sync` | the money on each purchase | 2.0s | 2.4s | **90.4m** |
+| `purchases` | `purchase_element_sync` | item detail, recipient, membership state | **17.3s** | 18.9s | 17.4m |
+
+`login_type_sync` runs before the client list because the teacher view joins on
+`is_teacher_type` — without it nobody is a teacher, however well everything else
+synced.
+
+`historical_schedule_sync` belongs to no group — it has its own cron and its own
+route. One month chunk measured at 9.3s.
+
+### What "expected runtime" means here
+
+`FUNCTION_BUDGET_MS` stops a run **starting** new passes at 50s, under Vercel's
+60s ceiling. So the number that matters per job is the sum of its medians:
+
+| Job | Median sum | Fits one invocation? |
+|---|---|---|
+| `schedule-window` | ~3s | Yes |
+| `catalogue` | ~13s | Yes |
+| `clients` | ~10s | Yes |
+| `teachers` | ~3s | Yes |
+| `attendance-close` | ~35s | Yes, with little room |
+| `purchases` | ~23s | Yes |
+| `/api/wellness-sync-all` | ~85s | **No — always `partial`** |
+
+That table is the point of splitting the schedule into six jobs. The full sweep
+at 04:00 sums to roughly 85 seconds against a 50-second budget, so it reports
+`partial` with its trailing passes marked `ran: false` — which is safe, because
+the queue is the cursor, but on its own it meant the trailing passes fell a day
+behind every time a run was full. Each named job now fits inside one invocation,
+and `/api/wellness-sync-all` is kept as the safety net that catches anything a
+named job missed rather than the thing the system depends on.
+
+A job taking materially longer than its median sum, repeatedly, is the signal
+worth acting on — not a single `partial`. `attendance-close` is the one to watch:
+`attendance_sync` re-seeds from **every** session row rather than a recent
+window, so its cost grows with the schedule's history, not with what changed, and
+it is the first job that will outgrow the budget.
+
+Each group also declares `expectedEveryHours` in
+[`src/sync/jobs.ts`](../src/sync/jobs.ts) — 24 for all six — and the overdue
+alert compares that against `last_clean_completion_at`. If you change a cron in
+`vercel.json`, change that number in the same commit; nothing at runtime can read
+the schedule, so the two are kept in step by a test, not by inference.
+
+### Why the alert sweep has its own cron
+
+The sync routes already mail a digest of what died during their own run, and
+that covers failures. It cannot cover the failure the sweep exists for: if the
+thing that stops running IS the sync, an alert hosted inside the sync never
+executes. The check designed to notice that nothing happened would be the check
+that does not happen. Its own function on its own schedule breaks that circle.
+
+It is scoped differently from the sync's own call, deliberately. The sync passes
+`since` so it mails about items that died in that run and does not re-mail
+yesterday's news. The sweep passes none, because it reports **conditions** and
+not events - a job overdue against its cadence, a parked backlog past the
+threshold, a record flagged for review beyond 48 hours - and a condition is
+still true the next time somebody looks.
+
+`HEALTHCHECK_TOKEN` is **not** accepted here, though it is accepted by
+`/api/health` and `/api/sync-status`. Sending mail is an action, and a token
+handed out so somebody can poll a status page should not be able to mail people.
+
+> **What no internal check can catch.** If the deployment is gone, paused, or
+> never received these crons, the sweep does not run either and nobody is told.
+> Something outside the platform has to notice the platform. An external uptime
+> monitor against `/api/health` is the other half of this, and it is not in the
+> repository because it is not code. **It is not set up yet — see section 9.**
+
+Prove the channel works, on demand, without waiting for something to break:
+
+```bash
+APP_ENV=prod npm start -- alert:test
+```
+
+That sends the real digest built from the real database, so it exercises reads,
+wording and SMTP together. It exits 1 if nothing was sent.
+
+### Is it healthy right now
+
+```bash
+node scripts/queue-status.mjs
+```
+
+or, with only a browser and the database:
+
+```sql
+select * from sync_queue_progress where k_business = '<k_business>' order by work_type;
+select job_name, state, last_seen_at, last_clean_completion_at
+  from sync_job_state where k_business = '<k_business>' order by job_name;
+```
+
+`pct_done = 100` on every row with `pending = 0` and `in_progress = 0` means the
+queue has drained. `last_clean_completion_at` moves **only** on a clean drain, so
+a stale value there with a recent `last_seen_at` means the job is running but has
+not finished cleanly in a while.
+
+---
+
+## 8. Recovery procedures
+
+Read section 7 first: most of what looks like a failure is a budgeted run doing
+exactly what it was built to do. In particular, `partial` from
+`/api/wellness-sync-all` is expected every night, and `skipped` means a lease
+was held by a run still going — neither is an incident.
+
+### 8a. A run reported `partial`, or the queue has items outstanding
+
+**Usually: do nothing.** `partial` is the normal way a long run ends. The queue is
+durable, the next invocation resumes from exactly what was left, and no work is
+lost. Act only if `pending` has not fallen across several consecutive runs.
+
+To push it along without waiting for the schedule:
+
+```bash
+curl -X POST https://<deployment>/api/wellness-sync-all -H "Authorization: Bearer $SYNC_TRIGGER_TOKEN"
+```
+
+Or push just the job that is behind, which is cheaper and does not re-touch
+everything else:
+
+```bash
+curl -X POST "https://<deployment>/api/sync-job?job=<name>" -H "Authorization: Bearer $SYNC_TRIGGER_TOKEN"
+```
+
+Repeat until `/api/sync-status` reports `"complete": true`. Each call does one
+budget's worth. For a large backfill, run it locally instead — there is no
+50-second ceiling outside the platform:
+
+```bash
+APP_ENV=prod npm start -- sync:full-parallel
+```
+
+### 8b. Triggering the historical load
+
+The monthly route re-reads the last two months on its own. To load a **specific**
+range — a year of history, or one month that needs re-checking — ask for it, and
+that request takes priority over the routine re-read.
+
+```bash
+curl -X POST https://<deployment>/api/wellness-sync-historical -H "Authorization: Bearer $SYNC_TRIGGER_TOKEN" -H "Content-Type: application/json" -d '{"start":"2024-01-01","end":"2024-12-31"}'
+```
+
+or set the window and let the next run pick it up:
+
+```bash
+node scripts/window.mjs --job=historical_schedule_sync --start=2024-01-01 --end=2024-12-31 --apply
+```
+
+The range is cut into calendar months, one queue item each, so an interrupted run
+resumes at the month it reached rather than restarting. The request clears itself
+once the job drains cleanly — it is an instruction, not a setting.
+
+To do the same for **appointments** rather than classes, point at
+`client_session_sync`. A start with no end means "from there to now":
+
+```bash
+node scripts/window.mjs --job=client_session_sync --start=2024-01-01 --apply
+```
+
+### 8c. Reading the parked queue
+
+An item that exhausted its three attempts (1, 5 and 25 minutes apart) is parked in
+state `dead` and will not be retried by anything.
+
+```bash
+node scripts/dead-items.mjs
+```
+
+Add `--work-type=purchase_receipt` to narrow it, or `--verbose` for the full error
+text. Without a clone:
+
+```sql
+select work_type, last_error_sid, last_http_status, count(*)
+  from sync_queue
+ where k_business = '<k_business>' and state = 'dead'
+ group by 1, 2, 3 order by 4 desc;
+```
+
+Read `last_error_sid` before deciding anything. `id-nx` means WellnessLiving says
+the record does not exist — almost always an upstream deletion, and re-queueing it
+just burns three more attempts every run.
+
+### 8d. Re-queueing
+
+```bash
+node scripts/requeue.mjs --work-type=user_profile
+```
+
+That is a dry run: it prints what it would change and exits. Add `--apply` to make
+it happen. `--sid=id-nx --invert` re-queues everything except the deletions.
+
+Without a clone:
+
+```sql
+update sync_queue
+   set state = 'pending', attempt_count = 0, next_attempt_at = now()
+ where k_business = '<k_business>'
+   and state = 'dead'
+   and work_type = 'user_profile'
+   and coalesce(last_error_sid, '') <> 'id-nx';
+```
+
+The error columns are deliberately left in place: if the item dies again, the old
+error still on the row is what shows it is the same failure and not a new one.
+
+### 8e. A run died and left its items claimed
+
+A process killed mid-item leaves rows in `in_progress` holding a lease. This
+recovers on its own — `sync_run.heartbeat_at` and the `abandoned` state (migration
+`0033`) retire a run whose process died, and the lease expires. Wait one run cycle
+before intervening.
+
+If it is genuinely stuck, release the claims:
+
+```sql
+update sync_queue
+   set state = 'pending', next_attempt_at = now()
+ where k_business = '<k_business>'
+   and state = 'in_progress'
+   and updated_at < now() - interval '1 hour';
+```
+
+Do this only when no run is active — check `sync_job_state.state` first. Releasing
+a lease a live run still holds means two workers on the same item; the writes are
+upserts so the data survives, but the work is done twice.
+
+### 8f. Forcing a full re-read from the beginning
+
+The appointment pass decides between "full history" and "last three days" by
+whether it has ever drained cleanly. Clearing the watermark sends it back to a
+full backfill:
+
+```sql
+update sync_job_state
+   set last_clean_completion_at = null
+ where k_business = '<k_business>' and job_name = 'client_session_sync';
+```
+
+Expect hours, not minutes — the observed first backfill was 80 minutes. Run it
+locally rather than through the deployed route.
+
+### 8g. Nothing works and the credentials are suspect
+
+```bash
+APP_ENV=prod npm start -- config:check
+```
+
+That makes no network calls and proves every key is present and well-formed. Then
+`config:show` for what actually resolved, credentials fingerprinted, and
+`healthcheck` for whether every dependency answers.
+
+A 401 or 403 in `last_http_status` across many items at once is a credential
+problem, not a data problem. Go to section 4.
+
+---
+
+## 9. Data traps and open questions
+
+What is unresolved, and which numbers are provisional. Anyone inheriting this
+needs this section more than any other.
+
+### Traps that will bite
+
+| Trap | What happens | Where |
+|---|---|---|
+| WL answers **HTTP 200 for errors** | The failure is inside the body. Every call must assert `status === "ok"` — a structural test fails the build if any module outside the client calls `fetch` | [WL-API-NOTES.md](WL-API-NOTES.md) |
+| `dt_date` needs a time component | `2026-08-19` is rejected; `2026-08-19 00:00:00` works. Silent | [WL-API-NOTES.md](WL-API-NOTES.md) |
+| …except where it must **not** have one | The class-schedule endpoint wants bare dates. The two are not interchangeable | `src/sync/pass.ts` |
+| WL keys are **text**, never integers | A leading zero is lost as an integer, and the record is then unfindable | [DATA-MODEL.md](DATA-MODEL.md) |
+| Money is `numeric(12,2)`, never float | WL sends `"280.00"` as a string. Float drift in a royalty figure is not recoverable | [DATA-MODEL.md](DATA-MODEL.md) |
+| List endpoints return **keyed objects**, not arrays | Iterate with `Object.values()`. Two endpoints — promotions and shop categories — return real arrays instead | [WL-API-NOTES.md](WL-API-NOTES.md) |
+| Hosts never appear in source, logs or records | Enforced by `tests/no-hardcoded-config.test.ts` | [CLAUDE.md](../CLAUDE.md) |
+
+### Open with WellnessLiving
+
+| Question | Status | What it blocks |
+|---|---|---|
+| A way to enumerate **all clients** | **Open.** No list endpoint; search requires a term. People are discovered through staff records, purchases and attendance | Coverage is everyone who has transacted, **not** the full client base. Any client count is a floor, not a total |
+| **Staff pay amounts** | **Open.** WL returns which pay rate applies, never the amount, and no documented endpoint resolves it | Revenue per class is available. **Profit per class is not.** Any margin figure is unavailable, not zero |
+
+Before recording a new WL blocker, check the parameter names first. Two of the
+four originally recorded turned out to be our own mistakes — `dt_date` versus
+`dt_date_local`, and `k_class_period` versus `k_appointment`.
+
+### Open with the client
+
+| Question | Status |
+|---|---|
+| Which GoHighLevel custom fields may be reported | **Open.** `ghl_custom_field.is_reported` defaults to false, so nothing reaches a client record until somebody says it should. Confirming the list is an `UPDATE`, not a migration |
+| Raw payload retention | **Open.** Every response is kept indefinitely. No retention period has been agreed |
+
+### Open on our side
+
+| Question | Status |
+|---|---|
+| One cron per day against an ~85s pass | **Closed**, migration 0035 / six named jobs. The schedule is now six jobs that each fit one 50s invocation, with `/api/wellness-sync-all` kept as the safety net. `attendance-close` (~35s of median) is the one with least headroom and will need splitting next — see section 7 |
+| No external uptime monitor | **Open.** `/api/alerts` notices a job that stopped running, but nothing notices the deployment itself being paused, deleted or never given these crons — in that case the alert sweep does not run either and nobody is told. Needs a monitor outside the platform polling `/api/health`; it is configuration, not code, so it cannot live in this repository |
+| No external uptime monitor | **Open.** Every alert in this system runs inside the system. If the deployment is paused or the crons never registered, nothing runs and nothing is sent. An external monitor pinging `/api/health` is the only thing that catches that |
+| `sync_job_state` page cursor | Built, unused. Waits on a paginated WL endpoint |
+| Royalty calculation itself | Not started. The inputs are being collected; the calculation is the next piece of work |
+
+### Numbers that are provisional
+
+Say so when reporting these:
+
+- **Any client count** — bounded by who we can enumerate, not by who exists
+- **Any margin or profit figure** — staff pay amounts are unavailable
+- **Service names** — 9 services are in the bookable catalogue against ~200 referenced by transactions. The rest are stubs named from the purchase that referenced them, and are countable via the `unresolved_service` view
+- **Anything older than the loaded history** — the daily run covers a recent window; older periods exist only if they were deliberately loaded

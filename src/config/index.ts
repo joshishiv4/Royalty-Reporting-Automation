@@ -65,8 +65,18 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
   const runtime = runtimeOptionsSchema.safeParse({
     LOG_LEVEL: processEnv.LOG_LEVEL,
     WL_MAX_CONCURRENCY: processEnv.WL_MAX_CONCURRENCY,
-    WL_REQUESTS_PER_SECOND: processEnv.WL_REQUESTS_PER_SECOND,
     HTTP_TIMEOUT_MS: processEnv.HTTP_TIMEOUT_MS,
+    LOG_TO_FILE: processEnv.LOG_TO_FILE,
+    LOG_DIR: processEnv.LOG_DIR,
+    SYNC_HISTORY_START: processEnv.SYNC_HISTORY_START,
+    SYNC_MONTHLY_LOOKBACK_MONTHS: processEnv.SYNC_MONTHLY_LOOKBACK_MONTHS,
+    SYNC_DAILY_LOOKBACK_DAYS: processEnv.SYNC_DAILY_LOOKBACK_DAYS,
+    SMTP_HOST: processEnv.SMTP_HOST,
+    SMTP_PORT: processEnv.SMTP_PORT,
+    SMTP_USER: processEnv.SMTP_USER,
+    SMTP_PASSWORD: processEnv.SMTP_PASSWORD,
+    SMTP_FROM: processEnv.SMTP_FROM,
+    SMTP_TO: processEnv.SMTP_TO,
   });
   if (!runtime.success) {
     throw new ConfigValidationError(formatIssues(runtime.error));
@@ -79,6 +89,8 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
     wl: Object.freeze({
       host: s.WL_API_HOST,
       baseUrl: `https://${s.WL_API_HOST}`,
+      authHost: s.WL_AUTH_HOST,
+      authBaseUrl: `https://${s.WL_AUTH_HOST}`,
       idRegion: s.WL_ID_REGION,
       kBusiness: s.WL_K_BUSINESS,
       clientId: s.WL_CLIENT_ID,
@@ -89,14 +101,31 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
       serviceRoleKey: s.SUPABASE_SERVICE_ROLE_KEY,
     }),
     ghl: Object.freeze({
+      host: s.GHL_API_HOST,
+      baseUrl: `https://${s.GHL_API_HOST}`,
+      version: s.GHL_API_VERSION,
       apiToken: s.GHL_API_TOKEN,
       locationId: s.GHL_LOCATION_ID,
     }),
     runtime: Object.freeze({
       logLevel: runtime.data.LOG_LEVEL,
       maxConcurrency: runtime.data.WL_MAX_CONCURRENCY,
-      requestsPerSecond: runtime.data.WL_REQUESTS_PER_SECOND,
       httpTimeoutMs: runtime.data.HTTP_TIMEOUT_MS,
+      logToFile: runtime.data.LOG_TO_FILE,
+      logDir: runtime.data.LOG_DIR,
+    }),
+    sync: Object.freeze({
+      historyStart: runtime.data.SYNC_HISTORY_START,
+      dailyLookbackDays: runtime.data.SYNC_DAILY_LOOKBACK_DAYS,
+      monthlyLookbackMonths: runtime.data.SYNC_MONTHLY_LOOKBACK_MONTHS,
+    }),
+    smtp: Object.freeze({
+      host: runtime.data.SMTP_HOST ?? null,
+      port: runtime.data.SMTP_PORT ?? 587,
+      user: runtime.data.SMTP_USER ?? '',
+      password: runtime.data.SMTP_PASSWORD ?? '',
+      from: runtime.data.SMTP_FROM ?? '',
+      to: runtime.data.SMTP_TO,
     }),
   });
 }

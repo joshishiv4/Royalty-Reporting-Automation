@@ -95,6 +95,11 @@ describe('createLogger', () => {
     const lines: string[] = [];
     const logger = createLogger({ level: 'info', write: (line) => lines.push(line) });
     logger.info('hello', { n: 1 });
-    expect(JSON.parse(lines[0] ?? '')).toEqual({ level: 'info', msg: 'hello', n: 1 });
+
+    // `time` is stamped on every line: a log file without one is far less use
+    // when reconstructing a failed overnight run.
+    const { time, ...rest } = JSON.parse(lines[0] ?? '') as Record<string, unknown>;
+    expect(rest).toEqual({ level: 'info', msg: 'hello', n: 1 });
+    expect(Number.isNaN(Date.parse(String(time)))).toBe(false);
   });
 });
