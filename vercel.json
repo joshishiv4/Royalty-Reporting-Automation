@@ -62,7 +62,7 @@
     },
     {
       "path": "/api/alerts",
-      "schedule": "0 */6 * * *"
+      "schedule": "0 6 * * *"
     }
   ],
   "headers": [
