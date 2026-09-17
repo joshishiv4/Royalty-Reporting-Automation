@@ -17,6 +17,8 @@ import {
   runServiceSyncPass,
   runShopCategorySyncPass,
   runStaffSyncPass,
+  runTransactionItemSyncPass,
+  runTransactionPaymentSyncPass,
 } from './pass.js';
 
 /**
@@ -121,6 +123,29 @@ export const JOB_GROUPS: readonly JobGroup[] = [
       { job: 'purchase_sync', run: runPurchaseSyncPass },
       { job: 'receipt_sync', run: runReceiptSyncPass },
       { job: 'purchase_element_sync', run: runPurchaseElementSyncPass },
+    ],
+  },
+  {
+    name: 'transactions',
+    expectedEveryHours: 24,
+    summary:
+      "Every payment and every paid item, from WellnessLiving's own two transaction reports.",
+    /**
+     * ITS OWN JOB, NOT PART OF 'purchases', and the reason is the clock rather
+     * than tidiness. These two passes read an ASYNCHRONOUS report: each
+     * invocation either asks WL to build one, polls it, or reads a page, and
+     * defers in between. Put them behind the three purchase passes and they
+     * would inherit whatever is left of a budget those passes have already
+     * spent - which on a busy night is nothing, so the report would advance a
+     * page a day.
+     *
+     * The item view runs first. Nothing depends on the order, but it is the one
+     * that carries the revenue category, so on a night where only one of them
+     * gets through it is the one worth having.
+     */
+    passes: [
+      { job: 'tx_item_sync', run: runTransactionItemSyncPass },
+      { job: 'tx_payment_sync', run: runTransactionPaymentSyncPass },
     ],
   },
 ];
