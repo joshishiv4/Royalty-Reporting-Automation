@@ -187,6 +187,8 @@ describe('runFullSyncPassParallel', () => {
         'service_sync',
         'shop_category_sync',
         'staff_sync',
+        'tx_item_sync',
+        'tx_payment_sync',
       ].sort(),
     );
     expect(summary.passes.every((p) => p.ran)).toBe(true);
@@ -268,7 +270,7 @@ describe('runFullSyncPassParallel', () => {
     const summary = await runFullSyncPassParallel(config, { wl, db, now: () => 0 });
 
     // Every pass either ok or failed - none should be missing from the list.
-    expect(summary.passes).toHaveLength(16);
+    expect(summary.passes).toHaveLength(18);
     expect(summary.state).toBe('failed');
     const staff = summary.passes.find((p) => p.job === 'staff_sync');
     expect(staff?.summary?.state).toBe('failed');

@@ -131,7 +131,7 @@ All GET unless noted. `id_region` and `k_business` are added by the client.
 | `/v1/collector/debt/list` | `subscription-access` | not on this plan |
 | `/v1/collector/debt/transaction` | `subscription-access` | not on this plan |
 | `/v1/login/attendance/list` with an appointment key sent as `k_class_period` | `id-nx` | **Our bug, not a limit.** Send it as `k_appointment` and it works — see §"Attendance is NOT class-only" |
-| `/v1/report/query` | `method-nx` on GET | POST only |
+| `/v1/report/query` | `method-nx` on GET | POST only — it works, and three reports are read through it (689, 739, 799) |
 | `/v1/report/data` | `report-nx` | needs a report sid |
 | `POST` on most read endpoints | `method-nx` | GET only |
 
@@ -1004,3 +1004,96 @@ filters, and a batch one that works off a date range without them — and that t
 batch one is right for a bulk pull. We call `cid_report` **689**, which requires
 `o_date` and accepts empty filters, so it behaves like the batch one. That is
 inference, not confirmation.
+
+
+## The two transaction reports — cid 739 and 799
+
+Measured live against dev on **17 Sep 2026**, after WL's integrations team named
+them. Both work. `POST /v1/report/query`, the same endpoint as the client list.
+
+| | 739 "All Transactions (Item View)" | 799 "All Transactions (Payment View)" |
+|---|---|---|
+| Fields in `a_field` | **141** | **140** |
+| Rows, 2025 only | 1,934 | 2,160 |
+| Rows, `1980-01-01 .. today` | **10,913** | **10,196** |
+| Pages at `i_limit` 1000 | 11 | 11 |
+| Build time, full history | **90s** (27 polls) | ~60s |
+| Build time, a 7-day window | **6s** (2 polls) | — |
+| Page read time | 2–4s | **8–11s** |
+| Earliest row | 2020-09-14 | 2021-06-09 |
+
+### `i_limit` 1000 works, and `s_report` is stable across pages
+
+Eleven pages of 1000 on each report returned the **same `s_report`** hash
+throughout — which is what proves paging reads one build rather than restarting
+it. 500 works too (22 pages on 739). `s_report` is a hash of the filter:
+`7dd911f0…` for 2025 on 739, a different hash for a different window.
+
+### The filter is ONE key, and it is mandatory
+
+```
+json_filter { "o_date": { "dl_start": "1980-01-01", "dl_end": "2026-09-17" } }
+```
+
+* Omit `o_date` → `end-date-not-set`. There is no "everything" mode.
+* `id_report_date` is **not** required here. On the client list it is, and it
+  means CLIENT SINCE date; on these it is the transaction date and needs no code.
+* **A bare `YYYY-MM-DD` is accepted.** This is the opposite of the `dt_date`
+  trap: `dl_` is a local date and wants no time component.
+* `json_filter` may be sent as an **object or a JSON string** — both produced the
+  identical `s_report`, so WL normalises it. We send the object.
+
+### It filters the TRANSACTION date, not the purchase date
+
+One 799 row: `dtu_purchase_start` 2024-04-18, `o_date.dtu_date` 2025-05-13, and
+it appeared in a 2025-only window. So a windowed daily read means what it says,
+and a payment for an old purchase is not missed.
+
+### ⚠ A QUEUED BUILD RETURNS ROWS — and the client list does not
+
+This is the one that would have cost a week. On the client list (cid 689), a
+report still building answers `a_row: []`; the danger there is reading an empty
+list as "no clients". On **739 and 799 a queued build answered with 50 rows** —
+the *previous* build's.
+
+So on these reports "the response has rows" is evidence of nothing at all. A
+reader that trusted it would store last week's money as this week's and report a
+clean run. Readiness is still the two-signal test — `id_report_status = 3` **and**
+`dtu_complete` set — and `src/wl/report.ts` now refuses outright to return a
+page read from an unfinished build.
+
+The envelope also carries `a_stale` and `a_warning`; both were empty arrays on
+every observed response, including the queued ones, so neither is usable as the
+staleness signal.
+
+### WL publishes no unique row key for either report
+
+`k_pay_transaction` is **null on 10,838 of 10,913** item-view rows. Every
+candidate key built from the columns WL does publish collapses a sale row
+together with its later refund row — same item key, opposite sign, different
+date. The measurement table and what we do instead are in
+[DATA-MODEL.md](DATA-MODEL.md) ("The row identity is a hash").
+
+Also worth knowing: **649 rows of the payment report are byte-identical to
+another row** across all 140 fields, and half of the repeat groups are
+non-adjacent in report order — so they cannot be separated by sorting either.
+
+### Values arrive as WL's usual strings, with one extra shape
+
+Money is quoted and sometimes four-decimal: `"239.00"`, `"239.0000"`,
+`"0.0000"`, and negative on a refund (`"-500.00"`). Keys are quoted
+(`"180910254"`). And sort helper fields are **NUL-padded** —
+`"alison steele\u0000"` — which Postgres rejects inside `text`, so the writer
+strips it.
+
+The item title arrives nested rather than as a plain column:
+`o_purchase_item_title_link.a_item[0].text_title`, e.g. "Monthly Subscription -
+45 Minutes".
+
+### What is still unknown about these two
+
+* Whether a report exists that returns **every** purchase item, not only the ones
+  a transaction touched (10,913 against 20,561 stored purchase items).
+* Whether 1000 is the maximum `i_limit`, or a larger page is allowed.
+* Whether there is a limit on concurrent report builds, or a rate limit on
+  `/v1/report/query` — asked, not yet answered.
