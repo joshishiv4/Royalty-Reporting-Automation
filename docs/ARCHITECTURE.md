@@ -79,12 +79,12 @@ correctly does not start.
 | Trace ids | [`src/wl/trace.ts`](../src/wl/trace.ts) |
 | One sync pass | [`src/wl/sync.ts`](../src/wl/sync.ts) |
 | Auth reachability probe | [`src/wl/health.ts`](../src/wl/health.ts) |
-| The client-list report: single-shot request / poll / read (non-blocking — the pass polls across queue invocations, not in a sleep loop), the mandatory date window, paging | [`src/wl/report.ts`](../src/wl/report.ts) |
+| Any WL report (`ReportSpec`: cid, page size, sort, filter): single-shot request / poll / read, non-blocking — the pass polls across queue invocations, not in a sleep loop — plus the two-signal completion test and the refusal to read a page from an unfinished build | [`src/wl/report.ts`](../src/wl/report.ts) |
 | Client-list rows → person (mapped by field NAME, never position) | [`src/sync/clients.ts`](../src/sync/clients.ts) |
 | Writing WL responses to Supabase (raw_wl → typed rows → raw_link) | [`src/sync/writer.ts`](../src/sync/writer.ts) |
 | Writing GHL responses to Supabase (raw_ghl), and the recorder that makes every search store itself | [`src/sync/ghl-writer.ts`](../src/sync/ghl-writer.ts) |
 | Reading how far the sync has got, from the queue rather than from a run summary | [`src/sync/progress.ts`](../src/sync/progress.ts) |
-| The six scheduled jobs — which passes each one runs, and in what order | [`src/sync/jobs.ts`](../src/sync/jobs.ts) |
+| The seven scheduled jobs — which passes each one runs, and in what order | [`src/sync/jobs.ts`](../src/sync/jobs.ts) |
 | Jobs that should have run and did not — the alert nothing else can produce | [`src/notify/overdue.ts`](../src/notify/overdue.ts) |
 | Writing purchases (list → purchase + purchase_item, stub FKs) | [`src/sync/purchases.ts`](../src/sync/purchases.ts) |
 | Enriching purchases with money (receipt → totals, payments, credit) | [`src/sync/receipts.ts`](../src/sync/receipts.ts) |
@@ -104,7 +104,9 @@ correctly does not start.
 | Service catalogue + categories (appointment/book/service/{list,category} → service, service_category; marks is_resolved) | [`src/sync/services.ts`](../src/sync/services.ts) |
 | The durable sync_queue loop (claim, settle, requeue, dead-letter; claims and processes the batch as a bounded concurrent pool; `outcomeFromError` requeues a transient DB error instead of failing the pass) | [`src/sync/queue.ts`](../src/sync/queue.ts) |
 | One bounded sync pass per job, `runFullSyncPass` (sequential FK order, one token, one budget), and `runFullSyncPassParallel` (three dependency waves, seed-once-per-pass, one shared token — the local backfill shape) | [`src/sync/pass.ts`](../src/sync/pass.ts) |
-| Per-job lifecycle + clean-completion watermark, and the async-report cursor (handle/poll-attempt/deadline) the client-list poller resumes from (sync_job_state) | [`src/sync/job-state.ts`](../src/sync/job-state.ts) |
+| Per-job lifecycle + clean-completion watermark, and the async-report cursor — handle, poll attempt, deadline, the FROZEN window (`last_key`) and the page offset (`page_number`) a part-read report resumes from (sync_job_state) | [`src/sync/job-state.ts`](../src/sync/job-state.ts) |
+| Transaction reports → pay_transaction / pay_transaction_item (mapped by field NAME; row identity is a hash of the stored values, because WL publishes no unique row key) | [`src/sync/transactions.ts`](../src/sync/transactions.ts) |
+| **What window the transaction reports ask for**, and why it is frozen in `sync_job_state` rather than recomputed — the filter is WL's cache key | [`src/sync/tx-window.ts`](../src/sync/tx-window.ts) |
 
 Four things about this client are worth knowing before changing it:
 
@@ -186,15 +188,16 @@ code change.
 
 ### How far back each schedule reaches
 
-Only two things in the system are date-windowed. Everything else — purchases,
-people, money, reference lists, attendance — is enumerated in full every night
-and therefore cannot go stale.
+Three things in the system are date-windowed. Everything else — purchases,
+people, reference lists, attendance — is enumerated in full every night and
+therefore cannot go stale.
 
 | Reads | Window | Set by |
 |---|---|---|
 | Class schedule, daily | 7 days back, 30 forward | `SCHEDULE_LOOKBACK_DAYS` / `SCHEDULE_LOOKAHEAD_DAYS` in [`src/sync/pass.ts`](../src/sync/pass.ts) |
 | Appointments, daily | 3 days back, or the full history until the first clean drain | `SYNC_DAILY_LOOKBACK_DAYS`, and the watermark rule in [`src/sync/visit-window.ts`](../src/sync/visit-window.ts) |
-| Both, monthly | the last N calendar months, N counting the current one | `SYNC_MONTHLY_LOOKBACK_MONTHS`, default 2 |
+| Transaction reports, daily | 3 days back, or 1980-01-01 until the first clean drain | `SYNC_DAILY_LOOKBACK_DAYS` and `SYNC_HISTORY_START`, applied by [`src/sync/tx-window.ts`](../src/sync/tx-window.ts) |
+| All three, monthly | the last N calendar months, N counting the current one | `SYNC_MONTHLY_LOOKBACK_MONTHS`, default 2 |
 
 The daily windows are short on purpose: their job is to catch an outcome that
 settled late, not to re-read history. That leaves one gap they cannot close — a
@@ -205,8 +208,13 @@ just finished, so **every calendar month is re-read once, in full, shortly after
 it ends**. Counting whole months rather than days is what makes that guarantee
 hold — a day-count window cuts a month in half and re-reads the same half twice.
 
-It widens the appointment window to the same range while it is at it, because
-appointments carry the identical gap behind a three-day window. That happens on
+It widens the appointment window AND both transaction reports to the same range
+while it is at it, because each of them carries the identical gap behind a
+short daily window — a payment refunded or corrected weeks after the fact is the
+money version of a retroactively edited session. For the transaction reports the
+override names BOTH ends rather than running to "now": that filter is WL's cache
+key, so a fixed month is served from one build instead of starting a new one
+every time the clock moves. That happens on
 the derived path only: an explicit historical ask is honoured exactly as given,
 since backfilling schedules from 1980 must not silently re-list every
 appointment ever recorded. `SYNC_MONTHLY_LOOKBACK_MONTHS=0` restores the older
@@ -288,6 +296,7 @@ to re-run.
 | `0034` | a uuid `id` on every base table, UNIQUE and deliberately **not** the primary key — the natural key has to stay the upsert conflict target or every re-sync duplicates every row |
 | `0035` | `sync_job_state.locked_until` / `locked_by` — a lease, so two runs of one job cannot overlap; the overlap on 31 Aug 2026 is what killed `attendance_sync` |
 | `0035` | `id` promoted to primary key on the tables the earlier draft left it as a UNIQUE spare column on — every FK still targets the natural key, so upserts remain conflict-safe |
+| `0038` | `pay_transaction` / `pay_transaction_item` — WL's own two transaction reports (cid 799 / 739), business-wide. Separate tables because they are a different population from `purchase_item` (10,913 all-time rows against 20,561), and their row identity is a `row_hash` + `i_occurrence` because WL publishes no unique row key for either report |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs, plus case tables for rules that live in SQL. They are not migrations and
@@ -329,6 +338,39 @@ legible in a cron log.
 call already in flight leaves the API doing work nobody reads. Whatever was never
 started comes back in `remaining`, so the next invocation resumes with exactly
 those.
+
+### A report pass runs differently, and it has to
+
+Three passes read a WellnessLiving *report* rather than an endpoint —
+`client_list_sync`, `tx_item_sync`, `tx_payment_sync` — and a report is built
+asynchronously on WL's side. The full transaction history took **90 seconds** to
+build, measured; a Vercel function has 60. So these passes never wait. Each
+invocation does one thing and defers:
+
+```
+handle null      →  request the build (is_refresh=1, ONCE), save handle+window, defer 5s
+past deadline    →  abandon it, clear the cursor, defer 2s (restart clean)
+not complete     →  bump the attempt, defer on 5/10/20/30s
+complete         →  read pages from the saved offset until a short page ends it,
+                    or the 25s page budget hands the rest to the next invocation
+```
+
+Everything that makes this safe is one of three rules, each of which was a real
+failure first:
+
+**`is_refresh: 1` goes out exactly once.** WL Support: re-running a report
+"resets it to a generating state". Refreshing per poll or per page throws away
+the build in flight, so the loop never converges.
+
+**The window is frozen in `sync_job_state`, not recomputed.** WL caches a build
+by its filter, so a window recomputed on the next invocation — after midnight,
+say — is a different report. See [`src/sync/tx-window.ts`](../src/sync/tx-window.ts).
+
+**Rows are never read from an unfinished build.** On the transaction reports a
+*queued* response carries fifty rows from the PREVIOUS build (the client-list
+report returns an empty list instead, which is why this had to be found twice).
+Readiness is `id_report_status = 3` **and** `dtu_complete` set — never "we got
+rows".
 
 ## What a sync run costs
 

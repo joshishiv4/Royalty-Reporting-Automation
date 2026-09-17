@@ -13,7 +13,8 @@ API findings behind these choices: [WL-API-NOTES.md](WL-API-NOTES.md).
 ```
 people      person, lead                     views: client, active_client, teacher
 money       location, service, purchase, purchase_item,
-            purchase_payment, purchase_account_credit
+            purchase_payment, purchase_account_credit,
+            pay_transaction, pay_transaction_item
                    views: purchase_net, revenue_month, purchase_over_refunded
 schedule    session, session_staff, attendance
                    view: session_outcome
@@ -251,11 +252,22 @@ Reporting runs on the service role.
 ## Money
 
 ```
-purchase (k_purchase PK)
+purchase (k_purchase PK)                    ← per client, from the purchase list
    ├── purchase_item (k_purchase_item PK)   ← THE royalty row
    ├── purchase_payment                     ← a_pay_method, an array
    └── purchase_account_credit              ← a_account_rest, an array
+
+pay_transaction      (row_hash)             ← business-wide, from WL's own reports
+pay_transaction_item (row_hash)                (0038; joined on k_purchase /
+                                                k_purchase_item, no FK)
 ```
+
+**Two witnesses to the same money, deliberately not merged.** The `purchase`
+side is assembled one client at a time from `/v1/profile/purchase/list` and
+`/v1/purchase/receipt`. The `pay_transaction` side is WL's own "All Transactions"
+reports, read business-wide in two calls. See "The transaction reports are a
+second witness" below for why they are separate tables and what each one can
+answer that the other cannot.
 
 ### The item is the row, not the purchase
 
@@ -388,6 +400,78 @@ item is a no-op, and a **disagreeing** item is parked in `sync_conflict`
 enumerable as a client yet (no client-list endpoint), so a `person` stub
 (uid + k_business only) is upserted first and the FK holds — the same
 stub-don't-fail pattern locations and services use.
+
+### The transaction reports are a second witness, not a replacement (0038)
+
+`pay_transaction` (cid 799, one row per payment) and `pay_transaction_item`
+(cid 739, one row per paid item) come from `POST /v1/report/query`. They were
+added because three things they carry exist nowhere else in this database, and
+one thing they do **not** carry is the reason they did not simply replace the
+purchase path.
+
+**What they add.**
+
+| Fact | Why it matters |
+|---|---|
+| `text_revenue_category` — e.g. "Monthly Subscriptions", "Account Payments" | The likeliest grouping a royalty is actually billed on. M04b is blocked on "which items count and how are they grouped"; this is WL's own answer to the second half |
+| A refund as its **own dated row** | `purchase.m_refund` carries no date, so a refund lands in the original purchase's month. Here it is a negative row with its own `dtu_date` |
+| `s_batch_number`, `text_order_id`, `text_processor_reference`, `o_decline_reason` | Reconciling the studio's processor statement. No other endpoint returns any of them |
+| `k_pay_transaction`, `o_actor` | The payment as an event, and who took it ("System" for a recurring charge) |
+
+**What they do not cover, measured 17 Sep 2026.** The item report returns
+**10,913 rows for all time** against **20,561 `purchase_item` rows** in this
+database. It lists only items a money movement touched — a free item, a comped
+one, an unpaid balance, a membership seeded but never charged are all real
+purchase items and appear in neither report. So neither table is a superset of
+the purchase path, and `purchase.m_refund` stays authoritative for it. **The two
+must be reconciled before either is used for a royalty figure, and that
+reconciliation is not written.**
+
+### The row identity is a hash, because WL publishes none
+
+Both reports return positional rows and **no unique row key**. Measured over
+every row:
+
+| Candidate | Distinct | Rows lost |
+|---|---|---|
+| 739 `k_purchase_item` | 8,778 | 2,135 |
+| 739 `k_purchase_item + k_id + id_table` | 10,656 | 257 |
+| 739 …`+ dtu_date + m_amount` | 10,882 | 31 |
+| 799 `k_pay_transaction` | 9,419 | 777 |
+| 799 `k_pay_transaction + i_row_order + dtu_date` | 9,547 | 649 |
+
+And `k_pay_transaction` is **null on 10,838 of the 10,913** item-view rows — the
+column naming the transaction is absent from the report named after it.
+
+The "duplicates" were checked rather than assumed, and they are **a sale row and
+its later refund row**: same item key, opposite sign, different date. Both are
+real events, so every key above is wrong by construction.
+
+So identity is `row_hash` — sha256 over exactly the values stored, in a fixed
+order — plus `i_occurrence`, which numbers rows whose stored values are
+identical. The hash covers the stored subset and **not** the whole row because
+the whole row carries signed `url` tokens and tooltip HTML that change between
+builds; hashing those would give the same transaction a new identity and insert
+a second copy on every run.
+
+`item_title` is in the hash for a measured reason: twelve repeat groups in the
+item report differ in nothing else ("General credit" against "Account Payment"
+on the same item key, date and amount).
+
+**The one limit, stated plainly.** `i_occurrence` is counted within one read of
+one window, so an interrupted page read restarts the count and can merge two
+byte-identical rows. It can undercount a repeat, never double-count one. 649
+rows of the payment report are byte-identical to another row across all 140
+fields, so this is not hypothetical — it is the price of not collapsing them.
+
+### `k_purchase` here is not a foreign key, on purpose
+
+The reports reach transactions whose purchase the per-client path has never
+listed. A FK would need a `purchase` stub with no totals, and an unpriced
+purchase row enters `purchase_net` and understates a month while looking clean.
+`uid_client` and `k_location` DO have FKs, filled by stub-upsert first — the same
+stub-don't-fail pattern purchases.ts uses, where a stub is the key and the
+business only so a later profile sync fills the rest.
 
 ## Schedule
 

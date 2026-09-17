@@ -53,6 +53,10 @@
       "schedule": "30 3 * * *"
     },
     {
+      "path": "/api/sync-job?job=transactions",
+      "schedule": "45 3 * * *"
+    },
+    {
       "path": "/api/wellness-sync-all",
       "schedule": "0 4 * * *"
     },

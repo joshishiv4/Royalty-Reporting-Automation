@@ -91,6 +91,13 @@ export interface ReportBody {
   readonly id_report_status?: unknown;
   readonly dtu_complete?: unknown;
   /**
+   * WL's handle for this build - a hash of the filter, e.g.
+   * "7dd911f01bfc2eadece4f3741479e1cc99210c0e". Stable across `i_offset`
+   * (measured over 22 pages), which is what proves paging reads one build rather
+   * than restarting it, and it changes the moment the filter changes.
+   */
+  readonly s_report?: unknown;
+  /**
    * WL's own error channel for a report that finished badly. Empty on all 44
    * stored payloads. This is how an 'Error' report is recognised WITHOUT
    * knowing which number Error is.
@@ -154,27 +161,88 @@ export interface ReportFilter {
 }
 
 /**
- * Builds the request body.
+ * One report request, reduced to the four things that differ between reports.
  *
- * Every `o_*` key is sent even when empty. WL rejects or misreads a partial
- * filter object, and the Postman collection sends the full set - so this mirrors
- * it exactly rather than trimming to what looks necessary.
+ * WHY THIS EXISTS. Everything above was written for ONE report - the client
+ * list, cid 689 - with its cid, page size, sort and filter baked in. Two more
+ * reports are now read (the transaction views, cid 739 and 799) and they differ
+ * in every one of those four, while the hard-won part - the asynchronous build,
+ * the two-signal completion test, is_refresh exactly once - is identical. So the
+ * poll machinery takes a spec and the client-list functions became thin callers
+ * of it. Nothing about 689's behaviour changed.
+ *
+ * `jsonFilter` IS SENT WHOLE, and that is deliberate. WL rejects or misreads a
+ * partial filter object, so each caller states its own complete filter rather
+ * than having one built from flags here - the client list needs fifteen `o_*`
+ * keys, the transaction reports need exactly one (`o_date`), and pretending
+ * those are the same shape would mean sending keys 739 has never been asked for.
  */
-export function buildReportBody(
-  kBusiness: string,
-  filter: ReportFilter,
-  offset: number,
-  refresh: boolean,
-): Record<string, unknown> {
+export interface ReportSpec {
+  /** Which report. A wrong one answers `cid-nx`, never an empty result. */
+  readonly cid: number;
+  /** Rows per page. 500 and 1000 are both proven live; 1000 is what we send. */
+  readonly pageSize: number;
+  /** `s_sort`. */
+  readonly sort: string;
+  /** The complete `json_filter` object for this report. */
+  readonly jsonFilter: Record<string, unknown>;
+}
+
+/** WL's "All Transactions (Item View)" - one row per item money touched. */
+export const REPORT_TRANSACTION_ITEM = 739;
+/** WL's "All Transactions (Payment View)" - one row per payment. */
+export const REPORT_TRANSACTION_PAYMENT = 799;
+
+/**
+ * Rows per page for the transaction reports.
+ *
+ * 1000 is proven live (17 Sep 2026): the whole history came back as 11 pages of
+ * 1000 on both reports, with `s_report` identical across every page - so paging
+ * reads one build rather than restarting it. 500 works too and is what the
+ * client list sends; 1000 halves the round trips on a report an order of
+ * magnitude larger than the client list.
+ */
+export const TRANSACTION_PAGE_SIZE = 1000;
+
+/**
+ * A transaction report, filtered to one date window.
+ *
+ * THE FILTER IS ONE KEY, AND THAT IS NOT AN OVERSIGHT. The client list needs
+ * fifteen `o_*` keys; these reports need `o_date` and nothing else, measured
+ * live. `id_report_date` - which the client list must send, because there the
+ * date means CLIENT SINCE - is not required here: this window filters the
+ * TRANSACTION date, proven by a row whose purchase started 2024-04-18 and whose
+ * payment, dated 2025-05-13, appeared in a 2025-only window. Sending keys WL has
+ * never been asked for on this cid would change the filter, and the filter is
+ * the cache key.
+ *
+ * `s_sort` is `k_pay_transaction`, as WL's own integrations team documented for
+ * both reports.
+ */
+export function transactionReportSpec(
+  cid: number,
+  window: { readonly dlStart: string; readonly dlEnd: string },
+): ReportSpec {
   return {
-    k_business: kBusiness,
-    cid_report: REPORT_CLIENT_LIST,
-    i_limit: REPORT_PAGE_SIZE,
-    i_offset: offset,
-    is_backend: 1,
-    is_refresh: refresh ? 1 : 0,
-    s_sort: 'uid',
-    json_filter: {
+    cid,
+    pageSize: TRANSACTION_PAGE_SIZE,
+    sort: 'k_pay_transaction',
+    // Bare dates. These reports accept `YYYY-MM-DD`; the rule about `dt_date`
+    // needing a time component is a different parameter on other endpoints.
+    jsonFilter: { o_date: { dl_start: window.dlStart, dl_end: window.dlEnd } },
+  };
+}
+
+/**
+ * The client list expressed as a spec, so 689 goes through exactly the same
+ * code path as every other report.
+ */
+export function clientListSpec(filter: ReportFilter): ReportSpec {
+  return {
+    cid: REPORT_CLIENT_LIST,
+    pageSize: REPORT_PAGE_SIZE,
+    sort: 'uid',
+    jsonFilter: {
       o_business_contract: [],
       o_client_churn_risk: [],
       o_client_type: filter.clientTypes ?? [],
@@ -192,6 +260,142 @@ export function buildReportBody(
       o_user_app: [],
     },
   };
+}
+
+/** The request body for any report. */
+export function buildSpecBody(
+  kBusiness: string,
+  spec: ReportSpec,
+  offset: number,
+  refresh: boolean,
+): Record<string, unknown> {
+  return {
+    k_business: kBusiness,
+    cid_report: spec.cid,
+    i_limit: spec.pageSize,
+    i_offset: offset,
+    is_backend: 1,
+    is_refresh: refresh ? 1 : 0,
+    s_sort: spec.sort,
+    json_filter: spec.jsonFilter,
+  };
+}
+
+/** One request against a report. No poll loop, no sleeping - see reportRequestOnce. */
+async function specRequestOnce(
+  wl: Pick<WlClient, 'request'>,
+  kBusiness: string,
+  spec: ReportSpec,
+  offset: number,
+  refresh: boolean,
+  deps: ReportDeps = {},
+): Promise<{ body: ReportBody; page: ReportPage }> {
+  const response = await wl.request<ReportBody>(WL_PATHS.reportQuery, {
+    method: 'POST',
+    json: buildSpecBody(kBusiness, spec, offset, refresh),
+    ...(deps.deadline === undefined ? {} : { deadline: deps.deadline }),
+    ...(deps.priorAttempt === undefined ? {} : { priorAttempt: deps.priorAttempt }),
+  });
+  return {
+    body: response.body,
+    page: {
+      fields: readFields(response.body.a_field),
+      rows: readRows(response.body.a_row),
+      response,
+    },
+  };
+}
+
+/**
+ * Asks WL to (re)build a report, and returns the handle it answered with.
+ *
+ * `is_refresh: 1` goes out HERE and nowhere else. WL Support: "re-running a
+ * report reuses the same handle but resets it to a generating state" - so a
+ * second refresh throws away the build in flight and the poll loop never
+ * converges.
+ *
+ * The handle is `s_report`, a hash WL derives from the filter. It is returned so
+ * a caller can persist it before polling and prove later that it is reading the
+ * same build; it is null only if WL omitted the field, which has never been
+ * observed.
+ */
+export async function requestReportBuild(
+  wl: Pick<WlClient, 'request'>,
+  kBusiness: string,
+  spec: ReportSpec,
+  deps: ReportDeps = {},
+): Promise<{ handle: string | null; outcome: 'complete' | 'failed' | 'pending' }> {
+  const { body } = await specRequestOnce(wl, kBusiness, spec, 0, true, deps);
+  const handle =
+    typeof body.s_report === 'string' && body.s_report.length > 0 ? body.s_report : null;
+  return { handle, outcome: reportOutcome(body) };
+}
+
+/**
+ * One status check with `is_refresh: 0` - reads the build in flight, never
+ * restarts it. Throws when WL says the build finished badly, because a failed
+ * report will never become ready and answering "not yet" would defer forever.
+ */
+export async function pollReportBuild(
+  wl: Pick<WlClient, 'request'>,
+  kBusiness: string,
+  spec: ReportSpec,
+  deps: ReportDeps = {},
+): Promise<{ complete: boolean; handle: string | null }> {
+  const { body } = await specRequestOnce(wl, kBusiness, spec, 0, false, deps);
+  const outcome = reportOutcome(body);
+  if (outcome === 'failed') {
+    throw new Error(`WL report ${String(spec.cid)} finished with errors: ${describeReport(body)}`);
+  }
+  const handle =
+    typeof body.s_report === 'string' && body.s_report.length > 0 ? body.s_report : null;
+  return { complete: outcome === 'complete', handle };
+}
+
+/**
+ * Reads ONE page of a report, `is_refresh: 0`, and refuses to hand back rows
+ * from a build that is not finished.
+ *
+ * THAT REFUSAL IS THE WHOLE POINT, and it is not the same trap as the client
+ * list's. Measured 17 Sep 2026 on cid 739 and 799: a queued report
+ * (`id_report_status` 2) answered with **fifty rows**, not the empty `a_row` the
+ * client list returns while building. Those rows are the previous build's. So
+ * "the response has rows" is evidence of nothing here, and a reader that trusted
+ * it would store last week's money as this week's and report a clean run.
+ */
+export async function readReportBuildPage(
+  wl: Pick<WlClient, 'request'>,
+  kBusiness: string,
+  spec: ReportSpec,
+  offset: number,
+  deps: ReportDeps = {},
+): Promise<ReportPage> {
+  const { body, page } = await specRequestOnce(wl, kBusiness, spec, offset, false, deps);
+  const outcome = reportOutcome(body);
+  if (outcome === 'complete') return page;
+  throw new Error(
+    `WL report ${String(spec.cid)} page at offset ${String(offset)} was read before the ` +
+      `build finished - refusing rows from an unfinished report, which for this ` +
+      `endpoint are the PREVIOUS build's. ${describeReport(body)}`,
+  );
+}
+
+/**
+ * Builds the CLIENT LIST request body.
+ *
+ * Every `o_*` key is sent even when empty. WL rejects or misreads a partial
+ * filter object, and the Postman collection sends the full set - so this mirrors
+ * it exactly rather than trimming to what looks necessary. The shape lives in
+ * clientListSpec now; this is kept as the name the client-list code and its
+ * tests call.
+ */
+export function buildReportBody(
+  kBusiness: string,
+  filter: ReportFilter,
+  offset: number,
+  refresh: boolean,
+): Record<string, unknown> {
+  return buildSpecBody(kBusiness, clientListSpec(filter), offset, refresh);
 }
 
 export interface ReportDeps {

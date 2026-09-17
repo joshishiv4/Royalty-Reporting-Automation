@@ -1,6 +1,6 @@
 # Status and plan
 
-Last updated **2 Sep 2026**. Keep the date honest — a stale status file is worse
+Last updated **17 Sep 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed.
 
 ## The plan
@@ -11,7 +11,7 @@ than none, because it is believed.
 | **M02** schema | Tables for people, money, sessions, control plane, raw payloads | ✅ done |
 | **M03** sync engine | The code that reads WL and writes to those tables | ✅ done — 17 passes, 6 scheduled jobs, live |
 | **M04a** GHL matching | Contact matching against GoHighLevel | ✅ done — `src/ghl/`, `ghl_match_sync` runs nightly |
-| **M04b** royalty calculation | The number this project exists to produce | ⬜ **not started — this is the next work** |
+| **M04b** royalty calculation | The number this project exists to produce | ⬜ **not started — this is the next work**. Its missing input got closer on 17 Sep: WL's own transaction reports carry a revenue category (see below) |
 | **M05** portal | Student portal reading the same database | ⬜ not started |
 
 **M03 is complete and running unattended.** Seventeen passes read WellnessLiving
@@ -116,12 +116,12 @@ each night.
 | Shared constant-time bearer check for routes | `src/http/bearer.ts` |
 | Vercel health endpoint | `api/health.ts` |
 
-**782 tests across 66 files.** CI runs format, lint, typecheck, tests, a
+**815 tests across 69 files.** CI runs format, lint, typecheck, tests, a
 fail-closed startup assertion, and gitleaks over full history on every push.
 
 ### Schema — 18 tables live on dev Supabase
 
-`0001`–`0035` applied (37 migration files). See [DATA-MODEL.md](DATA-MODEL.md) for what each holds and
+`0001`–`0035` applied; **`0038` written 17 Sep 2026 and NOT yet applied** — see "In progress"). See [DATA-MODEL.md](DATA-MODEL.md) for what each holds and
 why it is shaped that way.
 
 ### Tickets closed
@@ -144,7 +144,55 @@ why it is shaped that way.
 
 ## In progress
 
-**Nothing in flight.** The next work is the royalty calculation — see below.
+### The two transaction reports — code complete, waiting on one migration (17 Sep 2026)
+
+WellnessLiving's integrations team named two reports on `POST /v1/report/query`:
+**739 "All Transactions (Item View)"** and **799 "All Transactions (Payment
+View)"**. Both were probed live against dev the same day and both work.
+
+| | 739 | 799 |
+|---|---|---|
+| Fields | 141 | 140 |
+| Rows, `1980-01-01 .. today` | **10,913** | **10,196** |
+| Pages at `i_limit` 1000 | 11 | 11 |
+| Full-history build time | **90s** | ~60s |
+| A 7-day window | 62 rows, **6s** | — |
+
+**What is built:** migration `0038` (`pay_transaction`, `pay_transaction_item`),
+`src/sync/transactions.ts`, `src/sync/tx-window.ts`, two passes
+(`tx_item_sync`, `tx_payment_sync`) in a new `transactions` job group on its own
+cron at 03:45, both also in the parallel full sync, the monthly route widened to
+re-read them over the last `SYNC_MONTHLY_LOOKBACK_MONTHS` months, and 33 new
+tests. `npm run verify` is green at **815 tests across 69 files**, and two
+guarantees were mutation-proven: recomputing the window instead of reading the
+frozen one, and accepting a page from an unfinished build, each turns the suite
+red.
+
+**What it is waiting on, and it is not code:** `0038` has to be applied to dev.
+There is no DDL path in this repository — the service role key reaches
+PostgREST only and no Postgres connection string exists in any config — so the
+migration is run in the Supabase SQL editor, the same way `0001`–`0035` were.
+Until then both passes have nothing to write to and the first (1980 → today)
+load has not run.
+
+**Three things worth knowing before using these tables.**
+
+*They are not a replacement for the purchase path.* The item report returns
+10,913 rows for all time against 20,561 `purchase_item` rows here: it lists only
+items a money movement touched. Free, comped, unpaid and never-charged items
+appear in neither report. The two sources must be reconciled before either
+produces a royalty figure, and **that reconciliation is not written**.
+
+*A refund finally has a date.* `purchase.m_refund` carries none, so a refund has
+always landed in the original purchase's month. In the reports it is its own
+negative row with its own `dtu_date`.
+
+*A queued build on these reports returns ROWS* — fifty of them, from the previous
+build — where the client-list report returns an empty list. "We got rows" is
+evidence of nothing here, and the page reader now refuses outright to return
+rows from an unfinished build.
+
+The next work after that is still the royalty calculation — see below.
 
 One item is carried, and it is not code: **nobody unfamiliar with this system has
 yet tried to recover it using the runbook alone.** Every other check on that

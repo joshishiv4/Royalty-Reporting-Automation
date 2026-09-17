@@ -145,7 +145,7 @@ export async function setWindowOverride(
   );
 }
 
-/** The persisted state of an async report build, for the client-list poller. */
+/** The persisted state of an async report build, for the report pollers. */
 export interface ReportState {
   /** Non-null once a build has been requested: poll it, do not restart. */
   readonly handle: string | null;
@@ -153,6 +153,47 @@ export interface ReportState {
   readonly pollAttempt: number;
   /** Hard deadline; past it the build is abandoned and restarted. */
   readonly expiresAt: string | null;
+  /**
+   * THE FROZEN WINDOW (`last_key`), for a report whose filter is a date range.
+   *
+   * WL caches a report by its filter and `is_refresh: 1` resets a build in
+   * flight, so a window recomputed on each polling invocation is a different
+   * report each time: the build restarts, the poll never finds a finished one,
+   * and the pass defers forever while reporting nothing wrong. The window is
+   * therefore computed once, stored here, and read back for every poll and every
+   * page - see src/sync/tx-window.ts.
+   *
+   * Null for the client list, whose filter carries a fixed 1900..2100 range.
+   */
+  readonly window: string | null;
+  /**
+   * The next row offset to read (`page_number`) - where a part-read report
+   * resumes.
+   *
+   * 0007 reserved this column for "a paginated endpoint" and nothing had needed
+   * it: every pass until now was a single call. The transaction reports are the
+   * first genuinely paginated read, and they need it because reading is not
+   * instant - 11 pages at up to 11 seconds each on the payment view outlasts a
+   * 60-second function, so a page loop has to be resumable or it can never
+   * finish the first time.
+   */
+  readonly pageNumber: number;
+}
+
+/**
+ * The columns readReportState reads.
+ *
+ * Named rather than inlined so the call site stays short: the structural test in
+ * tests/no-unbounded-select.test.ts reads nine lines from a `db.select<` to find
+ * the `limit=`, and a five-line type parameter pushes the query out of view -
+ * where it reports an unbounded read that is not one.
+ */
+interface ReportStateRow {
+  readonly report_handle: string | null;
+  readonly report_page: number | null;
+  readonly report_handle_expires_at: string | null;
+  readonly last_key: string | null;
+  readonly page_number: number | null;
 }
 
 /** Reads the report cursor. Absent row or null handle both mean "not requested". */
@@ -161,21 +202,76 @@ export async function readReportState(
   jobName: string,
   kBusiness: string,
 ): Promise<ReportState> {
-  const rows = await db.select<{
-    report_handle: string | null;
-    report_page: number | null;
-    report_handle_expires_at: string | null;
-  }>(
+  const rows = await db.select<ReportStateRow>(
     'sync_job_state',
     `job_name=eq.${jobName}&k_business=eq.${kBusiness}` +
-      `&select=report_handle,report_page,report_handle_expires_at&limit=1`,
+      `&select=report_handle,report_page,report_handle_expires_at,last_key,page_number&limit=1`,
   );
   const row = rows[0];
   return {
     handle: row?.report_handle ?? null,
     pollAttempt: row?.report_page ?? 0,
     expiresAt: row?.report_handle_expires_at ?? null,
+    window: row?.last_key ?? null,
+    pageNumber: row?.page_number ?? 0,
   };
+}
+
+/**
+ * Records a requested build together with the window it was requested for,
+ * BEFORE any polling.
+ *
+ * Both facts are written in one upsert deliberately. A handle saved without its
+ * window would leave the next invocation polling a build it cannot name the
+ * filter of, so it would derive the window again - and a window derived a minute
+ * later can differ, which restarts the build. Saved together, a crash mid-poll
+ * resumes into the same report.
+ */
+export async function saveReportBuildRequested(
+  db: SupabaseClient,
+  jobName: string,
+  kBusiness: string,
+  input: { readonly handle: string; readonly window: string; readonly expiresAt: string },
+  now: string,
+): Promise<void> {
+  await db.upsert(
+    'sync_job_state',
+    [
+      {
+        job_name: jobName,
+        k_business: kBusiness,
+        report_handle: input.handle,
+        report_page: 0,
+        report_handle_expires_at: input.expiresAt,
+        last_key: input.window,
+        // A fresh build is read from the first row, whatever the last one reached.
+        page_number: 0,
+        last_seen_at: now,
+      },
+    ],
+    { onConflict: 'job_name,k_business' },
+  );
+}
+
+/**
+ * Saves how far a page read got, so the next invocation resumes there.
+ *
+ * Written AFTER the page is stored, never before: the other order loses a page
+ * whenever the function dies between the two writes, and loses it silently,
+ * because the cursor says it was read.
+ */
+export async function advanceReportPage(
+  db: SupabaseClient,
+  jobName: string,
+  kBusiness: string,
+  offset: number,
+  now: string,
+): Promise<void> {
+  await db.upsert(
+    'sync_job_state',
+    [{ job_name: jobName, k_business: kBusiness, page_number: offset, last_seen_at: now }],
+    { onConflict: 'job_name,k_business' },
+  );
 }
 
 /** Records that a build has been requested, BEFORE any polling (crash-safe resume). */
@@ -218,7 +314,13 @@ export async function bumpReportPoll(
   );
 }
 
-/** Clears the report cursor - on completion, or to abandon a timed-out build. */
+/**
+ * Clears the report cursor - on completion, or to abandon a timed-out build.
+ *
+ * The frozen window and the page offset go with it. Leaving either behind would
+ * be worse than leaving nothing: the next run would resume paging a build that
+ * no longer exists, at an offset from a window it is no longer reading.
+ */
 export async function clearReportState(
   db: SupabaseClient,
   jobName: string,
@@ -234,6 +336,8 @@ export async function clearReportState(
         report_handle: null,
         report_page: null,
         report_handle_expires_at: null,
+        last_key: null,
+        page_number: 0,
         last_seen_at: now,
       },
     ],

@@ -9,13 +9,20 @@ import { WL_PATHS } from '../wl/endpoint.js';
 import {
   MEMBER_STATUS_ACTIVATED,
   pollReport,
+  pollReportBuild,
   readAllReportRows,
+  readReportBuildPage,
+  REPORT_TRANSACTION_ITEM,
+  REPORT_TRANSACTION_PAYMENT,
   requestReport,
+  requestReportBuild,
+  transactionReportSpec,
 } from '../wl/report.js';
 import { WlTokenClient } from '../wl/token.js';
 import { recordingGhl, storeRawGhl, upsertGhlContact } from './ghl-writer.js';
 import { contactSnapshot } from '../ghl/snapshot.js';
 import {
+  advanceReportPage,
   bumpReportPoll,
   clearReportState,
   acquireJobLock,
@@ -24,10 +31,13 @@ import {
   releaseJobLock,
   renewJobLock,
   readReportState,
+  saveReportBuildRequested,
   saveReportRequested,
   readWindowState,
   setWindowOverride,
 } from './job-state.js';
+import { decodeWindow, encodeWindow, transactionWindow } from './tx-window.js';
+import { type TransactionReport, writeTransactionPage } from './transactions.js';
 import { writeClientList } from './clients.js';
 import { writeLocationList } from './locations.js';
 import { writeLoginTypeList } from './login-types.js';
@@ -285,6 +295,232 @@ function collectUids(
     }
   }
   return uids;
+}
+
+const TX_ITEM_JOB = 'tx_item_sync';
+const TX_PAYMENT_JOB = 'tx_payment_sync';
+/**
+ * How long one invocation may keep READING pages before it hands the rest to the
+ * next one.
+ *
+ * Reading is not free on these reports: measured 17 Sep 2026, a page of 1000
+ * took 2-4 seconds on the item view and 8-11 on the payment view, so eleven
+ * pages of the payment view is ~95 seconds - longer than the function lives. A
+ * page loop that assumed it could finish would therefore never finish once, and
+ * the run would die mid-page every night. 25 seconds leaves room inside the 50s
+ * step budget for the poll call that precedes it and the writes that follow.
+ */
+const REPORT_PAGE_BUDGET_MS = 25_000;
+
+export interface TransactionStepDeps {
+  readonly wl: Pick<WlClient, 'request'>;
+  readonly db: SupabaseClient;
+  readonly kBusiness: string;
+  readonly runId: string;
+  readonly nowIso: () => string;
+  readonly priorAttempt: number;
+  readonly jobName: string;
+  readonly report: TransactionReport;
+  readonly cid: number;
+  /** `config.sync.historyStart` - the floor for the very first read. */
+  readonly historyStart: string;
+  /** `config.sync.dailyLookbackDays` - the overlap re-read after a clean drain. */
+  readonly lookbackDays: number;
+  /** Overridable so a test does not have to burn 25 seconds proving resumption. */
+  readonly pageBudgetMs?: number;
+}
+
+/**
+ * ONE step of a transaction report's state machine.
+ *
+ * The client-list pass established this shape and the header of
+ * runClientListSyncPass explains why a worker must not sleep through a build.
+ * Two things are genuinely different here, and both were measured rather than
+ * assumed:
+ *
+ * 1. THE WINDOW IS FROZEN IN sync_job_state, not recomputed. These reports are
+ *    filtered by a date range, WL caches a build by its filter, and
+ *    `is_refresh: 1` resets a build in flight. A window recomputed per
+ *    invocation is a new filter, so the build restarts and the poll never
+ *    converges. See tx-window.ts.
+ *
+ * 2. PAGE READING IS RESUMABLE, via page_number. Eleven pages of the payment
+ *    view take about 95 seconds; the function has 60. So the loop stops on a
+ *    budget and the next invocation continues at the saved offset.
+ *
+ * And one trap that is not the client list's: a QUEUED build on these reports
+ * returns ROWS - fifty of them, from the previous build - where the client list
+ * returns an empty list. `readReportBuildPage` refuses rows from an unfinished
+ * build for exactly that reason; nothing here may treat "we got rows" as "the
+ * report is ready".
+ */
+export async function transactionReportStep(deps: TransactionStepDeps): Promise<Outcome> {
+  const { wl, db, kBusiness, runId, nowIso, priorAttempt, jobName, report, cid } = deps;
+  const at = { priorAttempt };
+  const st = await readReportState(db, jobName, kBusiness);
+  const frozen = decodeWindow(st.window);
+
+  // 1. Nothing in flight (or a cursor we cannot trust): choose the window ONCE,
+  // ask WL to build it, and save both before polling anything.
+  if (st.handle === null || frozen === null) {
+    const windowState = await readWindowState(db, jobName, kBusiness);
+    const window = transactionWindow({
+      historyStart: deps.historyStart,
+      lookbackDays: deps.lookbackDays,
+      lastCleanCompletionAt: windowState.lastCleanCompletionAt,
+      startOverride: windowState.startOverride,
+      endOverride: windowState.endOverride,
+      now: Date.parse(nowIso()),
+    });
+    const spec = transactionReportSpec(cid, window);
+    const { handle } = await requestReportBuild(wl, kBusiness, spec, at);
+    const nowStr = nowIso();
+    await saveReportBuildRequested(
+      db,
+      jobName,
+      kBusiness,
+      {
+        // WL has always answered with s_report; the literal is a fallback so the
+        // handle is never null, because null means "not requested" and would
+        // send the next invocation round to request the build a second time.
+        handle: handle ?? 'requested',
+        window: encodeWindow(window),
+        expiresAt: new Date(Date.parse(nowStr) + REPORT_HARD_TIMEOUT_MS).toISOString(),
+      },
+      nowStr,
+    );
+    return { kind: 'defer', requeueAfterMs: REPORT_POLL_BACKOFF_MS[0] };
+  }
+
+  // 2. Hard timeout: the build is not coming. Clear and start cleanly.
+  if (st.expiresAt !== null && nowIso() > st.expiresAt) {
+    await clearReportState(db, jobName, kBusiness, nowIso());
+    return { kind: 'defer', requeueAfterMs: 2_000 };
+  }
+
+  const spec = transactionReportSpec(cid, frozen);
+
+  // 3. Poll the FROZEN window - is_refresh=0, so this reads the build, never
+  // restarts it.
+  const { complete } = await pollReportBuild(wl, kBusiness, spec, at);
+  if (!complete) {
+    const attempt = st.pollAttempt + 1;
+    await bumpReportPoll(db, jobName, kBusiness, attempt, nowIso());
+    const rung = Math.min(attempt, REPORT_POLL_BACKOFF_MS.length - 1);
+    return { kind: 'defer', requeueAfterMs: REPORT_POLL_BACKOFF_MS[rung]! };
+  }
+
+  // 4. Built: read pages from wherever the last invocation stopped.
+  //
+  // `seen` numbers repeated rows and is per invocation, which is the one
+  // documented cost of resuming: an interrupted read restarts the count, so two
+  // identical rows can merge. It can undercount a repeat, never double-count one
+  // (0038's header).
+  const seen = new Map<string, number>();
+  const budget = deps.pageBudgetMs ?? REPORT_PAGE_BUDGET_MS;
+  const readingUntil = Date.parse(nowIso()) + budget;
+  let offset = st.pageNumber;
+
+  for (;;) {
+    const page = await readReportBuildPage(wl, kBusiness, spec, offset, at);
+    await writeTransactionPage(db, {
+      kBusiness,
+      runId,
+      report,
+      page,
+      fields: page.fields,
+      syncedAt: nowIso(),
+      seen,
+    });
+    // A SHORT PAGE IS THE END. WL sends no total on this response, so there is
+    // nothing else to stop on - which is also why the offset advances by the page
+    // SIZE and not by the row count: a partial page never becomes a new offset.
+    if (page.rows.length < spec.pageSize) {
+      await clearReportState(db, jobName, kBusiness, nowIso());
+      return { kind: 'done' };
+    }
+    offset += spec.pageSize;
+    await advanceReportPage(db, jobName, kBusiness, offset, nowIso());
+    if (Date.parse(nowIso()) >= readingUntil) {
+      return { kind: 'defer', requeueAfterMs: 1_000 };
+    }
+  }
+}
+
+function runTransactionPass(
+  config: AppConfig,
+  deps: SyncPassDeps,
+  jobName: string,
+  report: TransactionReport,
+  cid: number,
+): Promise<SyncPassSummary> {
+  const workType = `${jobName}_window`;
+  return runPass(config, deps, {
+    jobName,
+    workType,
+    seed: ({ db, kBusiness, nowIso }) =>
+      enqueue(
+        db,
+        [{ work_type: workType, target_key: 'all', k_business: kBusiness }],
+        nowIso(),
+      ).then(() => undefined),
+    makeHandler:
+      ({ wl, db, kBusiness, runId, nowIso }) =>
+      async (item) => {
+        try {
+          return await transactionReportStep({
+            wl,
+            db,
+            kBusiness,
+            runId,
+            nowIso,
+            priorAttempt: item.attempt_count,
+            jobName,
+            report,
+            cid,
+            historyStart: config.sync.historyStart,
+            lookbackDays: config.sync.dailyLookbackDays,
+          });
+        } catch (error) {
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
+          throw error;
+        }
+      },
+  });
+}
+
+/**
+ * Runs the item-view transaction sync: every item money touched, business-wide.
+ *
+ * This is the first pass that reads the studio's money WITHOUT walking one
+ * client at a time - two report calls and eleven pages cover the whole history,
+ * against roughly twenty thousand receipt calls for the same period. It does not
+ * replace the purchase path: the report only lists items a transaction touched
+ * (10,913 of 20,561 purchase items), so the two are overlapping witnesses and
+ * 0038 keeps them in separate tables.
+ *
+ * What it adds that nothing else has: the revenue category a royalty is likely
+ * grouped by, and a refund as its own dated row.
+ */
+export function runTransactionItemSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runTransactionPass(config, deps, TX_ITEM_JOB, 'item', REPORT_TRANSACTION_ITEM);
+}
+
+/**
+ * Runs the payment-view transaction sync: every payment, with the processor
+ * detail - batch number, order id, processor reference and decline reason -
+ * that reconciling a studio's statement needs and that no other endpoint
+ * returns.
+ */
+export function runTransactionPaymentSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runTransactionPass(config, deps, TX_PAYMENT_JOB, 'payment', REPORT_TRANSACTION_PAYMENT);
 }
 
 /** Runs the staff sync: one job that lists staff and writes them as people. */
@@ -869,6 +1105,33 @@ export function runHistoricalScheduleSyncPass(
             null,
             nowIso(),
           );
+        }
+
+        // THE MONEY OVER THE SAME MONTHS. The transaction reports are windowed
+        // exactly like the visit pass - a daily run reads the last few days - so
+        // a payment corrected or refunded weeks after the fact falls outside
+        // every daily window too. Handing them the same monthly range through
+        // the same one-shot override mechanism re-reads those months once a
+        // month, and their clean drain clears it.
+        //
+        // WHY THE END IS SET HERE AND NOT LEFT NULL. The visit override above
+        // means "from there to now" because the visit window's end is always
+        // now. A transaction window is a report FILTER and therefore a cache
+        // key: naming both ends makes the monthly filter a fixed string, so WL
+        // serves one build per month instead of starting a new one every time
+        // the clock moves.
+        for (const job of [TX_ITEM_JOB, TX_PAYMENT_JOB]) {
+          const txState = await readWindowState(db, job, kBusiness);
+          if (txState.startOverride === null && txState.endOverride === null) {
+            await setWindowOverride(
+              db,
+              job,
+              kBusiness,
+              `${range.start} 00:00:00`,
+              `${range.end} 23:59:59`,
+              nowIso(),
+            );
+          }
         }
       }
     },
@@ -1931,6 +2194,13 @@ const FULL_SYNC_WAVES: ReadonlyArray<
     { job: 'attendance_sync', run: runAttendanceSyncPass },
     { job: 'ghl_match_sync', run: runGhlMatchSyncPass },
     { job: 'service_sync', run: runServiceSyncPass },
+    // The two transaction reports. In the wave for the same reason
+    // client_list_sync is: a report pass mostly DEFERS, so it costs one WL call
+    // per invocation and converges over runs. Keeping them out would mean the
+    // money reports advanced only on their own cron, which is slower to
+    // converge for no saving.
+    { job: 'tx_item_sync', run: runTransactionItemSyncPass },
+    { job: 'tx_payment_sync', run: runTransactionPaymentSyncPass },
   ],
 ];
 

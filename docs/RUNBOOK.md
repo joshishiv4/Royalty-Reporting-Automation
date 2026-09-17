@@ -302,7 +302,7 @@ intentionally not committed — CI is the enforcement point.
 Nine cron entries, all in [`vercel.json`](../vercel.json). Nothing else is
 scheduled.
 
-Six of them are **named jobs** through one route, `/api/sync-job?job=<name>`.
+Seven of them are **named jobs** through one route, `/api/sync-job?job=<name>`.
 Each one owns a group of passes and runs on its own clock, so a slow group
 cannot push the others out of a single invocation's budget. The other three are
 the full sweep, the monthly re-read, and the alert sweep.
@@ -315,10 +315,21 @@ the full sweep, the monthly re-read, and the alert sweep.
 | `45 2 * * *` | `/api/sync-job?job=teachers` | `teachers` | Staff, their teaching flags and services |
 | `0 3 * * *` | `/api/sync-job?job=attendance-close` | `attendance-close` | Who actually turned up, for sessions that have ended |
 | `30 3 * * *` | `/api/sync-job?job=purchases` | `purchases` | Purchases, receipts, per-item detail |
-| `0 4 * * *` | `/api/wellness-sync-all` | — | Every pass in dependency order — the safety net under the six above |
+| `45 3 * * *` | `/api/sync-job?job=transactions` | `transactions` | WL's two transaction reports — every payment and every paid item |
+| `0 4 * * *` | `/api/wellness-sync-all` | — | Every pass in dependency order — the safety net under the seven above |
 | `0 5 1 * *` | `/api/wellness-sync-historical` | — | Re-reads the last `SYNC_MONTHLY_LOOKBACK_MONTHS` calendar months, or an explicitly requested range |
 | `0 */6 * * *` | `/api/alerts` | — | The alert sweep: overdue jobs, parked backlog, review items past 48h. Sends nothing when there is nothing |
 | `0 */6 * * *` | `/api/alerts` | — | Mails standing conditions: overdue jobs, the parked backlog, records flagged for review. Sends nothing when there is nothing |
+
+**`transactions` behaves differently from the other six, and that is expected.**
+It reads an asynchronous WellnessLiving report, so a single invocation normally
+ends `partial`: it requests a build, or polls one, or reads a few pages, and
+defers the rest. A run that reports `partial` night after night while
+`pay_transaction` grows is the pass working. What is NOT expected is
+`sync_job_state.report_handle` staying set with `page_number` unchanged across
+several runs — that means the build is being restarted rather than read, and the
+first thing to check is whether `last_key` (the frozen window) is being rewritten
+between invocations.
 
 Vercel Cron sends `CRON_SECRET` as the bearer automatically. No route can be
 reached without a token. `/api/alerts` accepts `SYNC_TRIGGER_TOKEN` or
@@ -416,7 +427,7 @@ route. One month chunk measured at 9.3s.
 | `purchases` | ~23s | Yes |
 | `/api/wellness-sync-all` | ~85s | **No — always `partial`** |
 
-That table is the point of splitting the schedule into six jobs. The full sweep
+That table is the point of splitting the schedule into named jobs. The full sweep
 at 04:00 sums to roughly 85 seconds against a 50-second budget, so it reports
 `partial` with its trailing passes marked `ran: false` — which is safe, because
 the queue is the cursor, but on its own it meant the trailing passes fell a day
@@ -688,7 +699,7 @@ four originally recorded turned out to be our own mistakes — `dt_date` versus
 
 | Question | Status |
 |---|---|
-| One cron per day against an ~85s pass | **Closed**, migration 0035 / six named jobs. The schedule is now six jobs that each fit one 50s invocation, with `/api/wellness-sync-all` kept as the safety net. `attendance-close` (~35s of median) is the one with least headroom and will need splitting next — see section 7 |
+| One cron per day against an ~85s pass | **Closed**, migration 0035 / named jobs. The schedule is now seven jobs that each fit one 50s invocation, with `/api/wellness-sync-all` kept as the safety net. `attendance-close` (~35s of median) is the one with least headroom and will need splitting next — see section 7 |
 | No external uptime monitor | **Open.** `/api/alerts` notices a job that stopped running, but nothing notices the deployment itself being paused, deleted or never given these crons — in that case the alert sweep does not run either and nobody is told. Needs a monitor outside the platform polling `/api/health`; it is configuration, not code, so it cannot live in this repository |
 | No external uptime monitor | **Open.** Every alert in this system runs inside the system. If the deployment is paused or the crons never registered, nothing runs and nothing is sent. An external monitor pinging `/api/health` is the only thing that catches that |
 | `sync_job_state` page cursor | Built, unused. Waits on a paginated WL endpoint |
