@@ -299,27 +299,104 @@ intentionally not committed — CI is the enforcement point.
 
 ## 7. The scheduled jobs
 
-Nine cron entries, all in [`vercel.json`](../vercel.json). Nothing else is
-scheduled.
+The schedule lives in **two places, and the split is a plan limit, not a
+preference**.
 
-Seven of them are **named jobs** through one route, `/api/sync-job?job=<name>`.
-Each one owns a group of passes and runs on its own clock, so a slow group
-cannot push the others out of a single invocation's budget. The other three are
-the full sweep, the monthly re-read, and the alert sweep.
+| Where | What | Why there |
+| --- | --- | --- |
+| [`.github/workflows/sync.yml`](../.github/workflows/sync.yml) | Hourly, the whole sync | A runner has no 60-second cap |
+| [`.github/workflows/sync-monthly.yml`](../.github/workflows/sync-monthly.yml) | Monthly re-read | Same cap, and this is the pass that needs the time most |
+| [`.github/workflows/sync-range.yml`](../.github/workflows/sync-range.yml) | An arbitrary range, by hand | No cadence — it runs when somebody asks |
+| [`.github/workflows/sync-run.yml`](../.github/workflows/sync-run.yml) | Not a schedule | The environment the three above share, written once |
+| [`vercel.json`](../vercel.json) | 1 cron | The watchdog only — see below |
 
-| Cron (UTC) | Route | Job | What it does |
-| --- | --- | --- | --- |
-| `0 1 * * *` | `/api/sync-job?job=schedule-window` | `schedule-window` | The class/appointment schedule, −7 / +30 days |
-| `0 2 * * *` | `/api/sync-job?job=catalogue` | `catalogue` | Locations, shop categories, promotions, service categories, services |
-| `30 2 * * *` | `/api/sync-job?job=clients` | `clients` | Every client WL lists, plus the GoHighLevel match |
-| `45 2 * * *` | `/api/sync-job?job=teachers` | `teachers` | Staff, their teaching flags and services |
-| `0 3 * * *` | `/api/sync-job?job=attendance-close` | `attendance-close` | Who actually turned up, for sessions that have ended |
-| `30 3 * * *` | `/api/sync-job?job=purchases` | `purchases` | Purchases, receipts, per-item detail |
-| `45 3 * * *` | `/api/sync-job?job=transactions` | `transactions` | WL's two transaction reports — every payment and every paid item |
-| `0 4 * * *` | `/api/wellness-sync-all` | — | Every pass in dependency order — the safety net under the seven above |
-| `0 5 1 * *` | `/api/wellness-sync-historical` | — | Re-reads the last `SYNC_MONTHLY_LOOKBACK_MONTHS` calendar months, or an explicitly requested range |
-| `0 */6 * * *` | `/api/alerts` | — | The alert sweep: overdue jobs, parked backlog, review items past 48h. Sends nothing when there is nothing |
-| `0 */6 * * *` | `/api/alerts` | — | Mails standing conditions: overdue jobs, the parked backlog, records flagged for review. Sends nothing when there is nothing |
+**`sync-run.yml` is a `workflow_call`, not a schedule.** Three workflows need the
+same nineteen secrets. Three copies is three places to edit when a setting is
+added, and the copy that gets forgotten does not fail — the variable arrives
+**empty** and the job runs on a default nobody chose. Adding a secret now means
+editing one file.
+
+**Why the sync left Vercel on 18 Sep 2026, and what the 60 seconds cost.** The
+deployment is on the Hobby plan: two cron entries, fired once a day, and a hard
+**60-second** function cap. Every pass is written around that cap — it budgets
+itself to 50s, stops *starting* work, and leaves the rest queued. That is correct,
+and it is also why draining the `client_visits` queue that day took **six
+invocations** at roughly 400 items each, each ending in a 504.
+
+A GitHub Actions runner has no cap; a job may run six hours. So the work moved to
+where the clock is not the constraint, and it runs as **`sync:full-parallel`**,
+which starts every pass concurrently rather than walking them one behind another.
+A backlog that needed one invocation per 400 items now goes in a single run.
+**Nothing about the Vercel account changed.**
+
+**The monthly re-read left Vercel too, 18 Sep 2026, and it was the worst fit of
+all.** It used to `curl` `/api/wellness-sync-historical`, which meant the one pass
+that re-reads **two whole calendar months** was the one pass held to the tightest
+clock in the system. It stopped early every time and left the rest queued. It now
+runs `sync:historical` on a runner, with no cap and no budget: it drains, however
+long that takes.
+
+**The 50-second default went with it.** `runPass` used to fall back to
+`DEFAULT_BUDGET_MS` — 50 seconds, which was never a general default but the Vercel
+cap with a margin. Anything invoked off-platform inherited a serverless deadline,
+stopped early, and **reported a clean finish**. There is now no default: no budget
+means no deadline, and the three Vercel routes pass `FUNCTION_BUDGET_MS`
+explicitly, which is where a platform limit belongs — with the platform, not with
+the work.
+
+**What stayed on Vercel, and why.**
+
+| Schedule (UTC) | Route | What it does |
+| --- | --- | --- |
+| `0 6 * * *` | `/api/alerts` | The watchdog — and the ONLY reason anything is still scheduled here |
+
+**One cron, kept on purpose.** Everything else moved, but the watchdog did not,
+because a watchdog on the same platform as the thing it watches is not a watchdog.
+With both on Actions, one outage stops the sync **and** the alert that would have
+said so, and the first anyone hears of it is a stale report. Keeping this single
+entry on Vercel means a GitHub failure still produces mail.
+
+**It needs `CRON_SECRET` set on Vercel.** Vercel Cron sends that variable's value
+as the bearer; without it this route answers 401 and the watchdog is silently off.
+Setting it to the same value as `SYNC_TRIGGER_TOKEN` is fine and is what is done —
+`isAuthorizedByAny` accepts either, so it is one secret to rotate rather than two.
+
+**`/api/wellness-sync-all` is no longer scheduled**, only callable by hand. It was
+the safety net for "Actions is unavailable", and that role now costs a cron the
+watchdog needs more. If Actions is down, the watchdog says so and somebody runs it.
+
+**What nothing covers.** If the Vercel deployment itself is gone or paused, the
+watchdog does not run and nobody is told. No internal check can cover that —
+something outside both platforms has to notice. An external uptime monitor against
+`/api/health` is the other half, and it is **not set up**; it is not in this
+repository because it is not code.
+
+**The named jobs did not go away.** `/api/sync-job?job=<name>` is still the route
+for all seven, still callable by hand, and still what to reach for when one group
+needs re-running on its own. Only the routine driver changed.
+
+| Job | What it covers |
+| --- | --- |
+| `schedule-window` | The class/appointment schedule, −7 / +30 days |
+| `catalogue` | Locations, shop categories, promotions, service categories, services |
+| `clients` | Every client WL lists, plus the GoHighLevel match |
+| `teachers` | Staff, their teaching flags and services |
+| `attendance-close` | Who actually turned up, for sessions that have ended |
+| `purchases` | Purchases, receipts, per-item detail |
+| `transactions` | WL's two transaction reports — every payment and every paid item |
+
+**The workflow needs the sync's own environment as repository secrets** — the WL
+credentials, the Supabase service role key, the GoHighLevel token and the SMTP
+settings, the same set [`.env.example`](../.env.example) lists. They are secrets
+and never literals in the workflow file, for the reason hosts are never literals
+in `src/` and `api/`. `sync-monthly.yml` needs only `SYNC_BASE_URL` and
+`SYNC_TRIGGER_TOKEN`, because it calls the route rather than running the sync.
+
+**Overlap is safe, and the workflow serialises anyway.** Each pass takes a
+5-minute database lease, extended by heartbeat, and the durable queue is the
+cursor — so a run that is cancelled or times out loses nothing and the next one
+resumes. The `concurrency` group still queues runs rather than overlapping them,
+because a second runner would spend its time discovering every job is locked.
 
 **`transactions` behaves differently from the other six, and that is expected.**
 It reads an asynchronous WellnessLiving report, so a single invocation normally
@@ -336,14 +413,30 @@ reached without a token. `/api/alerts` accepts `SYNC_TRIGGER_TOKEN` or
 `CRON_SECRET` but deliberately **not** `HEALTHCHECK_TOKEN` — a token handed out
 for polling a status page should not be able to mail anybody.
 
+**If `CRON_SECRET` is unset, Vercel sends no `Authorization` header at all**, and
+every cron gets a 401 in about 5ms having reached nothing. This cost four days in
+September 2026 and it is silent by construction: the routes answer a wrong token
+and an unconfigured one identically, so the endpoint reveals nothing about its own
+setup — and the log line says `401`, not "your secret is missing". The tell is in
+Vercel's own logs: `User Agent: vercel-cron/1.0`, status `401`, `External APIs: no
+outgoing requests`. Setting the variable is not enough on its own; Vercel hands
+environment variables to **new deployments only**, so a redeploy has to follow.
+
+**The alert sweep 401s with everything else**, which is the part that turns a
+broken secret into a silent outage. See "What it still cannot catch" below.
+
 **Why the alert sweep is its own cron and not part of a sync.** The sync routes
 already mail a digest of what died during their own run, which covers failures.
 It cannot cover the failure this one exists for: if the thing that stops running
 *is* the sync, an alert hosted inside the sync never executes — the one check
 designed to notice that nothing happened is the check that does not happen. Its
-own function on its own schedule is what breaks that circle. It runs every six
-hours rather than daily because a condition it reports is still true the next
-time somebody looks, so re-checking is cheap and a missed sweep is not a gap.
+own function on its own schedule is what breaks that circle. A condition it
+reports is still true the next time it looks, so a missed sweep is not a gap.
+
+**And it is now the only sync-adjacent thing still on Vercel's clock**, which is
+deliberate: the driver and the watchdog should not share a failure. If Actions is
+disabled, out of minutes or looking at a broken branch, this still runs and still
+mails that the jobs have gone overdue.
 
 **What it still cannot catch.** If the deployment itself is gone, paused, or
 never received these crons, this function does not run either and nobody is

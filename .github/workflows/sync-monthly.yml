@@ -1,0 +1,43 @@
+name: sync-monthly
+
+# THE MONTHLY RE-READ, AND WHY IT NO LONGER GOES THROUGH VERCEL.
+#
+# This re-reads the last SYNC_MONTHLY_LOOKBACK_MONTHS calendar months so a
+# retroactive edit in WellnessLiving - a refund backdated, a visit re-marked -
+# reaches us. The daily windows are deliberately short (3 days for appointments,
+# 7 back for the class schedule), so a session edited weeks after it ran falls
+# outside every one of them and would otherwise never be re-read. This is the
+# only pass that closes that gap.
+#
+# IT USED TO CURL `/api/wellness-sync-historical`, which meant the pass that
+# re-reads TWO WHOLE MONTHS was the one pass held to Vercel's 60-second cap -
+# the tightest clock in the system on the largest piece of work. It stopped
+# early every time and left the rest queued.
+#
+# `sync:historical` exists so it can run here instead, with no cap and no
+# budget: it drains, however long that takes. Nothing about the range moved -
+# with no arguments the pass still derives its own window, which is where that
+# setting belongs.
+#
+# It stays separate from sync.yml on purpose. Merging them would mean one
+# workflow branching on `github.event.schedule`, and a monthly job hidden inside
+# an hourly one is a job nobody remembers exists.
+
+on:
+  schedule:
+    - cron: '0 5 1 * *'
+  workflow_dispatch:
+
+concurrency:
+  group: sync-driver
+  cancel-in-progress: false
+
+jobs:
+  historical:
+    uses: ./.github/workflows/sync-run.yml
+    with:
+      command: 'sync:historical'
+      # Two calendar months of schedule, and no 60-second ceiling over it any
+      # more. Still far below the platform's six hours.
+      timeout-minutes: 180
+    secrets: inherit

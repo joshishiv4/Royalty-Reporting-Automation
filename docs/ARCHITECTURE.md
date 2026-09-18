@@ -159,7 +159,20 @@ envelope inside" trap to guard against.
 
 | Question | File |
 |---|---|
-| CLI commands — `healthcheck`, `sync:wellness`, `sync:full-parallel`, `config:check`, `config:show` | [`src/cli/main.ts`](../src/cli/main.ts) |
+| CLI commands — `healthcheck`, `sync:wellness`, `sync:full-parallel`, `sync:historical`, `alert:test`, `alert:sweep`, `config:check`, `config:show` | [`src/cli/main.ts`](../src/cli/main.ts) |
+
+`sync:historical` and `alert:sweep` exist because a schedule that runs on a GitHub
+runner cannot go through an HTTP route without inheriting Vercel's 60-second cap.
+The monthly re-read — the largest single piece of work in the system — was the one
+held to the tightest clock. Both commands call the same functions the routes call;
+neither reimplements a rule.
+
+**There is no default pass budget, and that is load-bearing.** `runPass` used to
+fall back to 50 seconds — the Vercel Hobby cap with a margin, inherited by every
+caller that gave none, whatever platform it was actually on. A pass on the CLI or a
+runner stopped early, left the rest queued and **reported a clean finish**. No
+budget now means no deadline; the three Vercel routes pass `FUNCTION_BUDGET_MS`
+themselves. `tests/sync-pass.test.ts` fails if the default comes back.
 | Everything the package exports | [`src/index.ts`](../src/index.ts) |
 | Vercel health route | [`api/health.ts`](../api/health.ts) |
 | Vercel sync-PROGRESS route — read-only, built to be polled while a backfill runs | [`api/sync-status.ts`](../api/sync-status.ts) |
@@ -297,6 +310,13 @@ to re-run.
 | `0035` | `sync_job_state.locked_until` / `locked_by` — a lease, so two runs of one job cannot overlap; the overlap on 31 Aug 2026 is what killed `attendance_sync` |
 | `0035` | `id` promoted to primary key on the tables the earlier draft left it as a UNIQUE spare column on — every FK still targets the natural key, so upserts remain conflict-safe |
 | `0038` | `pay_transaction` / `pay_transaction_item` — WL's own two transaction reports (cid 799 / 739), business-wide. Separate tables because they are a different population from `purchase_item` (10,913 all-time rows against 20,561), and their row identity is a `row_hash` + `i_occurrence` because WL publishes no unique row key for either report |
+| `0039` | `identity` / `student` / `teacher` — the central record the portal reads. `identity` is one row per human and the only table a WL key may appear on; the role tables hold none. Renames the WL-shaped `teacher` view to `wl_teacher` to free the name. Tables only — the backfill and triggers are `0040`, because a row landing between a backfill and its trigger is lost with nothing to say so |
+| `0040` | fills `identity`/`student`/`teacher` and keeps them filled — a backfill plus three triggers, in ONE file because a person inserted between a backfill and its trigger is lost silently. Triggers fire on `person` INSERT, on `person.k_login_type` **changing** (`IS DISTINCT FROM`, not merely `UPDATE OF` — the sync writes that column on every row every night), and on `login_type.is_teacher_type`, which re-sorts everyone on that type with **no `person` row touched at all**. No `src/` change: `person` is upserted from seven modules across sixteen call sites, and the first writer that forgot would leave a silent hole |
+| `0041` | `cohort` / `class_session` / `class_session_teacher` — the schedule the portal reads, carrying no WL field — plus `cohort_link` and `session_link`, which carry nothing else. WL compresses two levels into one table (`k_class` is a *column*, there is no class table), so `cohort` is the level WL has no key for and `cohort_link` gets no foreign key. **Presence of a link is the provenance**: a `class_session` with no `session_link` row was created in the portal, so no source column exists to disagree. Teachers are a join table, not a column — WL allows several staff per occurrence and flags substitutes |
+| `0042` | fills `cohort`/`class_session` and keeps them filled — backfill plus four triggers, one file, same reasoning as `0040`. An unnamed `k_class` **auto-stubs** a cohort (`is_resolved = false`) rather than hiding the student's session, the `0012` stub-don't-fail pattern. The `WHEN` clauses list projected columns one by one because `old.* IS DISTINCT FROM new.*` would fire on every row every night — `session.synced_at` moves on every pass. The fourth trigger fires when a person *becomes* a teacher: without it, every session taught before their role was known would show no teacher for ever |
+| `0043` | `attendance_record` / `attendance_link` — who turned up, as the portal sees it. Both halves of the record's key are ours; the WL key lives only on the link. An earlier draft argued attendance needed no link because both halves already resolve through `session_link` and `identity` — true for *mapping*, and the wrong conclusion: the link answers **where this attendance came from**, portal or WellnessLiving, which nothing else can, and it is where a portal-then-WL collision is caught rather than silently overwritten |
+| `0044` | fills `attendance_record` and keeps it filled. The backfill is **set-based**, unlike `0040` and `0042` — this is the largest table in the design (one row per attendee per occurrence, against 44,499 sessions), and a row-by-row loop over it in the SQL editor is a statement timeout, not a slow success. A third trigger fires when a person *becomes* a student: without it, every class a stub person had already attended would be missing for ever. Attendance by someone the role rule makes a **teacher** is deliberately not projected — a consequence of that rule, written down so it is recognised rather than rediscovered |
+| `0045` | **reconcile**, not a backfill. Every projection is trigger-maintained, and `0040`/`0042`/`0044` each ship a backfill for what predates their trigger — this covers the gap that opens *later*: a trigger dropped during an incident, a bulk load with `session_replication_role = replica`, a restore taken between two migrations. None of those raise an error; rows simply stop appearing. Every statement is driven by a `NOT EXISTS`, so on a healthy database it does nothing and finishes in seconds, which is what makes it safe to run whenever anybody is unsure. It defines nothing and calls the functions those migrations already own, so it applies the same rule the triggers do. Raises a `NOTICE` per section — a reconcile that repairs 12,000 rows silently is indistinguishable from one that repaired none |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs, plus case tables for rules that live in SQL. They are not migrations and
@@ -305,6 +325,8 @@ change nothing.
 | Check | Proves |
 |---|---|
 | `session_outcome_cases.sql` | every `session_outcome` case, and `is_countable` where it disagrees with the outcome |
+| `portal_projection_verify.sql` | the whole portal projection, `0039`–`0045`, in one read-only pass: every table and all fourteen triggers present, **no WellnessLiving column on an owned table**, `is_attended` still nullable, nothing in the mirror missing from the projection, no role row shared by two identities, no owned row claimed by two links. Distinct from `0045`, which repairs — this looks at what a repair cannot fix, and a reconcile run against a broken schema reports "0 repaired" and is believed |
+| `identity_trigger_cases.sql` | the identity triggers, by **doing** rather than inspecting: an insert creates an identity, a stub gets no role until its login type lands, an unchanged nightly pass touches nothing, and flipping the teacher rule re-sorts everyone with zero `person` rows updated. Writes inside `BEGIN ... ROLLBACK` |
 | `ghl_match_cases.sql` | the GoHighLevel outcomes: a shared contact stays legal, an unlinked client stays visible, no link is ever invented, and the 48-hour boundary |
 
 A rule derived in a view is tested in SQL rather than mirrored into TypeScript.

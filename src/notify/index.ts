@@ -101,6 +101,27 @@ interface FailedRun {
   readonly error: string | null;
 }
 
+/**
+ * How far back an alert sweep looks for crashed passes.
+ *
+ * A crashed pass is an EVENT, not a condition. The row stays in `sync_run` for
+ * ever, so an unbounded read re-reports the same crash on every sweep - the
+ * first live sweep mailed 45 crashes from a loop that had already been stopped,
+ * and would have mailed the same 45 every six hours from then on.
+ *
+ * DELIBERATELY WIDER THAN ANY SWEEP INTERVAL. Equal to it would mean a crash
+ * landing either side of a sweep boundary is reported by neither, and an alert
+ * that can miss the thing it watches for is worse than no alert. The overlap
+ * costs a repeat of at most one sweep's worth, which is a fair trade against
+ * silence.
+ *
+ * It lives here rather than beside a caller because there are now TWO sweeps -
+ * the HTTP route and the CLI command - and a window that differs between them
+ * would give two answers to "was this crash reported", with nothing to say which
+ * is right.
+ */
+export const SWEEP_CRASH_WINDOW_MS = 8 * 60 * 60 * 1000;
+
 export async function notifyDeadLetter(
   db: SupabaseClient,
   smtp: SmtpConfig,
