@@ -1,6 +1,6 @@
 # Data model
 
-**38 tables and 19 views** on Supabase — counted from the migrations on 18 Sep 2026.
+**39 tables and 19 views** on Supabase — counted from the migrations on 18 Sep 2026.
 The number has now drifted twice: it was six tables behind in Aug 2026, and by
 Sep 2026 it had gone five tables and three views behind again, `identity`, `student`
 and `teacher` included. Counting it is two shell commands over
@@ -33,6 +33,7 @@ ghl         ghl_contact, ghl_custom_field
                    views: client_ghl, ghl_enrichment_missing
 control     sync_queue, sync_job_state, sync_run, sync_conflict
                    views: sync_queue_progress, ghl_match_progress
+portal      creation
 raw         raw_wl, raw_ghl, raw_link
 health      views: data_health, data_health_issue,
                    customer_journey, enrollment_margin
