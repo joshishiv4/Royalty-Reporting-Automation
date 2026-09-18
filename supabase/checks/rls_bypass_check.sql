@@ -15,7 +15,7 @@
 --
 --   3. A VIEW WITHOUT security_invoker. THIS is the real bug. A view runs with
 --      its OWNER's privileges by default, so selecting from it reads straight
---      past the policies on the table underneath. `client` and `teacher` read
+--      past the policies on the table underneath. `client` and `wl_teacher` read
 --      `person`, so if either lost security_invoker, RLS on person would be
 --      decorative.
 --
@@ -91,7 +91,7 @@ select 'anon' as acting_as,
 -- rows even though the table above returned none.
 select 'anon via views' as acting_as,
        (select count(*) from public.client)  as client_rows,
-       (select count(*) from public.teacher) as teacher_rows;
+       (select count(*) from public.wl_teacher) as wl_teacher_rows;
 
 rollback;
 
@@ -111,7 +111,7 @@ select 'authenticated' as acting_as,
 
 select 'authenticated via views' as acting_as,
        (select count(*) from public.client)  as client_rows,
-       (select count(*) from public.teacher) as teacher_rows;
+       (select count(*) from public.wl_teacher) as wl_teacher_rows;
 
 rollback;
 

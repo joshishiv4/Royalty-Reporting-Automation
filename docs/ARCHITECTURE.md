@@ -297,6 +297,8 @@ to re-run.
 | `0035` | `sync_job_state.locked_until` / `locked_by` — a lease, so two runs of one job cannot overlap; the overlap on 31 Aug 2026 is what killed `attendance_sync` |
 | `0035` | `id` promoted to primary key on the tables the earlier draft left it as a UNIQUE spare column on — every FK still targets the natural key, so upserts remain conflict-safe |
 | `0038` | `pay_transaction` / `pay_transaction_item` — WL's own two transaction reports (cid 799 / 739), business-wide. Separate tables because they are a different population from `purchase_item` (10,913 all-time rows against 20,561), and their row identity is a `row_hash` + `i_occurrence` because WL publishes no unique row key for either report |
+| `0039` | `identity` / `student` / `teacher` — the central record the portal reads. `identity` is one row per human and the only table a WL key may appear on; the role tables hold none. Renames the WL-shaped `teacher` view to `wl_teacher` to free the name. Tables only — the backfill and triggers are `0040`, because a row landing between a backfill and its trigger is lost with nothing to say so |
+| `0040` | fills `identity`/`student`/`teacher` and keeps them filled — a backfill plus three triggers, in ONE file because a person inserted between a backfill and its trigger is lost silently. Triggers fire on `person` INSERT, on `person.k_login_type` **changing** (`IS DISTINCT FROM`, not merely `UPDATE OF` — the sync writes that column on every row every night), and on `login_type.is_teacher_type`, which re-sorts everyone on that type with **no `person` row touched at all**. No `src/` change: `person` is upserted from seven modules across sixteen call sites, and the first writer that forgot would leave a silent hole |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs, plus case tables for rules that live in SQL. They are not migrations and
@@ -305,6 +307,7 @@ change nothing.
 | Check | Proves |
 |---|---|
 | `session_outcome_cases.sql` | every `session_outcome` case, and `is_countable` where it disagrees with the outcome |
+| `identity_trigger_cases.sql` | the identity triggers, by **doing** rather than inspecting: an insert creates an identity, a stub gets no role until its login type lands, an unchanged nightly pass touches nothing, and flipping the teacher rule re-sorts everyone with zero `person` rows updated. Writes inside `BEGIN ... ROLLBACK` |
 | `ghl_match_cases.sql` | the GoHighLevel outcomes: a shared contact stays legal, an unlinked client stays visible, no link is ever invented, and the 48-hour boundary |
 
 A rule derived in a view is tested in SQL rather than mirrored into TypeScript.
