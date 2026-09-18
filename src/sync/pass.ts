@@ -115,7 +115,23 @@ export interface SyncPassSummary {
   readonly error?: string;
 }
 
-const DEFAULT_BUDGET_MS = 50_000;
+// THERE IS NO DEFAULT BUDGET, AND THAT IS THE SECOND TIME THIS LESSON LANDED.
+//
+// `DEFAULT_BUDGET_MS` was 50 seconds - not a general default, but the Vercel
+// Hobby cap of 60 with a margin. Every caller that gave no budget silently
+// inherited a serverless deadline, whatever it was actually running on. The CLI
+// and the GitHub Actions runner have no such cap, so a pass invoked there would
+// stop after 50 seconds, leave the rest queued, and report a clean finish. Work
+// not done looked exactly like work done.
+//
+// `runFullSyncPass` already learned this - see the comment on its own budget,
+// where DEFAULT_FULL_BUDGET_MS was removed because "a default deadline made
+// every run stop". The same guess was still sitting one level down.
+//
+// So: no budget means NO DEADLINE. The pass runs until the queue drains. A
+// caller that IS on a clock says so - all three Vercel routes pass
+// FUNCTION_BUDGET_MS explicitly, which is where a platform limit belongs: with
+// the platform, not with the work.
 // Claim a big batch so the pool has plenty to chew on and claim round-trips are
 // amortised; process DEFAULT_QUEUE_CONCURRENCY of them at once. Raised from 10
 // after the serial loop measured ~2.35s/item on receipt_sync (27 Aug 2026).
@@ -2204,6 +2220,15 @@ const FULL_SYNC_WAVES: ReadonlyArray<
   ],
 ];
 
+/**
+ * Kept, although `runPass` no longer defaults a budget at all.
+ *
+ * This one is not a platform guess. It bounds ONE pass inside a run of MANY
+ * running together, so a single stuck pass cannot hold the whole wave open while
+ * the others sit finished. An unbounded pass here would be bounded anyway - by
+ * the runner's job timeout - but that bound kills the entire run rather than the
+ * one pass that deserved it.
+ */
 const DEFAULT_PARALLEL_PASS_BUDGET_MS = 90 * 60_000;
 
 /**
@@ -2283,7 +2308,7 @@ async function runPass(
   spec: JobSpec,
 ): Promise<SyncPassSummary> {
   const now = deps.now ?? (() => Date.now());
-  const budgetMs = deps.budgetMs ?? DEFAULT_BUDGET_MS;
+  const budgetMs = deps.budgetMs ?? Number.POSITIVE_INFINITY;
   const limit = deps.limit ?? DEFAULT_LIMIT;
   const concurrency = deps.concurrency ?? DEFAULT_QUEUE_CONCURRENCY;
   const leaseMs = deps.leaseMs ?? DEFAULT_LEASE_MS;
