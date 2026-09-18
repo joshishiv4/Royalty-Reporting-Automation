@@ -121,6 +121,39 @@ describe('runStaffSyncPass', () => {
     expect(close!.patch).toMatchObject({ state: 'partial' });
   });
 
+  // A pass given NO budget has NO deadline, however long it has been running.
+  //
+  // `runPass` used to fall back to DEFAULT_BUDGET_MS - 50 seconds, which was not
+  // a general default but the Vercel Hobby cap of 60 with a margin. Every caller
+  // that gave no budget inherited a serverless deadline regardless of what it was
+  // actually running on, so the CLI and the Actions runner - neither of which has
+  // a cap - stopped after 50 seconds, left the rest queued, and reported a clean
+  // finish. Work not done looked exactly like work done.
+  //
+  // The clock here is already ten minutes past the start, twelve times the old
+  // default. Restore that default and this test fails on the very first check:
+  // the pass breaks before claiming, exactly as the budgetMs: 0 case above does.
+  it('claims work with no budget set, even long past the deadline the old default imposed', async () => {
+    const { db, calls } = fakeDb({ claimReturns: [], eligibleRemaining: [] });
+
+    // First call is startedAt; every later call reports ten minutes on.
+    let tick = 0;
+    const now = (): number => (tick++ === 0 ? 0 : 10 * 60_000);
+
+    const summary = await runStaffSyncPass(config, {
+      wl: fakeWl(okResponse),
+      db,
+      now,
+      // budgetMs deliberately absent - that is the whole point of the test.
+    });
+
+    const attemptedClaim = calls.some(
+      (c) => c.op === 'select' && c.query?.includes('order=next_attempt_at.asc') === true,
+    );
+    expect(attemptedClaim).toBe(true);
+    expect(summary.state).toBe('ok');
+  });
+
   // The bug fix: a transient DATABASE hiccup on one item must requeue that item
   // and let the pass carry on - not abort the whole drain the way it did live on
   // 27 Aug 2026, when one Supabase blip failed receipt_sync with 10,938 items

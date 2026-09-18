@@ -1,0 +1,48 @@
+name: sync-range
+
+# RE-READ AN ARBITRARY DATE RANGE, BY HAND.
+#
+# The scheduled workflows cover the two cadences the data needs: hourly for
+# everything current, monthly for retroactive edits. This one is for the third
+# case, which has no cadence - somebody asks for a specific period, usually
+# because a report disagreed with WellnessLiving over a particular month.
+#
+# NO `schedule:` BLOCK, DELIBERATELY. A workflow that re-reads a fixed historical
+# range on a timer would re-read the same months for ever, spending real API
+# calls to confirm what it confirmed last time. This runs when a human asks and
+# not otherwise.
+#
+# THE RANGE IS PERSISTED, NOT PASSED THROUGH. `sync:historical` writes it as a
+# window override that the pass reads back, so a run that is cancelled or dies
+# resumes on what was asked for rather than losing the ask. The override is
+# cleared by the next clean drain, not on read - see migration 0031 for why a
+# standing override is a footgun.
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: 'First day to re-read, YYYY-MM-DD'
+        required: true
+        type: string
+      end:
+        description: 'Last day to re-read, YYYY-MM-DD'
+        required: true
+        type: string
+
+concurrency:
+  group: sync-driver
+  cancel-in-progress: false
+
+jobs:
+  range:
+    uses: ./.github/workflows/sync-run.yml
+    with:
+      command: 'sync:historical'
+      # Both flags or neither - the CLI rejects a lone boundary rather than
+      # quietly reading "from there to now", which on a typed date is far more
+      # likely to be a forgotten field than an intention.
+      args: '--start=${{ inputs.start }} --end=${{ inputs.end }}'
+      # A hand-asked range can be years rather than months.
+      timeout-minutes: 300
+    secrets: inherit

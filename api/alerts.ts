@@ -1,7 +1,7 @@
 import { loadConfig } from '../src/config/index.js';
 import { isAuthorizedByAny } from '../src/http/bearer.js';
 import type { HttpRequest, HttpResponse } from '../src/http/types.js';
-import { notifyDeadLetter } from '../src/notify/index.js';
+import { SWEEP_CRASH_WINDOW_MS, notifyDeadLetter } from '../src/notify/index.js';
 import { SupabaseClient } from '../src/supabase/client.js';
 
 /**
@@ -45,13 +45,12 @@ const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST']);
 /**
  * How far back the sweep looks for crashed passes.
  *
- * Deliberately WIDER than the six-hour cron interval. Equal to it would mean a
- * crash landing either side of a sweep boundary is reported by neither, and an
- * alert that can miss the thing it is watching for is worse than no alert. The
- * overlap costs a repeat of at most one sweep's worth, which is a fair trade
- * against silence.
+ * Defined in `src/notify` because the CLI has a sweep too (`alert:sweep`), and a
+ * window that differed between the two would give two answers to "was this crash
+ * reported" with nothing to say which is right. The reasoning for the value is
+ * there with it.
  */
-const CRASH_WINDOW_MS = 8 * 60 * 60 * 1000;
+const CRASH_WINDOW_MS = SWEEP_CRASH_WINDOW_MS;
 
 export default async function handler(req: HttpRequest, res: HttpResponse): Promise<void> {
   res.setHeader('Cache-Control', 'no-store');

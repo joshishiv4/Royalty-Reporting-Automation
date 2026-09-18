@@ -1,6 +1,6 @@
 # Data model
 
-**31 tables and 19 views** on Supabase — counted from the migrations on 17 Sep 2026.
+**38 tables and 19 views** on Supabase — counted from the migrations on 18 Sep 2026.
 The number has now drifted twice: it was six tables behind in Aug 2026, and by
 Sep 2026 it had gone five tables and three views behind again, `identity`, `student`
 and `teacher` included. Counting it is two shell commands over
@@ -22,6 +22,9 @@ money       location, service, purchase, purchase_item,
             pay_transaction, pay_transaction_item
                    views: purchase_net, revenue_month, purchase_over_refunded
 schedule    session, session_staff, attendance
+            cohort, class_session, class_session_teacher
+            attendance_record
+            cohort_link, session_link, attendance_link
                    view: session_outcome
 staff pay   staff_pay_rate, staff_service
 reference   promotion, shop_category, service_category, login_type
@@ -717,6 +720,113 @@ still billable. One boolean would force that rule to be guessed at read time.
 
 A single `k_staff` column on `session` could not record a substitute — and the
 substitute is precisely who a royalty is owed to.
+
+### The portal's schedule — `cohort`, `class_session` (0041, 0042)
+
+Everything above is the WellnessLiving mirror. The portal does not read it. It
+reads `cohort` and `class_session`, which carry **no WellnessLiving field at
+all**, with `cohort_link` and `session_link` carrying nothing else.
+
+```
+session.k_class          ──▶ cohort_link   ──▶ cohort         (no WL field)
+session (k_period, dt)   ──▶ session_link  ──▶ class_session  (no WL field)
+session_staff                                   └── class_session_teacher
+```
+
+**WellnessLiving compresses two levels into one table, and the portal needs
+both.** `0004` states it: `k_class` 268302 is "A Joyful Noise | 60 Minutes" every
+week forever, so it names the *class*, not the occurrence. But `k_class` is a
+**column on `session`** — there is no class table. `cohort` is that missing level,
+which is also why `cohort_link` carries no foreign key: nothing is unique on
+`session.k_class` for it to reference. `session_link` does have one, because
+`session` is a real table with a real key.
+
+**Presence of a link is the provenance.** A `class_session` with a `session_link`
+row came from WellnessLiving; one without was created in the portal. Nothing else
+records it, so nothing can disagree — the same reasoning `0001` used when it
+refused an `is_staff` flag in favour of "a non-null `k_staff` is the answer". A
+`source` column would be a second place holding one fact.
+
+**An unnamed class still shows.** A session may carry a `k_class` nobody has
+mapped. `0042` stubs a cohort from the session title with `is_resolved = false`
+rather than hiding the session, because the requirement this work exists for is
+that a session visible in WellnessLiving is visible in the portal. The flag keeps
+a placeholder countable instead of indistinguishable from a name a human chose —
+the same shape as `service.is_resolved` in `0012`.
+
+**Teachers are a join table, not a column.** `class_session_teacher` exists for
+exactly the reason `session_staff` does one level down: WL allows several staff on
+an occurrence and flags substitutes, and the substitute is who a royalty is owed
+to. The dashboard shows one name; that is a choice the API makes from complete
+data, not one the schema makes for it. It needs no link table — the occurrence
+resolves through `session_link` and the person through `identity`.
+
+**A teacher recognised late is still attached.** `0042` has a fourth trigger, on
+`identity.teacher_id`. Without it, any session taught by someone whose role was
+not yet known — a stub person, the ordinary state — would show no teacher for
+ever: the staff row is never rewritten when the person is later enriched, so
+nothing would call the projection again.
+
+**The `WHEN` clauses list projected columns one by one.** `old.* IS DISTINCT FROM
+new.*` would have been shorter and would fire on every session every night,
+because `session.synced_at` moves on every pass whether or not anything changed.
+
+**Local time is copied, never re-derived** — `local_start` is `timestamp` without
+a zone, matching `dtl_start_local`. The reasoning is the same one recorded above
+for `session`: WL's `text_timezone` is `"ET"`, an abbreviation that does not say
+whether EST or EDT was in force.
+
+### `attendance_record` — and why it has a link after all (0043, 0044)
+
+An earlier draft of this design argued that attendance needed no link table: its
+WL key `(k_period, dt_start_utc, uid)` is already resolvable, the occurrence
+through `session_link` and the person through `identity`. That is true **for
+mapping**, and it was the wrong conclusion, because mapping is not the only thing
+a link carries.
+
+The question the design has to answer is **where did this attendance come from** —
+WellnessLiving, or the portal? Nothing in `(class_session_id, student_id)` can
+say. And the two sources are real rather than hypothetical: a portal-native
+student has no `uid`, so WellnessLiving cannot ever report their attendance.
+
+> A link row means WellnessLiving sent it. No link row means the portal did.
+
+Provenance is therefore **derived, never stored**. A `source` column would be a
+second place holding a fact the link already holds — the thing `0001` refused when
+it rejected an `is_staff` flag. The link buys a third thing neither mapping nor a
+column would: if a session is marked attended in the portal and WL later syncs the
+same attendance, **that collision is visible** instead of silently overwritten.
+
+**The backfill is set-based, and that is a deliberate departure.** `0040` and
+`0042` loop row by row, which was fast enough at 1,285 people and 44,499 sessions.
+This is the largest table here — one row per attendee per occurrence, for ever —
+and a loop over it in the SQL editor is a statement timeout, not a slow success. A
+backfill that dies half way leaves exactly the silent gap the one-file rule exists
+to prevent.
+
+**Attendance by a teacher is not projected, and that is the role rule showing
+through.** `attendance_record.student_id` is `NOT NULL`, and a person is a student
+or a teacher, never both. A staff member who attends a class as a client is
+visible in the WL mirror and absent from the portal's view. It is written here so
+it is recognised rather than rediscovered.
+
+**`is_attended` is nullable here too, and the first draft of `0043` got that
+wrong.** It was written `not null default false` — exactly what `attendance` used
+to be, and exactly what `0029` removed. That reasoning transfers word for word:
+the default asserts every visit was *not* attended until proven otherwise, which
+is a claim nobody can make about a session that has not happened yet, or one WL
+has left PENDING for staff to settle.
+
+A not-null violation on the backfill is what caught it. The tempting fix was
+`coalesce(is_attended, false)`, and it would have been **worse than the error** —
+it turns "we have no idea" into "they did not turn up", silently, in the column a
+student reads as their own record and a royalty is calculated from.
+
+**A person who becomes a student keeps their history.** `0044`'s third trigger
+fires on `identity.student_id`. Without it every class a stub person had already
+attended would be missing for ever: the attendance rows are never rewritten when
+the person is later enriched, so nothing would call the projection again. It is
+the same hole `0042` closes for teachers, one table along.
 
 ## Staff pay — structure only
 

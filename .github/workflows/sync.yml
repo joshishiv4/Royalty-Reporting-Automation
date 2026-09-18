@@ -1,0 +1,38 @@
+name: sync
+
+# THE SYNC RUNS HERE, NOT ON VERCEL, AND THE REASON IS THE 60-SECOND CAP.
+#
+# A Vercel Hobby function is killed at 60 seconds. Draining the `client_visits`
+# queue on 18 Sep 2026 took six invocations because of it, and a 504 was the
+# normal way each one ended.
+#
+# A GitHub Actions runner has no such cap. So the work moved to where the clock
+# is not the constraint, and it runs through `sync:full-parallel`, which starts
+# every pass concurrently instead of walking them one behind another.
+#
+# WHY THE PASSES ARE SAFE TO RUN THIS WAY. Each takes a database lease (5 min,
+# heartbeat-extended) and the durable queue is the cursor, so a run that is
+# cancelled, times out or overlaps another loses nothing: the next one resumes
+# from the queue. The `concurrency` block still serialises runs, because a second
+# runner would only spend its time discovering every job is locked.
+#
+# THE ENVIRONMENT IS IN sync-run.yml, once, for all three runner workflows.
+
+on:
+  schedule:
+    # Hourly. Raise it if the queue keeps a backlog; lower it if Actions minutes
+    # matter more than freshness. The first run after a long outage does the
+    # whole backlog in ONE run rather than needing one invocation per 400 items.
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: sync-driver
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    uses: ./.github/workflows/sync-run.yml
+    with:
+      command: 'sync:full-parallel'
+    secrets: inherit

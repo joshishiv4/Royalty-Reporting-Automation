@@ -1,6 +1,6 @@
 # Status and plan
 
-Last updated **17 Sep 2026**. Keep the date honest — a stale status file is worse
+Last updated **18 Sep 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed.
 
 ## The plan
@@ -24,6 +24,72 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### Incident, 18 Sep 2026 — the sync was dead for four days and nothing said so
+
+Found by comparing our numbers against WellnessLiving's own reports, by hand. Not
+by an alert, because the alert was broken by the same cause.
+
+**The chain, in order.** `CRON_SECRET` was not set on the Vercel project. Vercel
+Cron only sends an `Authorization` header when that variable exists, so every cron
+arrived with none; [`src/http/bearer.ts`](../src/http/bearer.ts) correctly refuses
+an unconfigured secret, and every invocation returned **401 in about 5ms having
+reached nothing**. `client_session_sync` therefore had not run since **14 Sep**.
+
+**What that cost, measured.** Appointment outcomes come only from
+`client-sessions.ts`, and a visit is read once when booked and again after it
+happens. With no runs, the second read never came:
+
+| Week | Total | WL says attended | We said |
+|---|---|---|---|
+| 14 Sep | 190 | — | **1** |
+| 7 Sep | 177 | 135 | 108 |
+| 31 Aug | 207 | — | 173 |
+| 24 Aug and earlier | ~150–200 | — | ≈ total |
+
+Everything to 24 Aug is healthy, so the damage is bounded to two weeks.
+
+**Three things made it silent, and each is worth keeping in mind.**
+
+- **The watchdog shared the failure.** `/api/alerts` 401s like everything else, so
+  the one check designed to notice that nothing happened did not happen. It is now
+  the only sync-adjacent thing left on Vercel's clock, deliberately.
+- **`rows_fetched` is 0 on every `sync_run` row**, including a 7-minute one. A run
+  reads as `ok` whether it did everything or nothing. Looking at the run table
+  would not have found this. **Not fixed.**
+- **`SESSION_IMMUTABLE_AFTER_DAYS = 7` assumes somebody looked.** A visit older
+  than a week is never re-read, whatever its state — the rule has no notion of "we
+  were not running". That is what turned an outage into permanent bad data.
+
+**What was recovered, and what was not.** The 14 Sep week came back: `attended` 1 →
+104 and rising, driven by hand through `/api/sync-job?job=attendance-close` plus a
+one-shot window override (`/api/sync-window`) once it emerged that
+`SYNC_DAILY_LOOKBACK_DAYS = 3` was excluding 14 Sep from the past-visit list.
+**The 7 Sep week cannot be recovered** by the current code: ~30 visits are past the
+seven-day rule, and reopening them needs either a code change or a targeted
+re-read outside the pass. Left wrong, knowingly, and recorded here because the
+royalty calculation is not written yet and must not read that week as fact.
+
+**Two things are still open from this.** `/api/wellness-sync-all` returns **500**
+(cause not yet measured — the route's `detail` field has not been read), and ~60
+visits in the 14 Sep week remain `BOOK` because their queue items completed within
+the 24-hour fresh-done window and will not re-seed until it lapses.
+
+### The schedule left Vercel, 18 Sep 2026
+
+A consequence of the above, and of a limit that was always there. The project is
+on Vercel's **Hobby** plan: two cron entries, once a day each, 60-second functions.
+Ten crons were configured. Draining one queue that day took **six invocations** —
+one run a day would have taken a week.
+
+So `sync:full-parallel` now runs hourly on a GitHub Actions runner, which has no
+60-second cap, and Vercel keeps the two crons it can honour: `/api/alerts`, the
+watchdog that must not share a failure with the thing it watches, and
+`/api/wellness-sync-all` as a safety net. The named jobs are unchanged and still
+callable at `/api/sync-job?job=<name>`. See section 7 of
+[RUNBOOK.md](RUNBOOK.md).
+
+**Nothing about the Vercel account changed**, which was the constraint asked for.
 
 ### How M03 got here
 
