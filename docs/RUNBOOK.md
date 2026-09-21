@@ -306,6 +306,7 @@ preference**.
 | --- | --- | --- |
 | [`.github/workflows/sync.yml`](../.github/workflows/sync.yml) | Hourly, the whole sync | A runner has no 60-second cap |
 | [`.github/workflows/sync-monthly.yml`](../.github/workflows/sync-monthly.yml) | Monthly re-read | Same cap, and this is the pass that needs the time most |
+| [`.github/workflows/alerts.yml`](../.github/workflows/alerts.yml) | Daily 06:00, the watchdog sweep | Moved off Vercel — see the warning below |
 | [`.github/workflows/sync-range.yml`](../.github/workflows/sync-range.yml) | An arbitrary range, by hand | No cadence — it runs when somebody asks |
 | [`.github/workflows/sync-run.yml`](../.github/workflows/sync-run.yml) | Not a schedule | The environment the three above share, written once |
 | [`vercel.json`](../vercel.json) | 1 cron | The watchdog only — see below |
@@ -389,6 +390,29 @@ needs re-running on its own. Only the routine driver changed.
 credentials, the Supabase service role key, the GoHighLevel token and the SMTP
 settings, the same set [`.env.example`](../.env.example) lists. They are secrets
 and never literals in the workflow file, for the reason hosts are never literals
+### Nothing is scheduled on Vercel any more
+
+Every cron is a GitHub Actions workflow, and they all share one environment block
+— [`sync-run.yml`](../.github/workflows/sync-run.yml), a reusable workflow the
+others call with a command. That exists so the secrets are written once: a copy
+per caller is three places to edit, and the copy somebody forgets does not fail
+loudly — the variable is simply empty and the job runs with a default nobody
+chose.
+
+**The watchdog now shares a failure with what it watches.** `alerts.yml` was a
+Vercel cron precisely so that it did not. With everything on Actions, one outage
+takes the sync *and* the alert that would have told you the sync had stopped.
+`api/alerts.ts` already states the shape of it: *"something outside the platform
+has to notice the platform."*
+
+That something no longer exists. **Closing it needs an external uptime monitor** —
+against `/api/health`, or against these workflows' schedules — and it is not in
+this repository because it is not code. Until one exists, a silent Actions outage
+is silent.
+
+The Vercel routes are all still deployed and still callable by hand; only the
+schedules are gone.
+
 in `src/` and `api/`. `sync-monthly.yml` needs only `SYNC_BASE_URL` and
 `SYNC_TRIGGER_TOKEN`, because it calls the route rather than running the sync.
 
