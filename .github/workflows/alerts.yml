@@ -1,0 +1,48 @@
+name: alerts
+
+# THE WATCHDOG, MOVED OFF VERCEL.
+#
+# It reports jobs overdue against their declared cadence, the parked backlog once
+# it crosses the threshold, and records flagged for review beyond 48 hours. It
+# mails ONLY when something is wrong: a quiet inbox is the signal that the system
+# is fine, and an alert channel that mails on healthy days stops being read.
+#
+# ---------------------------------------------------------------------------
+# WHAT MOVING IT HERE COSTS, WRITTEN DOWN RATHER THAN DISCOVERED
+#
+# It ran on Vercel deliberately: the watchdog should not share a failure with the
+# thing it is watching. With every schedule on Actions, one outage now takes the
+# sync AND the alert that would have told you the sync had stopped.
+#
+# `api/alerts.ts` already states the shape of this: "If the deployment itself is
+# gone, paused, or never received these crons, this function does not run either
+# and nobody is told. No internal check can cover that - something outside the
+# platform has to notice the platform."
+#
+# That something no longer exists here. Closing the gap needs an EXTERNAL uptime
+# monitor, and it is not in this repository because it is not code.
+# ---------------------------------------------------------------------------
+#
+# 06:00 because by then the hourly sync has had all night to drain, so the sweep
+# reports on a settled system rather than on work still in flight.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: alerts
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    # The shared environment block, so the twenty secrets are written once. A
+    # copy here is the "two places holding one fact" failure sync-run.yml exists
+    # to prevent - and the copy somebody forgets does not fail loudly, it just
+    # runs with an empty variable.
+    uses: ./.github/workflows/sync-run.yml
+    secrets: inherit
+    with:
+      command: alert:sweep
+      timeout-minutes: 15
