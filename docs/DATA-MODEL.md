@@ -1,6 +1,6 @@
 # Data model
 
-**39 tables and 19 views** on Supabase — counted from the migrations on 18 Sep 2026.
+**41 tables and 19 views** on Supabase — counted from the migrations on 23 Sep 2026.
 The number has now drifted twice: it was six tables behind in Aug 2026, and by
 Sep 2026 it had gone five tables and three views behind again, `identity`, `student`
 and `teacher` included. Counting it is two shell commands over
@@ -15,28 +15,35 @@ API findings behind these choices: [WL-API-NOTES.md](WL-API-NOTES.md).
 ## Layout
 
 ```
-people      person, lead, identity, student, teacher
-                   views: client, active_client, wl_teacher
-money       location, service, purchase, purchase_item,
-            purchase_payment, purchase_account_credit,
-            pay_transaction, pay_transaction_item
-                   views: purchase_net, revenue_month, purchase_over_refunded
-schedule    session, session_staff, attendance
-            cohort, class_session, class_session_teacher
-            attendance_record
-            cohort_link, session_link, attendance_link
-                   view: session_outcome
-staff pay   staff_pay_rate, staff_service
-reference   promotion, shop_category, service_category, login_type
-                   view: unresolved_service
-ghl         ghl_contact, ghl_custom_field
-                   views: client_ghl, ghl_enrichment_missing
-control     sync_queue, sync_job_state, sync_run, sync_conflict
-                   views: sync_queue_progress, ghl_match_progress
-portal      creation
-raw         raw_wl, raw_ghl, raw_link
-health      views: data_health, data_health_issue,
-                   customer_journey, enrollment_margin
+app/        the portal owns these. No WellnessLiving key appears on any of
+            them - those live on identity and the three link tables, which
+            are the translation.
+  people      identity, student, teacher
+  schedule    cohort, class_session, class_session_teacher
+              attendance_record
+  provenance  cohort_link, session_link, attendance_link
+  tenancy     organization, organization_membership
+  portal      creation
+
+public/     the WellnessLiving mirror the sync writes, plus the control plane.
+  people      person, lead
+                     views: client, active_client, wl_teacher
+  money       location, service, purchase, purchase_item,
+              purchase_payment, purchase_account_credit,
+              pay_transaction, pay_transaction_item
+                     views: purchase_net, revenue_month, purchase_over_refunded
+  schedule    session, session_staff, attendance
+                     view: session_outcome
+  staff pay   staff_pay_rate, staff_service
+  reference   promotion, shop_category, service_category, login_type
+                     view: unresolved_service
+  ghl         ghl_contact, ghl_custom_field
+                     views: client_ghl, ghl_enrichment_missing
+  control     sync_queue, sync_job_state, sync_run, sync_conflict
+                     views: sync_queue_progress, ghl_match_progress
+  raw         raw_wl, raw_ghl, raw_link
+  health      views: data_health, data_health_issue,
+                     customer_journey, enrollment_margin
 ```
 
 Every table carries:
@@ -145,6 +152,52 @@ teaching without being paid, and is worth a human look before it earns a royalty
 All 20 are stored, flags included, so redefining "teaches" is a `WHERE` clause
 rather than a migration and a backfill.
 
+### Two schemas, and what the boundary is actually for (0047)
+
+`app` holds the thirteen tables the portal owns. `public` holds the twenty-eight
+the sync writes. They were in one schema because the projection was built where
+the mirror already was, not because anything wanted them together.
+
+**The separation buys one concrete thing, and it is not tidiness.** PostgREST is
+told which schemas to expose. With one schema, exposing the portal's tables
+exposes `purchase`, `pay_transaction` and `raw_wl` beside them, and the only
+thing between a misconfigured role and the money is RLS with no policies on it -
+which is correct today and is one forgotten `create policy` away from not being.
+With two, the mirror is not addressable at all.
+
+**No foreign key was dropped to buy it.** A key crosses a schema perfectly well:
+`app.identity.uid` still references `public.person (uid)`, `app.session_link`
+still references `public.session`. So do the triggers - the projection ones stay
+on `public.person`, `public.session`, `public.session_staff` and
+`public.attendance` and write into `app`. Views bind to an OID rather than a
+name, so nothing that selects from a moved table needed restating. An earlier
+proposal paired the schema split with *"zero foreign keys across the boundary"*,
+on the grounds that WellnessLiving might one day be replaced. That is a
+hypothetical paid for with a guarantee needed every day, and the two decisions
+are independent.
+
+**What `SET SCHEMA` does not carry is the whole risk.** It moves a table's
+indexes, constraints, keys, triggers, RLS policies and comments. It does not
+touch a function body - and a plpgsql body resolves its table names when it
+**runs**. So moving a table raises nothing, warns about nothing, and the break
+arrives on the next INSERT as
+
+```
+relation "public.cohort_link" does not exist
+```
+
+raised inside a trigger on `public.session`, failing the sync's own write. That
+is why `0047` moves the tables and re-points all fourteen projection functions
+in **one file**: a database that has had the first without the second is a
+database whose next sync pass dies. It is also why the completeness of that
+re-point is asserted in `tests/app-schema.test.ts` rather than trusted - a
+migration running cleanly proves nothing about it.
+
+**The functions themselves stay in `public`**, as does `set_updated_at`, which
+the mirror tables share. Their bodies address `app`; where they are defined is a
+separate question from what they read, and keeping them in one schema is what
+makes "where is this defined" answerable without a search.
+
 ### The portal's central record — `identity`, `student`, `teacher` (0039)
 
 `person` cannot describe a student who signed up through the portal, because its
@@ -202,6 +255,113 @@ change is dropping that one constraint.
 
 Nothing writes these tables from application code. They are maintained by trigger
 from `person` — see the migration table in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+### Spin is Organization #1, not the system (0048)
+
+Nothing here is multi-tenancy. There is no provider onboarding, no organization
+switching, no second organization. `0048` makes the **first** one explicit so
+that a second is an `INSERT` rather than a schema rewrite.
+
+```
+organization ──▶ organization_membership ──▶ identity   (the human)
+     │
+     └── organization_id on the 7 application tables
+```
+
+**Two new tables, and a column on seven. The mirror and the links get nothing.**
+
+`k_business` was already the tenant key, and that is the problem. It sits on 23
+mirror tables — 1,292 people, 44,793 sessions, 22,787 purchases — holding the
+single value `334942` on every row. Promoting it is the tempting move and the
+wrong one: it is WellnessLiving's business key, so a future organization's
+existence would depend on it having a WellnessLiving account. WL is an
+integration Organization #1 uses, not something every organization must have.
+WL-shaped rows resolve through `organization.wl_k_business`, a column that is
+**nullable on purpose** — an organization with no WL account is a normal row.
+
+`cohort_link`, `session_link` and `attendance_link` carry nothing but the
+provenance of one owned row. Their organization is whatever their owned row
+says; a column here would be a second answer, and the two would drift.
+
+| Table | Organization comes from |
+|---|---|
+| `student`, `teacher`, `cohort`, `class_session`, `class_session_teacher`, `attendance_record`, `creation` | `organization_id`, `NOT NULL` |
+| `identity` | **nothing** — see below |
+| the three `*_link` tables | their owned row |
+| every WL-shaped table | `k_business` → `organization.wl_k_business` |
+
+**`identity` gets no `organization_id`.** It is the mapping row — the one table
+a WL key may appear on — and it is the canonical human. The same human may later
+be a participant at one provider and a teacher at another, so a column on the
+human is a single-org assumption wearing a different hat. Organization and role
+live together on the membership, where both can repeat.
+
+**Membership points at `identity`, never `person`.** A naming collision worth
+stating, because the wrong reading produces the wrong table: `person` is the WL
+*mirror* and its `uid` is `NOT NULL`, so a human WellnessLiving has never heard
+of cannot have a row there at all. Hanging membership off `person` would mean
+only people WL knows about can belong to an organization — the exact coupling
+this migration removes.
+
+### `organization_stamp()` fails loudly rather than assuming Spin
+
+Four of the seven tables are written by the projection functions in `0042` and
+`0044`, which have fourteen trigger cases passing against them. Threading an
+organization through those functions would mean a new argument on every path
+that resolves a teacher through `identity` or a session through `session_link`.
+A `BEFORE INSERT` trigger fills the column instead, and the sync keeps working
+unchanged.
+
+It uses `select … into strict`, **not** a column default. A default would have
+to name Spin, which hardcodes Organization #1 into the schema — the assumption
+this migration exists to delete. `into strict` raises `NO_DATA_FOUND` with no
+organization and `TOO_MANY_ROWS` with two, so the day a second organization is
+created, every insert that did not choose one **fails**.
+
+That error is the feature. It arrives at the exact moment the one-organization
+assumption stops being true, instead of silently filing a second provider's
+class under Spin.
+
+`NOT NULL` is then real rather than aspirational, which is requirement 6:
+ownership is written down, never inferred from a null.
+
+### Why `0048` writes no RLS policy
+
+`identity.auth_user_id` is **null on all 1,292 rows**, and so is
+`person.auth_user_id`. Nobody has ever authenticated against this database. The
+five policies `0010` wrote — on `person`, `purchase`, `purchase_item`,
+`attendance`, `session` — therefore match zero rows for every caller today and
+have never been exercised by a real request.
+
+A policy written now would be written against a shape no request has ever taken.
+So the tenancy tables are RLS-enabled with no policies, meaning service_role
+only, and the org-scoped policies belong in the migration that also wires portal
+login. What that migration needs:
+
+- **One auth anchor, not two.** `person.auth_user_id` and `identity.auth_user_id`
+  both exist and both are empty. `identity` is the correct one — it is the only
+  one a portal-native human can have. `person.auth_user_id` should go, and the
+  `0010` policies be rewritten through `identity`, while the cost is still zero
+  rows.
+- **A `security definer` helper** over `organization_membership`, so a policy
+  does not join it inline on every row.
+- **Raw payloads stay out.** `raw_wl` and `raw_ghl` have **no RLS enabled at
+  all** — only `raw_link` does. They hold whole API responses for every client,
+  so they are service_role-only by intent and should be enabled to match.
+
+### Known gaps `0048` leaves open, deliberately
+
+- **Membership role does not self-correct.** `0040` re-sorts a stub into
+  `teacher` when their login type lands; the membership row stays
+  `participant`. Making it follow is what turns membership into the source of
+  truth for role, and it belongs with the migration that drops
+  `identity_one_role_check` — that constraint is per-human, and role is about
+  to become per-organization.
+- **47 orphaned `student` rows.** `student` holds 1,292 rows but only 1,245 are
+  referenced by an identity; the difference is the 47 teachers, whose student
+  row was created before their login type arrived and left behind when the role
+  moved. They are now stamped with an organization like everything else, which
+  makes them countable but not correct.
 
 ### `text_member` is not `uid`
 

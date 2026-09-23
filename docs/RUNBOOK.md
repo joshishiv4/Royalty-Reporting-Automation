@@ -605,7 +605,58 @@ not finished cleanly in a while.
 
 ---
 
-## 8. Recovery procedures
+## 8. Applying the app-schema split (0047-0049)
+
+The portal's thirteen tables live in a schema of their own, `app`. Two things
+outside the migrations have to be true for that to work, and **both are silent
+when they are not**.
+
+**Order matters, and there is a window.** Between step 2 and step 3 the portal
+reads nothing.
+
+1. **Expose the schema to PostgREST.** Supabase Dashboard -> Settings -> API ->
+   **Exposed schemas**: add `app`. Until this is done every portal query returns
+   **PGRST106**, not an empty result - PostgREST does not know the schema is
+   there. The `grant usage` in `0047` is necessary and not sufficient; this
+   setting is a second, separate switch.
+
+2. **Run the migrations, in order.** `0047` moves the tables and re-points the
+   fourteen projection functions. `0048` creates `organization` in `app`. `0049`
+   is the reconcile.
+
+   `0047` must not be split. A database that has had the move without the
+   re-point raises nothing until the next sync, and then fails a trigger on
+   `public.session` with `relation "public.cohort_link" does not exist` - which
+   fails the sync's own INSERT.
+
+3. **Deploy the portal** with `db: { schema: 'app' }` in its Supabase client.
+
+### Verifying it took
+
+```
+supabase/checks/portal_projection_verify.sql   every table and trigger, and no
+                                               WL column on an owned table
+supabase/checks/identity_trigger_cases.sql     the triggers by DOING - insert,
+                                               observe, ROLLBACK
+```
+
+Run **both**. The first proves the shape, the second proves the triggers still
+fire across the schema boundary, and only the second can tell you the projection
+is alive rather than merely present.
+
+`npm run verify` covers the static half: `tests/app-schema.test.ts` fails the
+build if any migration from `0047` on still addresses an owned table as
+`public.`, or if a check script's catalogue lookup still says `table_schema =
+'public'` - which would make that check report PASS by matching nothing.
+
+### If the sync starts failing after the move
+
+Look for `relation "public.<table>" does not exist` in the `sync_run.error`
+column. That is a projection function that was not re-pointed. It is not
+recoverable by retrying; re-run `0047`, which is safe to re-run, and then `0049`
+to fill whatever was missed while it was broken.
+
+## 9. Recovery procedures
 
 Read section 7 first: most of what looks like a failure is a budgeted run doing
 exactly what it was built to do. In particular, `partial` from
@@ -763,7 +814,7 @@ problem, not a data problem. Go to section 4.
 
 ---
 
-## 9. Data traps and open questions
+## 10. Data traps and open questions
 
 What is unresolved, and which numbers are provisional. Anyone inheriting this
 needs this section more than any other.
