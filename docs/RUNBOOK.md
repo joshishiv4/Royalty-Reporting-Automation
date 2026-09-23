@@ -299,8 +299,8 @@ intentionally not committed — CI is the enforcement point.
 
 ## 7. The scheduled jobs
 
-The schedule lives in **two places, and the split is a plan limit, not a
-preference**.
+The schedule lives in **one place, GitHub Actions**, and that it is one place is a
+plan limit rather than a preference.
 
 | Where | What | Why there |
 | --- | --- | --- |
@@ -308,11 +308,16 @@ preference**.
 | [`.github/workflows/sync-monthly.yml`](../.github/workflows/sync-monthly.yml) | Monthly re-read | Same cap, and this is the pass that needs the time most |
 | [`.github/workflows/alerts.yml`](../.github/workflows/alerts.yml) | Daily 06:00, the watchdog sweep | Moved off Vercel — see the warning below |
 | [`.github/workflows/sync-range.yml`](../.github/workflows/sync-range.yml) | An arbitrary range, by hand | No cadence — it runs when somebody asks |
-| [`.github/workflows/sync-run.yml`](../.github/workflows/sync-run.yml) | Not a schedule | The environment the three above share, written once |
-| [`vercel.json`](../vercel.json) | 1 cron | The watchdog only — see below |
+| [`.github/workflows/sync-run.yml`](../.github/workflows/sync-run.yml) | Not a schedule | The environment the four above share, written once |
+| [`vercel.json`](../vercel.json) | **No cron at all** | It held the watchdog until 21 Sep 2026 — see below |
 
-**`sync-run.yml` is a `workflow_call`, not a schedule.** Three workflows need the
-same nineteen secrets. Three copies is three places to edit when a setting is
+**A `schedule:` only fires from the default branch.** A cron added on a feature
+branch does not run, and GitHub reports nothing about it: the workflow simply does
+not appear. A schedule that has never fired looks exactly like one that is merged
+and quiet.
+
+**`sync-run.yml` is a `workflow_call`, not a schedule.** Four workflows need the
+same nineteen secrets. Four copies is four places to edit when a setting is
 added, and the copy that gets forgotten does not fail — the variable arrives
 **empty** and the job runs on a default nobody chose. Adding a secret now means
 editing one file.
@@ -345,32 +350,36 @@ means no deadline, and the three Vercel routes pass `FUNCTION_BUDGET_MS`
 explicitly, which is where a platform limit belongs — with the platform, not with
 the work.
 
-**What stayed on Vercel, and why.**
+**Nothing is scheduled on Vercel any more, as of 21 Sep 2026.**
 
-| Schedule (UTC) | Route | What it does |
-| --- | --- | --- |
-| `0 6 * * *` | `/api/alerts` | The watchdog — and the ONLY reason anything is still scheduled here |
+The watchdog was the last one, and it was kept back on purpose: a watchdog on the
+same platform as the thing it watches is not a watchdog. It is now
+[`alerts.yml`](../.github/workflows/alerts.yml), and `vercel.json` has no `crons`
+block at all.
 
-**One cron, kept on purpose.** Everything else moved, but the watchdog did not,
-because a watchdog on the same platform as the thing it watches is not a watchdog.
-With both on Actions, one outage stops the sync **and** the alert that would have
-said so, and the first anyone hears of it is a stale report. Keeping this single
-entry on Vercel means a GitHub failure still produces mail.
+**So the watchdog now shares a failure with what it watches.** One Actions outage
+takes the sync **and** the alert that would have said the sync had stopped, and
+the first anyone hears of it is a stale report. That is a real loss, taken
+knowingly, and it is written here rather than left to be rediscovered — which is
+how the 14–18 Sep outage went unnoticed for four days.
 
-**It needs `CRON_SECRET` set on Vercel.** Vercel Cron sends that variable's value
-as the bearer; without it this route answers 401 and the watchdog is silently off.
-Setting it to the same value as `SYNC_TRIGGER_TOKEN` is fine and is what is done —
-`isAuthorizedByAny` accepts either, so it is one secret to rotate rather than two.
+**`CRON_SECRET` is no longer load-bearing.** It existed because Vercel Cron sent
+it as the bearer. With no Vercel cron, nothing sends it; the token that still
+matters is `SYNC_TRIGGER_TOKEN`, which every route accepts and which is what a
+human calling `/api/sync-job` by hand uses. `isAuthorizedByAny` takes either, so
+leaving `CRON_SECRET` set costs nothing and removing it breaks nothing.
 
-**`/api/wellness-sync-all` is no longer scheduled**, only callable by hand. It was
-the safety net for "Actions is unavailable", and that role now costs a cron the
-watchdog needs more. If Actions is down, the watchdog says so and somebody runs it.
+**`/api/wellness-sync-all` is not scheduled either**, only callable by hand. It
+was the safety net for "Actions is unavailable". That net is now thinner: if
+Actions is down, the watchdog is down with it, and somebody has to notice
+unprompted.
 
-**What nothing covers.** If the Vercel deployment itself is gone or paused, the
-watchdog does not run and nobody is told. No internal check can cover that —
-something outside both platforms has to notice. An external uptime monitor against
-`/api/health` is the other half, and it is **not set up**; it is not in this
-repository because it is not code.
+**What nothing covers.** If Actions is disabled, out of minutes, or simply drops
+the scheduled run — GitHub treats `schedule:` as best-effort and skips it under
+load — nothing runs and nobody is told. No internal check can cover that;
+something outside the platform has to notice the platform. **An external uptime
+monitor is the other half, and it is not set up.** It is not in this repository
+because it is not code.
 
 **The named jobs did not go away.** `/api/sync-job?job=<name>` is still the route
 for all seven, still callable by hand, and still what to reach for when one group
@@ -390,29 +399,6 @@ needs re-running on its own. Only the routine driver changed.
 credentials, the Supabase service role key, the GoHighLevel token and the SMTP
 settings, the same set [`.env.example`](../.env.example) lists. They are secrets
 and never literals in the workflow file, for the reason hosts are never literals
-### Nothing is scheduled on Vercel any more
-
-Every cron is a GitHub Actions workflow, and they all share one environment block
-— [`sync-run.yml`](../.github/workflows/sync-run.yml), a reusable workflow the
-others call with a command. That exists so the secrets are written once: a copy
-per caller is three places to edit, and the copy somebody forgets does not fail
-loudly — the variable is simply empty and the job runs with a default nobody
-chose.
-
-**The watchdog now shares a failure with what it watches.** `alerts.yml` was a
-Vercel cron precisely so that it did not. With everything on Actions, one outage
-takes the sync *and* the alert that would have told you the sync had stopped.
-`api/alerts.ts` already states the shape of it: *"something outside the platform
-has to notice the platform."*
-
-That something no longer exists. **Closing it needs an external uptime monitor** —
-against `/api/health`, or against these workflows' schedules — and it is not in
-this repository because it is not code. Until one exists, a silent Actions outage
-is silent.
-
-The Vercel routes are all still deployed and still callable by hand; only the
-schedules are gone.
-
 in `src/` and `api/`. `sync-monthly.yml` needs only `SYNC_BASE_URL` and
 `SYNC_TRIGGER_TOKEN`, because it calls the route rather than running the sync.
 
