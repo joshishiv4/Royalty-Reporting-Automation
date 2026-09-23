@@ -167,13 +167,29 @@ describe('client-list report state machine', () => {
     expect(h.jobState().report_handle).toBeNull();
   });
 
-  it('abandons a build past its deadline and defers a clean restart', async () => {
+  it('restarts a build past its deadline WITHIN the same step', async () => {
     const h = harness(() => 2);
-    await h.step(iso('2026-08-27T00:00:00.000Z')); // requested, expires +10min
-    const outcome = await h.step(iso('2026-08-27T00:11:00.000Z')); // past the deadline
+    await h.step(iso('2026-08-27T00:00:00.000Z')); // requested, expires +3h
+    const outcome = await h.step(iso('2026-08-27T04:00:00.000Z')); // past the deadline
 
-    expect(outcome).toEqual({ kind: 'defer', requeueAfterMs: 2_000 });
-    expect(h.jobState().report_handle).toBeNull(); // cleared -> next step re-requests
+    // It used to clear and defer, leaving the handle null so that only the NEXT
+    // invocation re-requested. With an hourly schedule that is half of an
+    // infinite loop: request, clear, request, clear, never a poll. So the
+    // deadline branch now falls through into the request, and the step ends
+    // holding a fresh handle rather than nothing.
+    expect(outcome).toEqual({ kind: 'defer', requeueAfterMs: 5_000 });
+    expect(h.jobState().report_handle).not.toBeNull();
+  });
+
+  it('does not abandon a build while the deadline is still ahead', async () => {
+    const h = harness(() => 2);
+    await h.step(iso('2026-08-27T00:00:00.000Z'));
+    const handle = h.jobState().report_handle;
+    // An hour later - which used to be past the 10-minute deadline, and is the
+    // exact gap the hourly cron produces.
+    await h.step(iso('2026-08-27T01:00:00.000Z'));
+
+    expect(h.jobState().report_handle).toBe(handle); // polled, not restarted
   });
 });
 

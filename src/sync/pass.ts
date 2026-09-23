@@ -169,7 +169,36 @@ const CLIENT_LIST_ALL = { memberStatuses: [] } as const;
  */
 const REPORT_POLL_BACKOFF_MS = [5_000, 10_000, 20_000, 30_000] as const;
 /** Give up on a build that never finishes and start a fresh one. */
-const REPORT_HARD_TIMEOUT_MS = 10 * 60_000;
+/**
+ * How long a requested report build stays claimable before it is abandoned.
+ *
+ * THIS MUST EXCEED THE GAP BETWEEN INVOCATIONS, AND THAT IS NOT A STYLE RULE -
+ * it is the bug that silently emptied two tables.
+ *
+ * The report steps resume across invocations: one asks WL to build and saves a
+ * handle, a later one polls it, a later one reads pages. At 10 minutes that
+ * worked, because the schedule was a Vercel cron re-entering in seconds and the
+ * backoff rungs below are written in seconds.
+ *
+ * On 18 Sep 2026 the schedule moved to a GitHub Actions workflow at `0 * * * *`.
+ * From that point every handle was already expired when the next invocation
+ * picked it up, so the step took the timeout branch, cleared, and the one after
+ * requested a fresh build - request, clear, request, clear, for ever. Measured
+ * 23 Sep: `tx_payment_sync` and `tx_item_sync` had run hourly since the day they
+ * were created and had `last_clean_completion_at` NULL - never once completed,
+ * `pay_transaction` empty - and `client_list_sync` had not completed since 19
+ * Sep, which is why `person.synced_at` was 4.5 days old.
+ *
+ * Three hours, not one: the hourly schedule is best-effort and GitHub drops runs
+ * under load - gaps of five hours were measured on 22 Sep. The cost of setting
+ * this too LONG is only that a genuinely dead build is abandoned later, and the
+ * timeout branch now restarts within the same invocation, so an expired handle
+ * costs no cycle at all. The cost of setting it too SHORT is that the job never
+ * finishes and nothing says so.
+ *
+ * `tests/report-handle-ttl.test.ts` asserts this against the cron that broke it.
+ */
+export const REPORT_HARD_TIMEOUT_MS = 3 * 60 * 60_000;
 
 /**
  * Runs the client-list sync: the report that enumerates every client.
@@ -250,9 +279,16 @@ export async function clientListReportStep(deps: ClientListStepDeps): Promise<Ou
   const at = { priorAttempt };
   const st = await readReportState(db, CLIENT_LIST_JOB, kBusiness);
 
-  // 1. Not requested yet: start both builds and save the handle BEFORE any poll,
-  // so a crash resumes into polling instead of regenerating.
-  if (st.handle === null) {
+  // 1. Not requested yet, or past its deadline: start both builds and save the
+  // handle BEFORE any poll, so a crash resumes into polling instead of
+  // regenerating. See REPORT_HARD_TIMEOUT_MS for why the expired case restarts
+  // here instead of spending an invocation on the clearing alone.
+  const expired = st.expiresAt !== null && nowIso() > st.expiresAt;
+  if (expired) {
+    await clearReportState(db, CLIENT_LIST_JOB, kBusiness, nowIso());
+  }
+
+  if (st.handle === null || expired) {
     await requestReport(wl, kBusiness, CLIENT_LIST_ACTIVATED, at);
     await requestReport(wl, kBusiness, CLIENT_LIST_ALL, at);
     const nowStr = nowIso();
@@ -261,13 +297,7 @@ export async function clientListReportStep(deps: ClientListStepDeps): Promise<Ou
     return { kind: 'defer', requeueAfterMs: REPORT_POLL_BACKOFF_MS[0] };
   }
 
-  // 2. Hard timeout: the build is not coming. Clear and restart cleanly.
-  if (st.expiresAt !== null && nowIso() > st.expiresAt) {
-    await clearReportState(db, CLIENT_LIST_JOB, kBusiness, nowIso());
-    return { kind: 'defer', requeueAfterMs: 2_000 };
-  }
-
-  // 3. Poll both builds - is_refresh=0, so this reads them, never restarts.
+  // 2. Poll both builds - is_refresh=0, so this reads them, never restarts.
   const activated = await pollReport(wl, kBusiness, CLIENT_LIST_ACTIVATED, at);
   const all = await pollReport(wl, kBusiness, CLIENT_LIST_ALL, at);
   if (!(activated.complete && all.complete)) {
@@ -376,9 +406,21 @@ export async function transactionReportStep(deps: TransactionStepDeps): Promise<
   const st = await readReportState(db, jobName, kBusiness);
   const frozen = decodeWindow(st.window);
 
-  // 1. Nothing in flight (or a cursor we cannot trust): choose the window ONCE,
-  // ask WL to build it, and save both before polling anything.
-  if (st.handle === null || frozen === null) {
+  // 1. Nothing in flight, a cursor we cannot trust, or a build that is not
+  // coming: choose the window ONCE, ask WL to build it, and save both before
+  // polling anything.
+  //
+  // THE EXPIRED CASE RESTARTS HERE RATHER THAN RETURNING. It used to clear and
+  // defer, which spent a whole invocation doing nothing but forgetting - cheap
+  // when the next one arrived in seconds, and half of an infinite loop once the
+  // schedule became hourly. Clearing and immediately re-requesting costs the
+  // same one WL call either way.
+  const expired = st.expiresAt !== null && nowIso() > st.expiresAt;
+  if (expired) {
+    await clearReportState(db, jobName, kBusiness, nowIso());
+  }
+
+  if (st.handle === null || frozen === null || expired) {
     const windowState = await readWindowState(db, jobName, kBusiness);
     const window = transactionWindow({
       historyStart: deps.historyStart,
@@ -406,12 +448,6 @@ export async function transactionReportStep(deps: TransactionStepDeps): Promise<
       nowStr,
     );
     return { kind: 'defer', requeueAfterMs: REPORT_POLL_BACKOFF_MS[0] };
-  }
-
-  // 2. Hard timeout: the build is not coming. Clear and start cleanly.
-  if (st.expiresAt !== null && nowIso() > st.expiresAt) {
-    await clearReportState(db, jobName, kBusiness, nowIso());
-    return { kind: 'defer', requeueAfterMs: 2_000 };
   }
 
   const spec = transactionReportSpec(cid, frozen);

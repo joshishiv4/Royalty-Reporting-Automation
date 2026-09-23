@@ -24,7 +24,7 @@ select
   count(*)                                            as found,
   10                                                  as expected
 from pg_tables
-where schemaname = 'public'
+where schemaname = 'app'
   and tablename in (
     'identity', 'student', 'teacher',
     'cohort', 'class_session', 'class_session_teacher',
@@ -45,7 +45,7 @@ select
   count(*)                                           as leaked,
   coalesce(string_agg(table_name || '.' || column_name, ', '), '') as columns
 from information_schema.columns
-where table_schema = 'public'
+where table_schema = 'app'
   and table_name in (
     'student', 'teacher', 'cohort', 'class_session',
     'class_session_teacher', 'attendance_record'
@@ -107,7 +107,7 @@ select
   '4  attendance_record.is_attended is nullable'                         as label,
   min(is_nullable)                                                       as is_nullable
 from information_schema.columns
-where table_schema = 'public'
+where table_schema = 'app'
   and table_name = 'attendance_record'
   and column_name = 'is_attended';
 
@@ -119,7 +119,7 @@ select
   '5a every person has an identity'                  as label,
   count(*)                                           as missing
 from public.person p
-where not exists (select 1 from public.identity i where i.uid = p.uid);
+where not exists (select 1 from app.identity i where i.uid = p.uid);
 
 select
   case when count(*) = 0 then 'PASS' else 'FAIL' end as result,
@@ -127,7 +127,7 @@ select
   count(*)                                           as missing
 from public.session s
 where not exists (
-  select 1 from public.session_link sl
+  select 1 from app.session_link sl
    where sl.k_period = s.k_period and sl.dt_start_utc = s.dt_start_utc
      and sl.class_session_id is not null
 );
@@ -139,12 +139,12 @@ select
   '5c every resolvable attendance is projected'        as label,
   count(*)                                             as missing
 from public.attendance a
-join public.session_link sl
+join app.session_link sl
   on sl.k_period = a.k_period and sl.dt_start_utc = a.dt_start_utc
  and sl.class_session_id is not null
-join public.identity i on i.uid = a.uid and i.student_id is not null
+join app.identity i on i.uid = a.uid and i.student_id is not null
 where not exists (
-  select 1 from public.attendance_record ar
+  select 1 from app.attendance_record ar
    where ar.class_session_id = sl.class_session_id
      and ar.student_id = i.student_id
 );
@@ -154,7 +154,7 @@ select
   '5d attendance skipped because the person is not a student' as label,
   count(*)                                                as skipped
 from public.attendance a
-join public.identity i on i.uid = a.uid
+join app.identity i on i.uid = a.uid
 where i.student_id is null;
 
 -- -----------------------------------------------------------------------------
@@ -164,7 +164,7 @@ select
   case when count(*) = 0 then 'PASS' else 'FAIL' end as result,
   '6a nobody holds both roles'                       as label,
   count(*)                                           as both
-from public.identity
+from app.identity
 where student_id is not null and teacher_id is not null;
 
 select
@@ -172,7 +172,7 @@ select
   '6b every role matches login_type.is_teacher_type' as label,
   count(*)                                           as disagreeing
 from public.person p
-join public.identity i on i.uid = p.uid
+join app.identity i on i.uid = p.uid
 left join public.login_type lt
   on lt.k_login_type = p.k_login_type and lt.k_business = p.k_business
 where p.k_login_type is not null
@@ -188,7 +188,7 @@ select
   '6c no student row shared by two identities'       as label,
   count(*)                                           as shared
 from (
-  select student_id from public.identity
+  select student_id from app.identity
    where student_id is not null
    group by student_id having count(*) > 1
 ) x;
@@ -201,7 +201,7 @@ select
   '7a no class_session claimed by two session_links' as label,
   count(*)                                           as shared
 from (
-  select class_session_id from public.session_link
+  select class_session_id from app.session_link
    where class_session_id is not null
    group by class_session_id having count(*) > 1
 ) x;
@@ -211,7 +211,7 @@ select
   '7b no attendance_record claimed by two links'       as label,
   count(*)                                             as shared
 from (
-  select attendance_record_id from public.attendance_link
+  select attendance_record_id from app.attendance_link
    where attendance_record_id is not null
    group by attendance_record_id having count(*) > 1
 ) x;
@@ -228,18 +228,18 @@ select
   'INFO'                                        as result,
   '8a class_sessions with no link (portal-created)' as label,
   count(*)                                      as unlinked
-from public.class_session cs
+from app.class_session cs
 where not exists (
-  select 1 from public.session_link sl where sl.class_session_id = cs.id
+  select 1 from app.session_link sl where sl.class_session_id = cs.id
 );
 
 select
   'INFO'                                            as result,
   '8b attendance_records with no link (portal-recorded)' as label,
   count(*)                                          as unlinked
-from public.attendance_record ar
+from app.attendance_record ar
 where not exists (
-  select 1 from public.attendance_link al where al.attendance_record_id = ar.id
+  select 1 from app.attendance_link al where al.attendance_record_id = ar.id
 );
 
 -- -----------------------------------------------------------------------------
@@ -247,15 +247,15 @@ where not exists (
 -- -----------------------------------------------------------------------------
 select 'INFO' as result, '9  row counts' as label,
   (select count(*) from public.person)            as person,
-  (select count(*) from public.identity)          as identity,
-  (select count(*) from public.student)           as student,
-  (select count(*) from public.teacher)           as teacher,
+  (select count(*) from app.identity)          as identity,
+  (select count(*) from app.student)           as student,
+  (select count(*) from app.teacher)           as teacher,
   (select count(*) from public.session)           as wl_session,
-  (select count(*) from public.class_session)     as class_session,
-  (select count(*) from public.cohort)            as cohort,
-  (select count(*) from public.cohort where not is_resolved) as cohort_stubbed,
+  (select count(*) from app.class_session)     as class_session,
+  (select count(*) from app.cohort)            as cohort,
+  (select count(*) from app.cohort where not is_resolved) as cohort_stubbed,
   (select count(*) from public.attendance)        as wl_attendance,
-  (select count(*) from public.attendance_record) as attendance_record;
+  (select count(*) from app.attendance_record) as attendance_record;
 
 -- The outcome spread. `not_yet_known` SHOULD be large: 0029 measured that the
 -- live outcome is mostly unsettled. If it is 0 and everything sits in
@@ -265,12 +265,12 @@ select 'INFO' as result, '10 attendance outcomes' as label,
   count(*) filter (where is_attended is null)     as not_yet_known,
   count(*) filter (where is_attended)             as attended,
   count(*) filter (where is_attended = false)     as did_not_attend
-from public.attendance_record;
+from app.attendance_record;
 
 -- Identities still waiting for a role. Not an error - it is the deliberate "not
 -- yet known" state for a stub person. A number that climbs over time means
 -- profile enrichment has stopped.
 select 'INFO' as result, '11 identities with no role yet' as label,
   count(*) as role_unknown
-from public.identity
+from app.identity
 where student_id is null and teacher_id is null;

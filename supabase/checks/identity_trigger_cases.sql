@@ -30,7 +30,7 @@ select
   '1.2  every person has an identity'                as label,
   count(*)                                           as people_without_identity
 from public.person p
-where not exists (select 1 from public.identity i where i.uid = p.uid);
+where not exists (select 1 from app.identity i where i.uid = p.uid);
 
 -- The other direction. An identity claiming a uid no person has means the link
 -- outlived what it pointed at, which ON DELETE SET NULL is supposed to prevent.
@@ -38,7 +38,7 @@ select
   case when count(*) = 0 then 'PASS' else 'FAIL' end as result,
   '1.2  no identity points at a missing person'      as label,
   count(*)                                           as dangling
-from public.identity i
+from app.identity i
 where i.uid is not null
   and not exists (select 1 from public.person p where p.uid = i.uid);
 
@@ -57,7 +57,7 @@ from public.person p
 join public.login_type lt
   on lt.k_login_type = p.k_login_type
  and lt.k_business   = p.k_business
-join public.identity i on i.uid = p.uid
+join app.identity i on i.uid = p.uid
 where lt.is_teacher_type
   and i.teacher_id is null;
 
@@ -65,7 +65,7 @@ select
   case when count(*) = 0 then 'PASS' else 'FAIL' end as result,
   '1.2  nobody holds both roles'                     as label,
   count(*)                                           as both_roles
-from public.identity
+from app.identity
 where student_id is not null and teacher_id is not null;
 
 -- A stub person - one written only to hold a foreign key, with no login type -
@@ -76,7 +76,7 @@ select
   'INFO'                                    as result,
   '1.2  identities whose role is not yet known' as label,
   count(*)                                  as role_unknown
-from public.identity i
+from app.identity i
 join public.person p on p.uid = i.uid
 where p.k_login_type is null
   and i.student_id is null
@@ -95,7 +95,7 @@ select
   case when count(*) = 1 then 'PASS' else 'FAIL' end as result,
   '1.3  inserting a person creates its identity'     as label,
   count(*)                                           as identities
-from public.identity where uid = '__check_person_1';
+from app.identity where uid = '__check_person_1';
 
 -- A stub gets an identity and no role. If this returns a role, the assumption in
 -- 0040 was silently reversed and a future teacher is being shown as a student.
@@ -103,7 +103,7 @@ select
   case when count(*) = 1 then 'PASS' else 'FAIL' end as result,
   '1.3  a stub person gets no role yet'              as label,
   count(*)                                           as roleless
-from public.identity
+from app.identity
 where uid = '__check_person_1'
   and student_id is null
   and teacher_id is null;
@@ -131,7 +131,7 @@ select
   case when count(*) = 1 then 'PASS' else 'FAIL' end       as result,
   '1.3  a late login type promotes a stub to its role'     as label,
   count(*)                                                 as promoted
-from public.identity
+from app.identity
 where uid = '__check_person_2' and teacher_id is not null;
 
 rollback;
@@ -151,15 +151,15 @@ begin;
 create temporary table __check_before on commit drop as
 select i.student_id, i.teacher_id,
        coalesce(s.updated_at, t.updated_at) as role_updated_at
-  from public.identity i
-  left join public.student s on s.id = i.student_id
-  left join public.teacher t on t.id = i.teacher_id
- where i.uid = (select uid from public.identity
+  from app.identity i
+  left join app.student s on s.id = i.student_id
+  left join app.teacher t on t.id = i.teacher_id
+ where i.uid = (select uid from app.identity
                  where student_id is not null or teacher_id is not null limit 1);
 
 update public.person p
    set k_login_type = p.k_login_type
- where p.uid = (select i.uid from public.identity i
+ where p.uid = (select i.uid from app.identity i
                  where i.student_id is not null or i.teacher_id is not null
                  limit 1);
 
@@ -168,11 +168,11 @@ select
   '1.3  an unchanged pass does not touch the role row' as label,
   count(*)                                             as needlessly_touched
 from __check_before b
-  join public.identity i
+  join app.identity i
     on i.student_id is not distinct from b.student_id
    and i.teacher_id is not distinct from b.teacher_id
-  left join public.student s on s.id = i.student_id
-  left join public.teacher t on t.id = i.teacher_id
+  left join app.student s on s.id = i.student_id
+  left join app.teacher t on t.id = i.teacher_id
  where coalesce(s.updated_at, t.updated_at) is distinct from b.role_updated_at;
 
 rollback;
@@ -211,7 +211,7 @@ select
 from public.person p
 join public.login_type lt
   on lt.k_login_type = p.k_login_type and lt.k_business = p.k_business
-join public.identity i on i.uid = p.uid
+join app.identity i on i.uid = p.uid
 where lt.is_teacher_type
   and i.teacher_id is null;
 
@@ -249,7 +249,7 @@ select '__check_person_3', p.k_business, null
   from (select distinct k_business from public.person limit 1) p;
 
 create temporary table __check_identity_before on commit drop as
-select id from public.identity where uid = '__check_person_3';
+select id from app.identity where uid = '__check_person_3';
 
 delete from public.person where uid = '__check_person_3';
 
@@ -257,7 +257,7 @@ select
   case when count(*) = 1 then 'PASS' else 'FAIL' end   as result,
   '7  deleting a person keeps the identity, uid nulled' as label,
   count(*)                                             as surviving
-from public.identity i
+from app.identity i
 join __check_identity_before b on b.id = i.id
 where i.uid is null;
 
@@ -276,6 +276,6 @@ select
   count(*)                                             as leaked,
   coalesce(string_agg(table_name || '.' || column_name, ', '), '') as columns
 from information_schema.columns
-where table_schema = 'public'
+where table_schema = 'app'
   and table_name in ('student', 'teacher')
   and (column_name like 'k\_%' or column_name in ('uid', 'text_login_type'));

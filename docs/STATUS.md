@@ -1,6 +1,6 @@
 # Status and plan
 
-Last updated **18 Sep 2026**. Keep the date honest — a stale status file is worse
+Last updated **23 Sep 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed.
 
 ## The plan
@@ -74,6 +74,71 @@ royalty calculation is not written yet and must not read that week as fact.
 (cause not yet measured — the route's `detail` field has not been read), and ~60
 visits in the 14 Sep week remain `BOOK` because their queue items completed within
 the 24-hour fresh-done window and will not re-seed until it lapses.
+
+### The report jobs had never completed, 23 Sep 2026 - and nothing failed
+
+A second, quieter consequence of moving the schedule off Vercel, found by reading
+`sync_job_state` rather than by an alert. **No run ever failed.** Every one
+reported `partial`, which is a normal state, so the run table said the system was
+fine while two tables were empty and a third was days old.
+
+**What was measured.**
+
+| | |
+|---|---|
+| `tx_payment_sync`, `tx_item_sync` | `last_clean_completion_at` **NULL** - never completed once since they were created on 18 Sep |
+| `pay_transaction` | **no rows at all** |
+| `client_list_sync` | last completed **19 Sep**; `person.synced_at` **4.5 days** old |
+| every run of all three | 3-13 seconds, always `partial`, `report_handle` null |
+
+**The cause.** These three resume a WellnessLiving report across invocations: one
+asks for a build and saves a handle, a later one polls it, a later one reads
+pages. `REPORT_HARD_TIMEOUT_MS` was **10 minutes**, and the poll backoff rungs are
+written in seconds - both correct for a Vercel cron that re-entered in seconds.
+
+The schedule became `0 * * * *` on Actions. From then on every handle was already
+expired when the next invocation found it, so the step took the timeout branch,
+cleared, and the invocation after that requested a fresh build:
+
+```
+11:18  handle null   -> request build, expires 11:28  -> defer
+12:18  now > 11:28   -> clear, defer                  -> never polls
+13:18  handle null   -> request build, expires 13:28  -> defer
+```
+
+Request, clear, request, clear. Step 3 was never reached, so no page was ever
+read. **The cron move and the constant were each fine; their combination was
+not**, and nothing in the codebase tied them together.
+
+**Fixed.** `REPORT_HARD_TIMEOUT_MS` is now 3 hours - more than one scheduled gap,
+with room for the runs Actions drops (five-hour gaps measured 22 Sep) - and the
+timeout branch now re-requests inside the same invocation instead of spending one
+on the clearing alone. `tests/report-handle-ttl.test.ts` parses the cron out of
+`.github/workflows/sync.yml` and fails the build if the handle no longer outlives
+it, so slowing the schedule and shortening the handle are now the same mistake to
+make.
+
+**Not yet confirmed against live data** - no sync pass has run since the change.
+What proves it is `tx_payment_sync` reaching a non-null `last_clean_completion_at`
+and `pay_transaction` holding rows.
+
+### Still open, 23 Sep 2026 - `sync_queue` has never been pruned
+
+Separate cause, separate fix, and **not done**. `sync_queue` holds **532,415
+rows, 532,412 of them `done`**. Claim and enqueue queries measured 1.3-2.0
+seconds each against it, and with seventeen passes starting at once that crosses
+the statement timeout:
+
+```
+SupabaseError: 57014: canceling statement due to statement timeout [table=sync_queue]
+```
+
+`purchase_element_sync` and `attendance_sync` fail on it repeatedly;
+`receipt_sync`, `purchase_sync` and `profile_sync` intermittently. It is why
+`purchase` and `purchase_item` were 21.9 hours stale on 23 Sep. The queue itself
+is **not** backed up - 3 items pending - so queue depth reads healthy while the
+table's size is the problem. A retention window plus a scheduled cleanup is the
+fix; neither is written.
 
 ### The schedule left Vercel, 18 Sep 2026
 

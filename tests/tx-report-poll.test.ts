@@ -237,13 +237,30 @@ describe('polling', () => {
     expect(h.writes).toHaveLength(0);
   });
 
-  it('abandons a build past its deadline and restarts cleanly', async () => {
+  it('restarts a build past its deadline WITHIN the same step', async () => {
     const h = harness({ status: () => 2 });
     await h.step(iso('2026-09-17T09:00:00.000Z'));
-    const outcome = await h.step(iso('2026-09-17T09:11:00.000Z'));
-    expect(outcome).toEqual({ kind: 'defer', requeueAfterMs: 2_000 });
-    expect(h.jobState().report_handle).toBeNull();
-    expect(h.jobState().last_key).toBeNull();
+    const outcome = await h.step(iso('2026-09-17T13:00:00.000Z')); // past +3h
+
+    // The deadline branch used to clear and defer, so only the NEXT invocation
+    // re-requested. Hourly, that is request/clear/request/clear and never a
+    // poll - the loop that left pay_transaction empty. It now re-requests here,
+    // which is why the step ends holding a handle and a frozen window again.
+    expect(outcome).toEqual({ kind: 'defer', requeueAfterMs: 5_000 });
+    expect(h.jobState().report_handle).not.toBeNull();
+    expect(h.jobState().last_key).not.toBeNull();
+  });
+
+  it('polls rather than restarting when only an hour has passed', async () => {
+    const h = harness({ status: () => 2 });
+    await h.step(iso('2026-09-17T09:00:00.000Z'));
+    const window = h.jobState().last_key;
+    // One hour is the cron's own interval, and used to be six times the
+    // deadline. The frozen window must survive it, or every invocation
+    // re-chooses one and the report is never read.
+    await h.step(iso('2026-09-17T10:00:00.000Z'));
+
+    expect(h.jobState().last_key).toBe(window);
   });
 });
 
