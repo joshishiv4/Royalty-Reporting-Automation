@@ -677,19 +677,35 @@ purchase path.
 | `s_batch_number`, `text_order_id`, `text_processor_reference`, `o_decline_reason` | Reconciling the studio's processor statement. No other endpoint returns any of them |
 | `k_pay_transaction`, `o_actor` | The payment as an event, and who took it ("System" for a recurring charge) |
 
-**What they do not cover, measured 17 Sep 2026.** The item report returns
-**10,913 rows for all time** against **20,561 `purchase_item` rows** in this
-database. It lists only items a money movement touched — a free item, a comped
-one, an unpaid balance, a membership seeded but never charged are all real
-purchase items and appear in neither report. So neither table is a superset of
-the purchase path, and `purchase.m_refund` stays authoritative for it. **The two
-must be reconciled before either is used for a royalty figure, and that
-reconciliation is not written.**
+**What they cover. This changed on 1 Oct 2026.** Until then the reports were
+read without `o_purchase_accrual_cash`, which WL treats as Cash mode, so every
+sale settled from an account balance was missing. That gave **10,913** item rows
+for all time against **20,561 `purchase_item` rows**, and this section concluded
+the report "lists only items a money movement touched". The conclusion came from
+a filtered population. In Accrual-and-cash mode (WL-API-NOTES.md, "The filter is
+TWO keys") the item report returns **34,255** rows to 9 Sep 2026, and its total
+paid matches the portal to the cent. That is more than `purchase_item` holds,
+because the purchase path is bounded by the clients we can enumerate (STATUS.md,
+blocker 1) and the report is not.
+
+What is **not** known yet is whether the report is now a superset of the purchase
+path. Free, comped and never-charged items may still be absent, and nobody has
+matched the two item by item. Until that is measured, `purchase.m_refund` stays
+authoritative for the purchase path. **The two must be reconciled before either
+is used for a royalty figure, and that reconciliation is not written.**
+
+**Rows loaded in Cash mode are not valid in Accrual-and-cash mode.** 282 of
+10,851 rows return with different values: a split payment's `m_total_paid` now
+includes its account-paid share. Because identity is the hash below, an upsert
+would store those rows a second time. A table filled under one mode is emptied
+and reloaded under the other, never refreshed in place.
 
 ### The row identity is a hash, because WL publishes none
 
 Both reports return positional rows and **no unique row key**. Measured over
-every row:
+every row, on the **Cash-mode** population of 17 Sep 2026 (see above). The
+conclusion stands, but the counts were not re-measured on the 34,255-row
+population:
 
 | Candidate | Distinct | Rows lost |
 |---|---|---|

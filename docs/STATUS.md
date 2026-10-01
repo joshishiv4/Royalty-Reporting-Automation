@@ -1,7 +1,9 @@
 # Status and plan
 
-Last updated **23 Sep 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed.
+Last updated **1 Oct 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (This update covers the transaction-report
+entries only. The portal work in `0039`–`0049` is not yet reflected in the plan
+table below.)
 
 ## The plan
 
@@ -24,6 +26,58 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### The transaction reports were missing 42% of the money, 1 Oct 2026 - fixed in code
+
+Found by reconciling the API against a portal CSV export, not by any error. Both
+transaction reports (739, 799) were requested without `o_purchase_accrual_cash`,
+which WL treats as **Cash** mode. Cash mode silently drops every sale settled
+from a client's account balance, and that is how this business bills its
+monthly auto-renewals. WL Support named the key once we sent them the
+reconciliation.
+
+**Fixed:** `transactionReportSpec()` in `src/wl/report.ts` now sends
+`o_purchase_accrual_cash: 3` (Accrual and cash) on both reports. A test in
+`tests/tx-report-poll.test.ts` checks it is on the request, the poll and the page
+read. Removing the key turns 5 tests red (mutation-checked).
+
+**Proven against the portal, read-only, 1 Oct 2026:**
+
+| | Key omitted | Key = 3 | Portal |
+|---|---|---|---|
+| 739 full history: rows | 10,851 | 34,255 | — |
+| 739 full history: total paid | $2,964,730.92 | **$5,243,133.68** | $5,243,133.68 |
+| 739 full history: sales tax | $148.05 | **$177.45** | $177.45 |
+| 739, 1 Jan 2025: net sales | $12,087.50 | **$13,738.50** | $13,738.50 |
+| 799, 1 Jan 2025: rows | 54 | **62** | 57 + 5 failed |
+
+**Still open from this:** the portal's full-history Net Sales (+$47,592.09) and
+Net Items Sold (+1,313) do not equal our plain sums. That is a question about the
+portal's arithmetic, not about missing rows, and it belongs to M04b. Details in
+WL-API-NOTES.md, "The filter is TWO keys".
+
+**No reload was needed, because nothing had loaded.** Measured the same day:
+`pay_transaction` and `pay_transaction_item` hold **0 rows**, so no Cash-mode row
+exists to be duplicated. If either table ever holds Cash-mode rows, it must be
+emptied rather than refreshed (DATA-MODEL.md).
+
+### Still open, 1 Oct 2026 - the transaction reports have STILL never completed
+
+The 23 Sep fix (below) is **not** confirmed. Eight days later both jobs still
+have `last_clean_completion_at` **null**, and `page_number` is 0.
+
+**Measured cause:** the sync is scheduled hourly but GitHub Actions does not run it
+hourly. From `sync_run` since 26 Sep, passes started roughly every **4-7 hours**
+(00:27 → 07:06, 15:48 → 20:43, 08:21 → 15:48 on 30 Sep). `REPORT_HARD_TIMEOUT_MS`
+is 3 hours, so the next run almost always finds the handle expired. It requests
+a fresh build and defers, and no run ever polls or reads one. That is the same
+request-and-expire loop as on 23 Sep, now from dropped runs instead of the
+schedule. `tests/report-handle-ttl.test.ts` checks the handle against the
+**cron**, not against the gaps Actions actually leaves, so it stays green.
+
+Some of these runs also fail outright on the `sync_queue` statement timeout
+(entry below). **Neither is fixed.** Until they are, the accounting fix above
+has nothing to write into.
 
 ### Incident, 18 Sep 2026 — the sync was dead for four days and nothing said so
 
@@ -284,7 +338,8 @@ View)"**. Both were probed live against dev the same day and both work.
 | | 739 | 799 |
 |---|---|---|
 | Fields | 141 | 140 |
-| Rows, `1980-01-01 .. today` | **10,913** | **10,196** |
+| Rows, `1980-01-01 .. today`, Cash mode (key absent, see 1 Oct 2026) | 10,913 | 10,196 |
+| Rows, Accrual and cash, to 9 Sep 2026 | **34,255** | — |
 | Pages at `i_limit` 1000 | 11 | 11 |
 | Full-history build time | **90s** | ~60s |
 | A 7-day window | 62 rows, **6s** | — |
@@ -308,11 +363,12 @@ load has not run.
 
 **Three things worth knowing before using these tables.**
 
-*They are not a replacement for the purchase path.* The item report returns
-10,913 rows for all time against 20,561 `purchase_item` rows here: it lists only
-items a money movement touched. Free, comped, unpaid and never-charged items
-appear in neither report. The two sources must be reconciled before either
-produces a royalty figure, and **that reconciliation is not written**.
+*They are not yet a proven replacement for the purchase path.* The 10,913-row
+count measured here was Cash mode, the accounting key being absent (see 1 Oct
+2026 above). In Accrual and cash the item report returns 34,255 rows, more than
+the 20,561 in `purchase_item`. Whether it covers every purchase item has not
+been measured. The two sources must be reconciled before either produces a
+royalty figure, and **that reconciliation is not written**.
 
 *A refund finally has a date.* `purchase.m_refund` carries none, so a refund has
 always landed in the original purchase's month. In the reports it is its own
