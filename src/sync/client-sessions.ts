@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '../supabase/client.js';
 import type { WlResponse } from '../wl/client.js';
-import { linkRows, storeRawWl, wlDate } from './writer.js';
+import { linkRows, storeRawWl, stripNul, wlDate } from './writer.js';
 import { readVisitCode, visitOutcome } from './visit-outcome.js';
 
 /**
@@ -436,7 +436,7 @@ export async function writeClientSessions(
       source_endpoint: '/v1/schedule/page/element',
       target_kind: 'record',
       target_key: p.detail.kVisit,
-      payload: p.detail.response.body,
+      payload: stripNul(p.detail.response.body), // jsonb rejects NUL; see stripNul
       http_status: p.detail.response.httpStatus,
       wl_status: 'ok',
       trace_id: p.detail.response.traceId,

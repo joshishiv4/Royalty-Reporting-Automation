@@ -467,6 +467,39 @@ describe('enqueue', () => {
     expect(q).toContain('k_business=in.(111111)');
     expect(q).toContain('updated_at=gte.');
   });
+
+  // Ordered by id, this read timed out on live dev for a work type with no fresh
+  // rows (purchase_item_element, 1 Oct 2026): the planner walked the primary key
+  // instead of using sync_queue_fresh_done_idx (0050). The order is what lets the
+  // index answer it, so the order is the guarantee.
+  it('orders the fresh-done lookup by updated_at, so the 0050 index serves it', async () => {
+    const NOW_MS = Date.parse('2026-08-27T10:00:00Z');
+    const { db, calls } = fakeDb({ select: () => [] });
+    await enqueue(
+      db,
+      [{ work_type: 'purchase_list', target_key: 'uid-1', k_business: '111111' }],
+      undefined,
+      { now: () => NOW_MS },
+    );
+    const done = calls.find((c) => c.op === 'select' && (c.query ?? '').includes('state=eq.done'));
+    const q = done!.query ?? '';
+    expect(q).toContain('&order=updated_at.asc,id.asc&');
+    expect(q).not.toContain('order=id.asc');
+  });
+
+  // The same trap on the other dedupe read: ordered by id, session_attendance's
+  // active lookup timed out on live dev (1 Oct 2026) and killed attendance_sync.
+  // Ordered as sync_queue_active_target_key (0007) holds it, it took 353 ms.
+  it('orders the active lookup in the active_target_key index order', async () => {
+    const { db, calls } = fakeDb({ select: () => [] });
+    await enqueue(db, [{ work_type: 'purchase_list', target_key: 'uid-1', k_business: '111111' }]);
+    const active = calls.find(
+      (c) => c.op === 'select' && (c.query ?? '').includes('state=in.(pending,in_progress)'),
+    );
+    const q = active!.query ?? '';
+    expect(q).toContain('&order=work_type.asc,target_key.asc,k_business.asc&');
+    expect(q).not.toContain('order=id.asc');
+  });
 });
 
 /**

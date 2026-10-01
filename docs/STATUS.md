@@ -1,7 +1,9 @@
 # Status and plan
 
-Last updated **23 Sep 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed.
+Last updated **1 Oct 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (This update covers the transaction-report
+entries only. The portal work in `0039`–`0049` is not yet reflected in the plan
+table below.)
 
 ## The plan
 
@@ -24,6 +26,80 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### The transaction reports were missing 42% of the money, 1 Oct 2026 - fixed in code
+
+Found by reconciling the API against a portal CSV export, not by any error. Both
+transaction reports (739, 799) were requested without `o_purchase_accrual_cash`,
+which WL treats as **Cash** mode. Cash mode silently drops every sale settled
+from a client's account balance, and that is how this business bills its
+monthly auto-renewals. WL Support named the key once we sent them the
+reconciliation.
+
+**Fixed:** `transactionReportSpec()` in `src/wl/report.ts` now sends
+`o_purchase_accrual_cash: 3` (Accrual and cash) on both reports. A test in
+`tests/tx-report-poll.test.ts` checks it is on the request, the poll and the page
+read. Removing the key turns 5 tests red (mutation-checked).
+
+**Proven against the portal, read-only, 1 Oct 2026:**
+
+| | Key omitted | Key = 3 | Portal |
+|---|---|---|---|
+| 739 full history: rows | 10,851 | 34,255 | — |
+| 739 full history: total paid | $2,964,730.92 | **$5,243,133.68** | $5,243,133.68 |
+| 739 full history: sales tax | $148.05 | **$177.45** | $177.45 |
+| 739, 1 Jan 2025: net sales | $12,087.50 | **$13,738.50** | $13,738.50 |
+| 799, 1 Jan 2025: rows | 54 | **62** | 57 + 5 failed |
+
+**Since explained, the same day.** Net Sales was the wrong field: the portal sums
+`o_net_sale.m_amount`, which matches it to the cent, and `m_net_sale` is $47,592.09
+over on 110 Account Payments rows. Of the +1,313 items, all but 20 are explained
+(manual account adjustments and later-refunded sales are not counted). The 799
+CSV exports reconcile row for row for every year from 14 Sep 2020 to 1 Oct 2026.
+Migration `0052` stores the portal's amounts beside the raw ones
+(`m_net_sale_portal`, `m_total_paid_portal`). All in WL-API-NOTES.md.
+
+**No reload was needed, because nothing had loaded.** Measured the same day:
+`pay_transaction` and `pay_transaction_item` hold **0 rows**, so no Cash-mode row
+exists to be duplicated. If either table ever holds Cash-mode rows, it must be
+emptied rather than refreshed (DATA-MODEL.md).
+
+### Still open, 1 Oct 2026 - one large read of 799 repeats rows and drops real ones
+
+Reading 799 (Transaction View) for `1980-01-01 .. 2026-09-09` in one window
+returns **1,364 rows twice** (on the pages at `i_offset` 15000 and 16000) and
+**never returns 1,364 real ones**, with the row count unchanged and no error.
+Reproduced on a second read of the same finished build. Read one year at a time,
+the same report is clean and matches the portal's CSV exports row for row. The
+sync's first load reads one window from `SYNC_HISTORY_START`, so it would store
+the repeats and miss the rows. **Not fixed.** The likely fix is a first load
+read in yearly windows, plus a refusal when a page carries rows an earlier page
+already returned. WL-API-NOTES.md has the measurement.
+
+**Where the tables stand, measured 14:20 UTC:** both jobs show
+`last_clean_completion_at` 2026-10-01 14:17:59, and the tables hold 775 item and
+742 payment rows, all dated **1 Sep – 1 Oct 2026**. So the history before
+September is not loaded. These rows predate `0052` and read null in its two
+columns until their window is read again.
+
+### Superseded, 1 Oct 2026 - the transaction reports had never completed
+
+Kept for the record; both jobs have since completed (entry above). The 23 Sep
+fix (below) was **not** confirmed at the time. Eight days later both jobs still
+have `last_clean_completion_at` **null**, and `page_number` is 0.
+
+**Measured cause:** the sync is scheduled hourly but GitHub Actions does not run it
+hourly. From `sync_run` since 26 Sep, passes started roughly every **4-7 hours**
+(00:27 → 07:06, 15:48 → 20:43, 08:21 → 15:48 on 30 Sep). `REPORT_HARD_TIMEOUT_MS`
+is 3 hours, so the next run almost always finds the handle expired. It requests
+a fresh build and defers, and no run ever polls or reads one. That is the same
+request-and-expire loop as on 23 Sep, now from dropped runs instead of the
+schedule. `tests/report-handle-ttl.test.ts` checks the handle against the
+**cron**, not against the gaps Actions actually leaves, so it stays green.
+
+Some of these runs also fail outright on the `sync_queue` statement timeout
+(entry below). **Neither is fixed.** Until they are, the accounting fix above
+has nothing to write into.
 
 ### Incident, 18 Sep 2026 — the sync was dead for four days and nothing said so
 
@@ -139,6 +215,61 @@ SupabaseError: 57014: canceling statement due to statement timeout [table=sync_q
 is **not** backed up - 3 items pending - so queue depth reads healthy while the
 table's size is the problem. A retention window plus a scheduled cleanup is the
 fix; neither is written.
+
+**Update, 1 Oct 2026 - the read that times out is now identified; `0050` applied
+to dev.** It has grown to **869,798 rows, 823,322 `done`**. Timing each
+queue query alone, with no sync running, picked out one: `enqueue()`'s fresh-done
+dedupe (`state = done and updated_at >= now - 24h`), which no index covered. It
+took **8.5-9.7 s** on `client_visits`, `promotion_list`, `login_type_list` and
+`client_list` and timed out on three of them **by itself**. Claim, `countEligible`
+and the active-state dedupe were 0.3-2 s. On 30 Sep 08:21 UTC it killed **16 of
+18** passes 10-52 seconds in - the "16 stage(s) crashed" digest - and its
+repeated failures of `attendance_sync` and `purchase_element_sync` are two of
+the five jobs that digest called overdue.
+
+`0050` adds a partial index for that read. It does **not** shrink the table, so
+the cleanup above is still open; and it does nothing for the report jobs, whose
+separate cause is the entry above. Proof it worked: the same read under 1 s, and
+`attendance_sync` and `purchase_element_sync` reaching `ok`.
+
+After it was applied, the read dropped below 1.1 s on 15 of 17 work types
+(`client_visits` went from 9.7 s to 0.85 s), but `purchase_item_element` still timed
+out. The index was fine. The read's `order=id` made the planner walk the
+primary key instead (see DATA-MODEL.md, control plane). `enqueue()` now orders it
+by `updated_at, id`. Re-timed with that order, all 17 work types are 0.28-1.1 s
+(`purchase_item_element` 281 ms).
+
+A local `sync:full-parallel` with that change (11:36 UTC) finished 15 passes
+`ok`. The 07:06 run on the old code had ten fail on `57014`. `attendance_sync`
+still failed on `57014`: the **active-state** dedupe read had the same `order=id`
+trap, and timed out for `session_attendance` (16,608 pending). It now orders by
+the `sync_queue_active_target_key` columns (353 ms). **Still to confirm:**
+`attendance_sync` and `purchase_element_sync` reaching `ok` on a real run.
+
+**`tx_payment_sync` has a second, separate failure, found the same run.** The
+3-hour handle now survives between runs as intended, and the job got one step
+further. It then failed writing the raw page: `22P05: unsupported Unicode escape
+sequence [table=raw_wl]`. WL pads sort fields with a NUL byte, which `jsonb`
+cannot hold, and the existing strip only covered the typed rows (WL-API-NOTES.md).
+`storeRawWl()` now strips it from the payload too. **Still to confirm:**
+`tx_payment_sync` and `tx_item_sync` getting a non-null
+`last_clean_completion_at`, and `pay_transaction` holding rows.
+
+**A run that stands down could not record it; `0051` written, to apply.** A sync
+was stopped at 12:29:46 UTC while it held `purchase_element_sync`. The next one,
+16 s later, found the lease still valid and correctly stood down. Its close as
+`skipped` was then rejected by `sync_run_state_check`, which never allowed that
+state. The row stayed `running` and nothing worked the 15,981 pending
+`purchase_item_element` items until a later run took the expired lease.
+
+**Open, not fixed - the report jobs get one WL poll per scheduled run.** When the
+build is not ready, the item is deferred 5-30 s, nothing is claimable, and the
+pass ends. On hourly Actions that is one poll an hour. Both builds requested at
+11:36 were still "not ready" at 12:30. A read-only poll at 12:40 found WL had
+queued fresh builds at that moment, which finished in 6-8 s (743 and 775 rows).
+WL appears to drop a build that is not read within about an hour (unproven),
+which with one poll an hour can stop these jobs ever completing. Candidate fix:
+let a report pass wait within its budget for a deferred build.
 
 ### The schedule left Vercel, 18 Sep 2026
 
@@ -284,7 +415,8 @@ View)"**. Both were probed live against dev the same day and both work.
 | | 739 | 799 |
 |---|---|---|
 | Fields | 141 | 140 |
-| Rows, `1980-01-01 .. today` | **10,913** | **10,196** |
+| Rows, `1980-01-01 .. today`, Cash mode (key absent, see 1 Oct 2026) | 10,913 | 10,196 |
+| Rows, Accrual and cash, to 9 Sep 2026 | **34,255** | — |
 | Pages at `i_limit` 1000 | 11 | 11 |
 | Full-history build time | **90s** | ~60s |
 | A 7-day window | 62 rows, **6s** | — |
@@ -308,11 +440,12 @@ load has not run.
 
 **Three things worth knowing before using these tables.**
 
-*They are not a replacement for the purchase path.* The item report returns
-10,913 rows for all time against 20,561 `purchase_item` rows here: it lists only
-items a money movement touched. Free, comped, unpaid and never-charged items
-appear in neither report. The two sources must be reconciled before either
-produces a royalty figure, and **that reconciliation is not written**.
+*They are not yet a proven replacement for the purchase path.* The 10,913-row
+count measured here was Cash mode, the accounting key being absent (see 1 Oct
+2026 above). In Accrual and cash the item report returns 34,255 rows, more than
+the 20,561 in `purchase_item`. Whether it covers every purchase item has not
+been measured. The two sources must be reconciled before either produces a
+royalty figure, and **that reconciliation is not written**.
 
 *A refund finally has a date.* `purchase.m_refund` carries none, so a refund has
 always landed in the original purchase's month. In the reports it is its own

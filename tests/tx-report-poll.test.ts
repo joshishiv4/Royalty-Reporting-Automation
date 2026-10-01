@@ -47,6 +47,7 @@ const ITEM_FIELDS = [
   'm_amount',
   'm_sale',
   'm_net_sale',
+  'o_net_sale.m_amount',
   'm_discount_amount',
   'm_total_tax',
   'm_total_tip',
@@ -173,6 +174,7 @@ describe('requesting the build', () => {
     expect(body.is_refresh).toBe(1);
     expect(body.json_filter).toEqual({
       o_date: { dl_start: '1980-01-01', dl_end: '2026-09-17' },
+      o_purchase_accrual_cash: 3,
     });
     // Frozen BEFORE any poll: a crash now resumes into the same build.
     expect(h.jobState().last_key).toBe('1980-01-01|2026-09-17');
@@ -186,7 +188,36 @@ describe('requesting the build', () => {
     await h.step(iso('2026-09-17T09:00:00.000Z'));
     expect(h.bodies[0]!.json_filter).toEqual({
       o_date: { dl_start: '2026-09-14', dl_end: '2026-09-17' },
+      o_purchase_accrual_cash: 3,
     });
+  });
+});
+
+/**
+ * THE ACCOUNTING METHOD. Without `o_purchase_accrual_cash` WL applies Cash mode
+ * and silently drops every sale settled from an account balance - 23,404 of
+ * 34,255 item-view rows over the full history, measured 1 Oct 2026. It has to
+ * be on BOTH reports and on EVERY call, not just the build request: the filter
+ * is the cache key, so a poll or page read without it reads the Cash-only build.
+ */
+describe('accounting method', () => {
+  it.each([739, 799])('cid %i asks for accrual AND cash', (cid) => {
+    const spec = transactionReportSpec(cid, { dlStart: '2025-01-01', dlEnd: '2025-01-01' });
+    expect(spec.jsonFilter.o_purchase_accrual_cash).toBe(3);
+  });
+
+  it('sends it on the request, the poll and the page read alike', async () => {
+    let status = 2;
+    const h = harness({ status: () => status });
+    await h.step(iso('2026-09-17T09:00:00.000Z')); // request
+    await h.step(iso('2026-09-17T09:00:10.000Z')); // poll, not ready
+    status = 3;
+    await h.step(iso('2026-09-17T09:00:20.000Z')); // poll + page read
+
+    expect(h.bodies.length).toBeGreaterThanOrEqual(4);
+    for (const body of h.bodies) {
+      expect((body.json_filter as Record<string, unknown>).o_purchase_accrual_cash).toBe(3);
+    }
   });
 });
 

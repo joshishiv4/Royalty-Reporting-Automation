@@ -677,19 +677,35 @@ purchase path.
 | `s_batch_number`, `text_order_id`, `text_processor_reference`, `o_decline_reason` | Reconciling the studio's processor statement. No other endpoint returns any of them |
 | `k_pay_transaction`, `o_actor` | The payment as an event, and who took it ("System" for a recurring charge) |
 
-**What they do not cover, measured 17 Sep 2026.** The item report returns
-**10,913 rows for all time** against **20,561 `purchase_item` rows** in this
-database. It lists only items a money movement touched — a free item, a comped
-one, an unpaid balance, a membership seeded but never charged are all real
-purchase items and appear in neither report. So neither table is a superset of
-the purchase path, and `purchase.m_refund` stays authoritative for it. **The two
-must be reconciled before either is used for a royalty figure, and that
-reconciliation is not written.**
+**What they cover. This changed on 1 Oct 2026.** Until then the reports were
+read without `o_purchase_accrual_cash`, which WL treats as Cash mode, so every
+sale settled from an account balance was missing. That gave **10,913** item rows
+for all time against **20,561 `purchase_item` rows**, and this section concluded
+the report "lists only items a money movement touched". The conclusion came from
+a filtered population. In Accrual-and-cash mode (WL-API-NOTES.md, "The filter is
+TWO keys") the item report returns **34,255** rows to 9 Sep 2026, and its total
+paid matches the portal to the cent. That is more than `purchase_item` holds,
+because the purchase path is bounded by the clients we can enumerate (STATUS.md,
+blocker 1) and the report is not.
+
+What is **not** known yet is whether the report is now a superset of the purchase
+path. Free, comped and never-charged items may still be absent, and nobody has
+matched the two item by item. Until that is measured, `purchase.m_refund` stays
+authoritative for the purchase path. **The two must be reconciled before either
+is used for a royalty figure, and that reconciliation is not written.**
+
+**Rows loaded in Cash mode are not valid in Accrual-and-cash mode.** 282 of
+10,851 rows return with different values: a split payment's `m_total_paid` now
+includes its account-paid share. Because identity is the hash below, an upsert
+would store those rows a second time. A table filled under one mode is emptied
+and reloaded under the other, never refreshed in place.
 
 ### The row identity is a hash, because WL publishes none
 
 Both reports return positional rows and **no unique row key**. Measured over
-every row:
+every row, on the **Cash-mode** population of 17 Sep 2026 (see above). The
+conclusion stands, but the counts were not re-measured on the 34,255-row
+population:
 
 | Candidate | Distinct | Rows lost |
 |---|---|---|
@@ -706,9 +722,9 @@ The "duplicates" were checked rather than assumed, and they are **a sale row and
 its later refund row**: same item key, opposite sign, different date. Both are
 real events, so every key above is wrong by construction.
 
-So identity is `row_hash` — sha256 over exactly the values stored, in a fixed
-order — plus `i_occurrence`, which numbers rows whose stored values are
-identical. The hash covers the stored subset and **not** the whole row because
+So identity is `row_hash` — sha256 over the values stored, in a fixed order,
+except the two portal columns below — plus `i_occurrence`, which numbers rows
+whose hashed values are identical. The hash covers the stored subset and **not** the whole row because
 the whole row carries signed `url` tokens and tooltip HTML that change between
 builds; hashing those would give the same transaction a new identity and insert
 a second copy on every run.
@@ -722,6 +738,39 @@ one window, so an interrupted page read restarts the count and can merge two
 byte-identical rows. It can undercount a repeat, never double-count one. 649
 rows of the payment report are byte-identical to another row across all 140
 fields, so this is not hypothetical — it is the price of not collapsing them.
+
+### Two money columns hold what the portal shows, beside the raw one (0052)
+
+Each report row carries a money value twice: a plain column (`m_net_sale`,
+`m_total_paid`) and an `o_*` object the portal draws the cell from (`o_net_sale`,
+`o_total_paid`), whose `m_amount` is the number on screen. Where they disagree,
+the portal, its CSV export and its summary tiles all show the `o_*` value. So
+summing the raw column gives figures the portal never shows:
+
+| Column | Source | Differs from | Where, measured 1 Oct 2026 (Accrual and cash) |
+|---|---|---|---|
+| `pay_transaction_item.m_net_sale_portal` | `o_net_sale.m_amount` | `m_net_sale` | 110 of 34,255 full-history rows, all **Account Payments** (a payment onto an account): the portal shows what was paid, e.g. $1,346.15 against `m_net_sale` $1,863.90. Summed: **$5,234,690.28**, the portal's "Total Net Sales" to the cent; `m_net_sale` sums to $5,282,282.37 |
+| `pay_transaction.m_total_paid_portal` | `o_total_paid.m_amount` | `m_total_paid` | 16 of 33,064 rows (14 Sep 2020 – 1 Oct 2026), all **Account Adjustment / Account Credited**, Mar–Apr 2026: `m_total_paid` is null, this carries the credited amount. Summed for 2026: $1,056,429.05, the portal CSV's Total Paid; `m_total_paid` gives $1,044,780.65 ($11,648.40 short) |
+
+**The raw column stays, because it is not wrong.** An account credit brings no
+money in, and `m_total_paid` says so. Which one a royalty is computed on is a
+business decision M04b has not made; with both stored, that decision is a query
+rather than a reload.
+
+**Only the pair that differs is stored.** The payment report has no
+`o_net_sale`. The item report does have `o_total_paid`, but its `m_amount` is
+null on all 34,253 unique rows, so there `m_total_paid` already is the portal's
+figure ($5,243,133.68, exact).
+
+**Neither is in `row_hash`.** Rows were already stored when these were added
+(775 item, 742 payment, 1 Sep – 1 Oct 2026). Hashing the new value would give
+each of them a new identity, and the next read would insert a second copy. Left
+out, a re-read upserts onto the stored row and fills the column, which also means
+a row stored before 0052 reads **null** here until its window is read again. Two
+rows that differ only in a portal amount share a hash and are numbered apart by
+`i_occurrence`, kept rather than merged. `PORTAL_COLUMNS` in
+`src/sync/transactions.ts` holds the rule, and a test proves a row keeps its
+pre-0052 identity.
 
 ### `k_purchase` here is not a foreign key, on purpose
 
@@ -1082,6 +1131,31 @@ sync_run         what each run did
 sync_conflict    what needs a human
 ```
 
+**`done` rows are read, so `done` is indexed.** `enqueue()` skips any target that
+finished in the last 24 hours, which means every seed reads `done` rows filtered
+by `updated_at`. `0007` indexed only the active and dead states, on the
+assumption that finished work is never looked at; with 823,322 `done` rows that
+read walked the whole table and hit the statement timeout (8.5–9.7 s, measured
+1 Oct 2026). `0050` adds `sync_queue_fresh_done_idx` for it. Nothing prunes
+`done` rows yet, so the table still grows on every run.
+
+**That read is ordered by `updated_at`, not `id`, and must stay that way.** With
+the index in place, `order=id` still timed out for `purchase_item_element`, which
+had 243,475 `done` rows and none fresh. Postgres estimated thousands of matches,
+so it walked the primary key expecting to collect 1,000 of them early. None
+existed, so it walked the whole table. The same read unordered took 310 ms.
+Ordering by `updated_at, id` matches the index, so an empty window answers
+instantly. `id` is only the tie-break that keeps the pages stable.
+
+**The active-state read has the same trap, and the same answer.** `enqueue()`'s
+other dedupe read (pending and in-progress rows) also ordered by `id`. For
+`session_attendance`, with 16,608 pending, it timed out on every try on 1 Oct
+2026 and crashed `attendance_sync` before it claimed anything. It now orders by
+`(work_type, target_key, k_business)`, the order `sync_queue_active_target_key`
+(`0007`) already holds: 353 ms, and 481 ms on page 16. No new index was needed.
+**Every paged read of `sync_queue` should order by the columns of the index that
+serves it, never by `id`.**
+
 **Absolute times, not durations.** `next_attempt_at` is a timestamp. A duration
 only means something relative to a process that is still alive; a timestamp is
 still correct after a crash, a redeploy, or a fortnight in the queue.
@@ -1096,6 +1170,14 @@ timestamp guessing.
 **`partial` is a first-class run state.** The budget running out is the normal way
 a run ends, not a failure. Folding it into `ok` would hide unfinished work; folding
 it into `failed` would cry wolf nightly.
+
+**`skipped` is a run state too (`0051`).** It means the job's lease was held by
+another run, so this one stood down. It is not a failure, a cancellation or a
+death, and neither the digest (`failed`) nor the overdue check (`ok`) counts it.
+It was written by the code from `0035` on but not allowed by the constraint until
+`0051`, so every stand-down was rejected and its row stayed `running`. **The code
+and the CHECK list must change together.** `tests/sync-run-states.test.ts` fails
+if they drift.
 
 **`sync_job_state.report_handle`** exists because `/v1/report/data` is not addressed
 by a record key — resuming a part-finished report needs the handle WL issued plus

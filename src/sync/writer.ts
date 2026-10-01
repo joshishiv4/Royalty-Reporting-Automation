@@ -116,6 +116,27 @@ interface StoreRawInput {
   readonly targetKey?: string;
 }
 
+/**
+ * The payload with every NUL byte removed from its strings and keys - the one
+ * change the raw store makes to what WL sent.
+ *
+ * WL pads the transaction reports' sort fields with one ("alison steele\u0000").
+ * jsonb cannot hold it at all: the insert fails with 22P05 "unsupported Unicode
+ * escape sequence", so the choice is between this and storing nothing. On 1 Oct
+ * 2026 it failed tx_payment_sync on page 0, before the typed-row writer - which
+ * already strips it - was ever reached.
+ */
+export function stripNul(value: unknown): unknown {
+  if (typeof value === 'string') return value.includes('\0') ? value.replace(/\0/g, '') : value;
+  if (Array.isArray(value)) return value.map(stripNul);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k.replace(/\0/g, ''), stripNul(v)]),
+    );
+  }
+  return value;
+}
+
 /** Inserts the raw payload and returns its id, for raw_link to point at. */
 export async function storeRawWl(db: SupabaseClient, input: StoreRawInput): Promise<string> {
   const rows = await db.insert<{ id: string }>('raw_wl', [
@@ -124,7 +145,7 @@ export async function storeRawWl(db: SupabaseClient, input: StoreRawInput): Prom
       source_endpoint: input.sourceEndpoint,
       target_kind: input.targetKind,
       ...(input.targetKey === undefined ? {} : { target_key: input.targetKey }),
-      payload: input.response.body,
+      payload: stripNul(input.response.body),
       http_status: input.response.httpStatus,
       wl_status: 'ok',
       trace_id: input.response.traceId,
