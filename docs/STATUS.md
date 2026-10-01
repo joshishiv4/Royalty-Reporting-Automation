@@ -233,6 +233,22 @@ cannot hold, and the existing strip only covered the typed rows (WL-API-NOTES.md
 `tx_payment_sync` and `tx_item_sync` getting a non-null
 `last_clean_completion_at`, and `pay_transaction` holding rows.
 
+**A run that stands down could not record it; `0051` written, to apply.** A sync
+was stopped at 12:29:46 UTC while it held `purchase_element_sync`. The next one,
+16 s later, found the lease still valid and correctly stood down. Its close as
+`skipped` was then rejected by `sync_run_state_check`, which never allowed that
+state. The row stayed `running` and nothing worked the 15,981 pending
+`purchase_item_element` items until a later run took the expired lease.
+
+**Open, not fixed - the report jobs get one WL poll per scheduled run.** When the
+build is not ready, the item is deferred 5-30 s, nothing is claimable, and the
+pass ends. On hourly Actions that is one poll an hour. Both builds requested at
+11:36 were still "not ready" at 12:30. A read-only poll at 12:40 found WL had
+queued fresh builds at that moment, which finished in 6-8 s (743 and 775 rows).
+WL appears to drop a build that is not read within about an hour (unproven),
+which with one poll an hour can stop these jobs ever completing. Candidate fix:
+let a report pass wait within its budget for a deferred build.
+
 ### The schedule left Vercel, 18 Sep 2026
 
 A consequence of the above, and of a limit that was always there. The project is

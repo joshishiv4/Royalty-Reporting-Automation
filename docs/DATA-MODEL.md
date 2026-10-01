@@ -1138,6 +1138,14 @@ timestamp guessing.
 a run ends, not a failure. Folding it into `ok` would hide unfinished work; folding
 it into `failed` would cry wolf nightly.
 
+**`skipped` is a run state too (`0051`).** It means the job's lease was held by
+another run, so this one stood down. It is not a failure, a cancellation or a
+death, and neither the digest (`failed`) nor the overdue check (`ok`) counts it.
+It was written by the code from `0035` on but not allowed by the constraint until
+`0051`, so every stand-down was rejected and its row stayed `running`. **The code
+and the CHECK list must change together.** `tests/sync-run-states.test.ts` fails
+if they drift.
+
 **`sync_job_state.report_handle`** exists because `/v1/report/data` is not addressed
 by a record key — resuming a part-finished report needs the handle WL issued plus
 the page reached, and handles expire.
