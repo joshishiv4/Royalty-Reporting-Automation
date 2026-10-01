@@ -194,6 +194,30 @@ is **not** backed up - 3 items pending - so queue depth reads healthy while the
 table's size is the problem. A retention window plus a scheduled cleanup is the
 fix; neither is written.
 
+**Update, 1 Oct 2026 - the read that times out is now identified; `0050` applied
+to dev.** It has grown to **869,798 rows, 823,322 `done`**. Timing each
+queue query alone, with no sync running, picked out one: `enqueue()`'s fresh-done
+dedupe (`state = done and updated_at >= now - 24h`), which no index covered. It
+took **8.5-9.7 s** on `client_visits`, `promotion_list`, `login_type_list` and
+`client_list` and timed out on three of them **by itself**. Claim, `countEligible`
+and the active-state dedupe were 0.3-2 s. On 30 Sep 08:21 UTC it killed **16 of
+18** passes 10-52 seconds in - the "16 stage(s) crashed" digest - and its
+repeated failures of `attendance_sync` and `purchase_element_sync` are two of
+the five jobs that digest called overdue.
+
+`0050` adds a partial index for that read. It does **not** shrink the table, so
+the cleanup above is still open; and it does nothing for the report jobs, whose
+separate cause is the entry above. Proof it worked: the same read under 1 s, and
+`attendance_sync` and `purchase_element_sync` reaching `ok`.
+
+After it was applied, the read dropped below 1.1 s on 15 of 17 work types
+(`client_visits` went from 9.7 s to 0.85 s), but `purchase_item_element` still timed
+out. The index was fine. The read's `order=id` made the planner walk the
+primary key instead (see DATA-MODEL.md, control plane). `enqueue()` now orders it
+by `updated_at, id`. Re-timed with that order, all 17 work types are 0.28-1.1 s
+(`purchase_item_element` 281 ms). **Still to confirm:** `attendance_sync` and
+`purchase_element_sync` reaching `ok` on a real run.
+
 ### The schedule left Vercel, 18 Sep 2026
 
 A consequence of the above, and of a limit that was always there. The project is

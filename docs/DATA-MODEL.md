@@ -1098,6 +1098,22 @@ sync_run         what each run did
 sync_conflict    what needs a human
 ```
 
+**`done` rows are read, so `done` is indexed.** `enqueue()` skips any target that
+finished in the last 24 hours, which means every seed reads `done` rows filtered
+by `updated_at`. `0007` indexed only the active and dead states, on the
+assumption that finished work is never looked at; with 823,322 `done` rows that
+read walked the whole table and hit the statement timeout (8.5–9.7 s, measured
+1 Oct 2026). `0050` adds `sync_queue_fresh_done_idx` for it. Nothing prunes
+`done` rows yet, so the table still grows on every run.
+
+**That read is ordered by `updated_at`, not `id`, and must stay that way.** With
+the index in place, `order=id` still timed out for `purchase_item_element`, which
+had 243,475 `done` rows and none fresh. Postgres estimated thousands of matches,
+so it walked the primary key expecting to collect 1,000 of them early. None
+existed, so it walked the whole table. The same read unordered took 310 ms.
+Ordering by `updated_at, id` matches the index, so an empty window answers
+instantly. `id` is only the tie-break that keeps the pages stable.
+
 **Absolute times, not durations.** `next_attempt_at` is a timestamp. A duration
 only means something relative to a process that is still alive; a timestamp is
 still correct after a crash, a redeploy, or a fortnight in the queue.

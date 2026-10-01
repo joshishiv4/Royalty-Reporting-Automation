@@ -305,6 +305,13 @@ export async function enqueue(
   if (!forceReseed && windowMs > 0) {
     const now = opts.now?.() ?? Date.now();
     const cutoff = new Date(now - windowMs).toISOString();
+    // Ordered by updated_at, NOT id. sync_queue_fresh_done_idx (0050) holds
+    // these rows in updated_at order, so this reads only the window's slice.
+    // Ordered by id, the planner walks the primary key hoping to hit 1000
+    // matches early - and when the window is empty it never does: on 1 Oct 2026
+    // purchase_item_element (243,475 done, none fresh) took 310 ms unordered and
+    // hit the statement timeout ordered by id. id stays as the tie-break so the
+    // pages are stable; a row finishing mid-read lands at the end, not mid-page.
     for (let offset = 0; ; offset += PAGE) {
       const page = await db.select<{
         work_type: string;
@@ -313,7 +320,7 @@ export async function enqueue(
       }>(
         'sync_queue',
         `${scope}&state=eq.done&updated_at=gte.${cutoff}` +
-          `&order=id.asc&limit=${PAGE}&offset=${offset}` +
+          `&order=updated_at.asc,id.asc&limit=${PAGE}&offset=${offset}` +
           `&select=work_type,target_key,k_business`,
       );
       for (const row of page) seen.add(targetKey(row));
