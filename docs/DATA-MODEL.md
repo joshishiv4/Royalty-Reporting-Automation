@@ -1114,6 +1114,15 @@ existed, so it walked the whole table. The same read unordered took 310 ms.
 Ordering by `updated_at, id` matches the index, so an empty window answers
 instantly. `id` is only the tie-break that keeps the pages stable.
 
+**The active-state read has the same trap, and the same answer.** `enqueue()`'s
+other dedupe read (pending and in-progress rows) also ordered by `id`. For
+`session_attendance`, with 16,608 pending, it timed out on every try on 1 Oct
+2026 and crashed `attendance_sync` before it claimed anything. It now orders by
+`(work_type, target_key, k_business)`, the order `sync_queue_active_target_key`
+(`0007`) already holds: 353 ms, and 481 ms on page 16. No new index was needed.
+**Every paged read of `sync_queue` should order by the columns of the index that
+serves it, never by `id`.**
+
 **Absolute times, not durations.** `next_attempt_at` is a timestamp. A duration
 only means something relative to a process that is still alive; a timestamp is
 still correct after a crash, a redeploy, or a fortnight in the queue.

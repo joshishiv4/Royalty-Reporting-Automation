@@ -486,6 +486,20 @@ describe('enqueue', () => {
     expect(q).toContain('&order=updated_at.asc,id.asc&');
     expect(q).not.toContain('order=id.asc');
   });
+
+  // The same trap on the other dedupe read: ordered by id, session_attendance's
+  // active lookup timed out on live dev (1 Oct 2026) and killed attendance_sync.
+  // Ordered as sync_queue_active_target_key (0007) holds it, it took 353 ms.
+  it('orders the active lookup in the active_target_key index order', async () => {
+    const { db, calls } = fakeDb({ select: () => [] });
+    await enqueue(db, [{ work_type: 'purchase_list', target_key: 'uid-1', k_business: '111111' }]);
+    const active = calls.find(
+      (c) => c.op === 'select' && (c.query ?? '').includes('state=in.(pending,in_progress)'),
+    );
+    const q = active!.query ?? '';
+    expect(q).toContain('&order=work_type.asc,target_key.asc,k_business.asc&');
+    expect(q).not.toContain('order=id.asc');
+  });
 });
 
 /**

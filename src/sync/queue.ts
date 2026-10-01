@@ -288,10 +288,17 @@ export async function enqueue(
   const PAGE = 1000;
   const scope = `work_type=in.(${workTypes.join(',')})&k_business=in.(${businesses.join(',')})`;
 
+  // Ordered by (work_type, target_key, k_business), NOT id: that is the order
+  // sync_queue_active_target_key (0007) holds, so Postgres reads it straight off
+  // the index. Ordered by id, the planner walks the primary key instead - the
+  // same trap as the fresh-done read below. On 1 Oct 2026 session_attendance
+  // (16,608 pending) timed out ordered by id on every try and took 353 ms in
+  // index order; it was killing attendance_sync before it claimed anything.
+  const ACTIVE_ORDER = 'order=work_type.asc,target_key.asc,k_business.asc';
   for (let offset = 0; ; offset += PAGE) {
     const page = await db.select<{ work_type: string; target_key: string; k_business: string }>(
       'sync_queue',
-      `${scope}&state=in.(pending,in_progress)&order=id.asc&limit=${PAGE}&offset=${offset}` +
+      `${scope}&state=in.(pending,in_progress)&${ACTIVE_ORDER}&limit=${PAGE}&offset=${offset}` +
         `&select=work_type,target_key,k_business`,
     );
     for (const row of page) seen.add(targetKey(row));

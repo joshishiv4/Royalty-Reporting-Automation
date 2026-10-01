@@ -1160,6 +1160,14 @@ Money is quoted and sometimes four-decimal: `"239.00"`, `"239.0000"`,
 `"alison steele\u0000"` — which Postgres rejects inside `text`, so the writer
 strips it.
 
+**`jsonb` rejects it too, so it is stripped from the raw payload as well.**
+Stripping only the typed rows was not enough: `raw_wl` is written first, and on
+1 Oct 2026 that insert failed `tx_payment_sync` on page 0 with `22P05:
+unsupported Unicode escape sequence`, so no typed row was ever reached.
+`stripNul()` in `writer.ts` removes the NUL byte from every string and key before
+any `raw_wl` insert. It is the only change the raw store makes to what WL
+sent, because the alternative is storing nothing.
+
 The item title arrives nested rather than as a plain column:
 `o_purchase_item_title_link.a_item[0].text_title`, e.g. "Monthly Subscription -
 45 Minutes".

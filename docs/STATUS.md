@@ -215,8 +215,23 @@ After it was applied, the read dropped below 1.1 s on 15 of 17 work types
 out. The index was fine. The read's `order=id` made the planner walk the
 primary key instead (see DATA-MODEL.md, control plane). `enqueue()` now orders it
 by `updated_at, id`. Re-timed with that order, all 17 work types are 0.28-1.1 s
-(`purchase_item_element` 281 ms). **Still to confirm:** `attendance_sync` and
-`purchase_element_sync` reaching `ok` on a real run.
+(`purchase_item_element` 281 ms).
+
+A local `sync:full-parallel` with that change (11:36 UTC) finished 15 passes
+`ok`. The 07:06 run on the old code had ten fail on `57014`. `attendance_sync`
+still failed on `57014`: the **active-state** dedupe read had the same `order=id`
+trap, and timed out for `session_attendance` (16,608 pending). It now orders by
+the `sync_queue_active_target_key` columns (353 ms). **Still to confirm:**
+`attendance_sync` and `purchase_element_sync` reaching `ok` on a real run.
+
+**`tx_payment_sync` has a second, separate failure, found the same run.** The
+3-hour handle now survives between runs as intended, and the job got one step
+further. It then failed writing the raw page: `22P05: unsupported Unicode escape
+sequence [table=raw_wl]`. WL pads sort fields with a NUL byte, which `jsonb`
+cannot hold, and the existing strip only covered the typed rows (WL-API-NOTES.md).
+`storeRawWl()` now strips it from the payload too. **Still to confirm:**
+`tx_payment_sync` and `tx_item_sync` getting a non-null
+`last_clean_completion_at`, and `pay_transaction` holding rows.
 
 ### The schedule left Vercel, 18 Sep 2026
 
