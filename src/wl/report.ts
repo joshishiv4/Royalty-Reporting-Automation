@@ -205,16 +205,33 @@ export const REPORT_TRANSACTION_PAYMENT = 799;
 export const TRANSACTION_PAGE_SIZE = 1000;
 
 /**
+ * The portal's "Accounting method" selector, as a `json_filter` value.
+ *
+ * WL Support, Oct 2026: 1 = Accrual (account balance / gift card only), 2 = Cash
+ * (real-money methods only), 3 = Accrual and cash (everything). LEAVING THE KEY
+ * OUT MEANS 2, not "no filter" - and nothing in the response says so.
+ */
+export const ACCOUNTING_ACCRUAL_AND_CASH = 3;
+
+/**
  * A transaction report, filtered to one date window.
  *
- * THE FILTER IS ONE KEY, AND THAT IS NOT AN OVERSIGHT. The client list needs
- * fifteen `o_*` keys; these reports need `o_date` and nothing else, measured
- * live. `id_report_date` - which the client list must send, because there the
- * date means CLIENT SINCE - is not required here: this window filters the
+ * TWO KEYS, AND THE SECOND ONE IS WHERE 42% OF THE MONEY WAS. These reports were
+ * read with `o_date` alone for two weeks, on the measured belief that nothing
+ * else was needed. Without `o_purchase_accrual_cash` WL applies Cash mode and
+ * silently drops every sale settled from a client's account balance - which is
+ * how this business bills its monthly auto-renewals. Measured 1 Oct 2026 against
+ * the portal, full history on 739: 10,851 rows without the key, 34,255 with it,
+ * and Total Paid $5,243,133.68 to the cent of the portal's figure. A failed card
+ * attempt was returned and a successful account debit was not, which is what
+ * made this look like a keying bug rather than a filter. See WL-API-NOTES.md.
+ *
+ * `id_report_date` - which the client list must send, because there the date
+ * means CLIENT SINCE - is not required here: this window filters the
  * TRANSACTION date, proven by a row whose purchase started 2024-04-18 and whose
- * payment, dated 2025-05-13, appeared in a 2025-only window. Sending keys WL has
- * never been asked for on this cid would change the filter, and the filter is
- * the cache key.
+ * payment, dated 2025-05-13, appeared in a 2025-only window. Every other key is
+ * left out on purpose: WL accepts unknown keys and silently ignores them, so a
+ * guessed key proves nothing, and the filter is the cache key.
  *
  * `s_sort` is `k_pay_transaction`, as WL's own integrations team documented for
  * both reports.
@@ -229,7 +246,10 @@ export function transactionReportSpec(
     sort: 'k_pay_transaction',
     // Bare dates. These reports accept `YYYY-MM-DD`; the rule about `dt_date`
     // needing a time component is a different parameter on other endpoints.
-    jsonFilter: { o_date: { dl_start: window.dlStart, dl_end: window.dlEnd } },
+    jsonFilter: {
+      o_date: { dl_start: window.dlStart, dl_end: window.dlEnd },
+      o_purchase_accrual_cash: ACCOUNTING_ACCRUAL_AND_CASH,
+    },
   };
 }
 

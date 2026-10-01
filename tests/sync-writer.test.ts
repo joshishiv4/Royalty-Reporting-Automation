@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '../src/supabase/client.js';
 import type { WlResponse } from '../src/wl/client.js';
-import { parseStaffList, writeStaffList } from '../src/sync/writer.js';
+import { parseStaffList, storeRawWl, stripNul, writeStaffList } from '../src/sync/writer.js';
 
 const K_BUSINESS = '111111';
 
@@ -118,5 +118,40 @@ describe('writeStaffList', () => {
     await writeStaffList(db, { kBusiness: K_BUSINESS, response: response({}), runId: 'run' });
     // The payload is still captured; only the typed writes are skipped.
     expect(calls.map((c) => c.table)).toEqual(['raw_wl']);
+  });
+});
+
+// jsonb cannot hold a NUL byte; WL's transaction reports pad sort fields with
+// one. On 1 Oct 2026 the raw insert failed tx_payment_sync with 22P05 before any
+// typed row was written.
+describe('storeRawWl strips NUL bytes jsonb would reject', () => {
+  it('removes NUL from nested strings and keys and leaves everything else alone', () => {
+    const body = {
+      a_row: [['alison steele\u0000', '239.00', 7, null, true]],
+      'k\u0000ey': { text_title: 'Monthly\u0000 Subscriptions' },
+    };
+    expect(stripNul(body)).toEqual({
+      a_row: [['alison steele', '239.00', 7, null, true]],
+      key: { text_title: 'Monthly Subscriptions' },
+    });
+  });
+
+  it('inserts a payload with no NUL left anywhere in it', async () => {
+    let stored: unknown;
+    const db = {
+      insert: vi.fn((_table: string, rows: Array<{ payload: unknown }>) => {
+        stored = rows[0]!.payload;
+        return Promise.resolve([{ id: 'raw-1' }]);
+      }),
+    } as unknown as SupabaseClient;
+    await storeRawWl(db, {
+      kBusiness: K_BUSINESS,
+      sourceEndpoint: '/v1/report/query',
+      targetKind: 'page',
+      runId: 'run',
+      response: response({ a_data: [['alison steele\u0000']] }),
+    });
+    expect(JSON.stringify(stored)).not.toContain('\\u0000');
+    expect(stored).toEqual({ a_data: [['alison steele']] });
   });
 });

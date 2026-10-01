@@ -59,6 +59,9 @@ const ITEM_FIELDS: Readonly<Record<string, string>> = {
   m_amount: 'm_amount',
   m_sale: 'm_sale',
   m_net_sale: 'm_net_sale',
+  // The portal's figure, which differs from m_net_sale on "Account Payments"
+  // rows - $47,592.09 over the full history. See PORTAL_COLUMNS and 0052.
+  'o_net_sale.m_amount': 'm_net_sale_portal',
   m_discount_amount: 'm_discount_amount',
   m_total_tax: 'm_total_tax',
   m_total_tip: 'm_total_tip',
@@ -100,6 +103,9 @@ const PAYMENT_FIELDS: Readonly<Record<string, string>> = {
   m_total_sale_amount: 'm_total_sale_amount',
   m_total_amount: 'm_total_amount',
   m_total_paid: 'm_total_paid',
+  // The portal's figure: m_total_paid is null on "Account Credited" adjustments
+  // and this carries the credited amount. See PORTAL_COLUMNS and 0052.
+  'o_total_paid.m_amount': 'm_total_paid_portal',
   m_total_receipt: 'm_total_receipt',
   m_debit: 'm_debit',
   m_credit: 'm_credit',
@@ -213,8 +219,8 @@ export interface TransactionRow {
  * WHY OVER THE MAPPED VALUES AND NOT THE WHOLE ROW. The full row carries signed
  * `url` tokens and tooltip HTML that are free to change between builds; hashing
  * them would give the same transaction a new identity and insert a second copy.
- * Hashing exactly what is stored means the hash changes when, and only when, a
- * stored value changes.
+ * Hashing what is stored means the hash changes when a stored value changes -
+ * with one documented exception, PORTAL_COLUMNS below.
  *
  * The separator is a unit separator, so a value containing a pipe or a comma
  * cannot forge a different row's hash.
@@ -227,10 +233,23 @@ export function hashRow(
   return createHash('sha256').update(parts.join('')).digest('hex');
 }
 
+/**
+ * Columns stored but deliberately NOT hashed: the amount the portal shows
+ * (`o_net_sale.m_amount`, `o_total_paid.m_amount`), added by 0052 after rows were
+ * already stored. Hashing them would give every stored row a new identity, and
+ * the next read would insert a second copy beside each one. Left out, a re-read
+ * upserts onto the stored row and fills the column in.
+ *
+ * Nothing is lost by it. Two rows that differ ONLY in a portal amount share a
+ * hash and are numbered apart by `i_occurrence`, exactly like byte-identical
+ * rows - kept, never merged.
+ */
+const PORTAL_COLUMNS = new Set(['m_net_sale_portal', 'm_total_paid_portal']);
+
 /** The column order a hash is taken over. Fixed, or every re-read is a new row. */
 function hashOrder(report: TransactionReport): readonly string[] {
   return [
-    ...Object.values(fieldMap(report)),
+    ...Object.values(fieldMap(report)).filter((column) => !PORTAL_COLUMNS.has(column)),
     'is_refund',
     ...(report === 'item' ? ['item_title'] : []),
   ];

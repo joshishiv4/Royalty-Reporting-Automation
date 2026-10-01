@@ -39,6 +39,7 @@ const ITEM_FIELDS = [
   'm_amount',
   'm_sale',
   'm_net_sale',
+  'o_net_sale.m_amount',
   'm_discount_amount',
   'm_total_tax',
   'm_total_tip',
@@ -82,6 +83,7 @@ function itemRow(over: Partial<Record<string, unknown>> = {}): unknown[] {
     m_amount: '239.00',
     m_sale: '239.0000',
     m_net_sale: '239.00',
+    'o_net_sale.m_amount': '239.00',
     m_discount_amount: null,
     m_total_tax: '0.0000',
     m_total_tip: null,
@@ -226,6 +228,123 @@ describe('row identity', () => {
     const page2 = mapTransactionRows('item', ITEM_FIELDS, [itemRow()], seen);
     expect(page1[0]!.i_occurrence).toBe(0);
     expect(page2[0]!.i_occurrence).toBe(1);
+  });
+});
+
+/** The payment view's mapped columns, plus the refund flag the mapper also reads. */
+const PAYMENT_FIELDS = [
+  'k_pay_transaction',
+  'k_purchase',
+  'o_date.dtu_date',
+  'o_date.dtl_date',
+  'dtu_purchase_start',
+  'o_client.uid_client',
+  'o_location.k_location',
+  'is_paid',
+  'i_quantity',
+  'm_amount',
+  'm_sale',
+  'm_net_sale',
+  'm_discount_amount',
+  'm_total_tax',
+  'm_total_tip',
+  'm_total_sale_amount',
+  'm_total_amount',
+  'm_total_paid',
+  'o_total_paid.m_amount',
+  'm_total_receipt',
+  'm_debit',
+  'm_credit',
+  'm_account_change',
+  'm_transaction_balance',
+  'text_payment_method',
+  'o_payment_method.text_method',
+  'text_comment',
+  'text_origin',
+  'text_frequency',
+  'o_payment_status.text_status',
+  'o_decline_reason.text_decline_reason',
+  's_batch_number',
+  'text_order_id',
+  'text_processor_reference',
+  'id_pay_transaction_status',
+  'o_actor.uid_actor',
+  'o_actor.text_actor',
+  'o_action.is_refund_transaction',
+];
+
+/** One of the sixteen live "Account Credited" rows (Chris Sheridan, 26 Mar 2026). */
+function creditedRow(over: Partial<Record<string, unknown>> = {}): unknown[] {
+  const values: Record<string, unknown> = {
+    k_pay_transaction: '189262645',
+    'o_date.dtu_date': '2026-03-26 19:30:48',
+    'o_date.dtl_date': '2026-03-26 15:30:48',
+    'o_client.uid_client': '36453766',
+    i_quantity: 1,
+    m_net_sale: '0.00',
+    m_total_paid: null,
+    'o_total_paid.m_amount': '460.00',
+    m_total_receipt: '-460.00',
+    text_payment_method: 'Account Adjustment',
+    'o_payment_status.text_status': 'Account Credited',
+    id_pay_transaction_status: 2,
+    'o_action.is_refund_transaction': false,
+    ...over,
+  };
+  return PAYMENT_FIELDS.map((f) => values[f] ?? null);
+}
+
+/**
+ * The amount the portal SHOWS, beside the raw column it disagrees with (0052).
+ * Summing the raw column gives figures the portal never shows: $47,592.09 too
+ * much net sales on the item view's full history, $11,648.40 too little paid on
+ * the payment view's 2026.
+ */
+describe('the portal amounts', () => {
+  /** The measured item-view case: a payment onto an account, by check. */
+  it('stores o_net_sale.m_amount beside m_net_sale, not instead of it', () => {
+    const [row] = mapTransactionRows('item', ITEM_FIELDS, [
+      itemRow({ m_net_sale: '1863.90', 'o_net_sale.m_amount': '1346.15' }),
+    ]);
+    expect(row!.m_net_sale).toBe('1863.90');
+    expect(row!.m_net_sale_portal).toBe('1346.15');
+  });
+
+  /** No money came in, so m_total_paid is null - and the portal shows $460.00. */
+  it('stores o_total_paid.m_amount on an Account Credited row whose m_total_paid is null', () => {
+    const [row] = mapTransactionRows('payment', PAYMENT_FIELDS, [creditedRow()]);
+    expect(row!.m_total_paid).toBeNull();
+    expect(row!.m_total_paid_portal).toBe('460.00');
+    expect(row!.text_status).toBe('Account Credited');
+  });
+
+  /**
+   * THE REASON THE PORTAL COLUMNS ARE OUT OF THE HASH. Rows were stored before
+   * 0052 existed. If the new value were hashed, each of them would get a new
+   * identity and the next read would insert a second copy beside it.
+   */
+  it('gives a stored row the same identity it had before the portal column existed', () => {
+    const withField = mapTransactionRows('payment', PAYMENT_FIELDS, [creditedRow()]);
+    const before = PAYMENT_FIELDS.filter((f) => f !== 'o_total_paid.m_amount');
+    const withoutField = mapTransactionRows('payment', before, [
+      creditedRow().filter((_, i) => PAYMENT_FIELDS[i] !== 'o_total_paid.m_amount'),
+    ]);
+    expect(withField[0]!.row_hash).toBe(withoutField[0]!.row_hash);
+  });
+
+  /** Out of the hash does not mean merged: they are numbered, like identical rows. */
+  it('keeps two rows apart that differ only in the portal amount', () => {
+    const rows = mapTransactionRows('payment', PAYMENT_FIELDS, [
+      creditedRow({ 'o_total_paid.m_amount': '460.00' }),
+      creditedRow({ 'o_total_paid.m_amount': '790.50' }),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.i_occurrence)).toEqual([0, 1]);
+  });
+
+  it('refuses a payment page that has lost o_total_paid.m_amount', () => {
+    const missing = PAYMENT_FIELDS.filter((f) => f !== 'o_total_paid.m_amount');
+    expect(() => assertTransactionFields('payment', missing)).toThrow(/o_total_paid\.m_amount/);
   });
 });
 
