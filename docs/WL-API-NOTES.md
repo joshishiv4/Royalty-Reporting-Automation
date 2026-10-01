@@ -856,7 +856,7 @@ Error values, as WL Support explained them:
 |---|---|---|
 | `offset-large` | `i_offset` above **100,000** | narrow the date range or filters. The full transaction history is 34,255 rows (Oct 2026), about a third of the way there |
 | `sort-invalid` | a non-zero `i_limit` with no `s_sort` | always send `s_sort` |
-| `refresh-active` | WL could not reproduce it | they asked for the exact request if it recurs |
+| `refresh-active` | WL could not reproduce it | **reproduced 1 Oct 2026**: `is_refresh: 1` while that filter's build is already generating (see the transaction-report section). Poll instead |
 
 A filter matching nobody and a filter matching 229 people **both** returned 0
 rows on the first call and differed only on the second. Trusting the first answer
@@ -1086,18 +1086,49 @@ Total paid and tax match **to the cent** over the full history, so mode 3
 returns every row the portal has. Mode 3 also returns every account-settled row
 with a `k_pay_transaction`, so the 799 writer drops nothing.
 
-**The portal's own totals are not plain sums, and two of them are still
-unexplained.** The single day is fully explained: the portal's "Total
-Transactions" and "Total Net Sales" on 799 leave out failed rows (62 − 5 = 57;
-$15,293.50 − $1,555.00 failed = $13,738.50). Its "Net Items Sold" on 739 counts
-only `id_pay_transaction_status` 2 (55 of 57; the other 2 are status 4). Its
-full-history "Total Accounts Balance" (−$233,005.27) equals the sum of
-`m_account_change` **excluding status 12** to the cent. But full-history **net
-sales** (+$47,592.09 against the portal's $5,234,690.28) and **items** (+1,313
-against 32,169) do not fall out of any grouping by status, refund flag or payment
-method that was tried. That is a question about the portal's arithmetic, not
-about missing rows. It belongs to the royalty rule (M04b), and WL has not been
-asked yet.
+**The portal's tiles are not plain sums of the obvious column.** Worked out on
+1 Oct 2026 from the raw rows, every rule below reproduces the portal to the cent
+except where marked:
+
+| Tile | 739 Item View | 799 Transaction View |
+|---|---|---|
+| Items / Transactions | `i_quantity`, status 2 only, without the 664 manual account adjustments (`m_total_paid` null): **32,149 against the portal's 32,169**, the one tile still 20 short | rows, without status 3 (failed) |
+| Total Net Sales | **`o_net_sale.m_amount`**, all rows. `m_net_sale` is $47,592.09 over (next section) | `m_net_sale`, without status 3 |
+| Sales Tax | `m_total_tax`, all rows | `m_total_tax`, all rows |
+| Failed Transactions / Amount | — | status 3 rows; their `m_total_paid` |
+| Total Paid | `m_total_paid`, all rows | **`o_total_paid.m_amount`**, without status 3 (next section) |
+| Total Accounts Balance | `m_account_change`, without status 12 | `m_account_change`, all rows |
+
+On 739 the full history to 9 Sep 2026 matched on all five tiles but items. On 799
+the rules were proven on 1 Jan 2025 (all seven tiles) and by the CSV
+reconciliation below; the portal's own full-history 799 tiles were not captured.
+
+The status codes, as 799's `o_payment_status.text_status` labels them: **2**
+Successful / Account Debited / Account Credited, **3** Failed, **4** Fully
+Refunded / Full Refund / Partial Refund, **7** Partially Refunded / Partial
+Refund, **12** Voided. On 739 the item count leaves out sales later refunded
+(status 4 and 7, `is_refund_transaction` false) while their money stays in net
+sales: that is the 2 missing items on 1 Jan 2025.
+
+### ⚠ The plain `m_*` column and its `o_*` object can disagree — the portal shows the `o_*`
+
+A money cell arrives twice: a plain column (`m_net_sale`, `m_total_paid`) and an
+`o_*` object the portal draws the cell from (`o_net_sale`, `o_total_paid`, with
+`m_amount`, `k_currency`, `k_pay_transaction`, `show_empty`, `text_note`). The
+portal, its CSV export and its tiles show **`o_*.m_amount`**. Neither is
+documented; this is measured:
+
+| Field pair | Report | Disagree on | What the rows are |
+|---|---|---|---|
+| `m_net_sale` / `o_net_sale.m_amount` | 739 | 110 of 34,255 | all **Account Payments**: the portal shows the amount paid ($1,346.15) where `m_net_sale` says $1,863.90 |
+| `m_total_paid` / `o_total_paid.m_amount` | 799 | 16 of 33,064 | all **Account Adjustment / Account Credited**, Mar–Apr 2026: `m_total_paid` null, `o_total_paid.m_amount` set, $11,648.40 in all |
+| `o_total_paid.m_amount` | 739 | — | null on every row; `m_total_paid` is the only paid value and matches the portal |
+| `o_net_sale` | 799 | — | not in the report at all |
+
+The likely reading of the 799 case: an account credit moves no money in (so the
+plain column is empty), and the object carries a `k_pay_transaction` the portal
+shows the amount of. That is inference from the field contents, not WL's word.
+Both values are stored (0052, DATA-MODEL.md).
 
 **Changing the accounting mode changes values on rows already seen.** 282 of the
 10,851 Cash-mode rows came back different under mode 3. On 164 of them,
@@ -1201,15 +1232,67 @@ an unknown key is silently ignored.
 | `o_shop_product` | specific products |
 | `o_coupon` | gift card purchases |
 
+### ⚠ One large read of 799 returns repeated rows and drops real ones
+
+Measured 1 Oct 2026, 799, `1980-01-01 .. 2026-09-09`, Accrual and cash, read at
+`i_limit` 1000. **Pages at `i_offset` 15000 and 16000 returned 698 and 666 rows
+already returned on earlier pages, and 1,364 real rows never came back.** The row
+count still looked right (33,433), because each repeat took a real row's place.
+Read twice: identical both times, and all 34 pages carried the **same**
+`s_report` and `dtu_complete`, so this is not a rebuild mid-read. It is how WL
+pages this build.
+
+The same report read **one calendar year at a time** was clean: every year one
+build, no repeated row, 33,431 rows in all, and every row of the portal's CSV
+exports present (below). 739's full-history read had no repeated page.
+
+Nothing in the response marks it. Sorting is `k_pay_transaction`, which is null
+on 654 rows and repeated on others, so an unstable sort over ties is a plausible
+cause, but that is a guess. **The sync's first load reads 799 as one window**, so
+it would store exactly this. Not fixed yet; STATUS.md has it.
+
+### `refresh-active` — reproduced
+
+WL Support could not reproduce it (table above). It is: `is_refresh: 1` sent for
+a filter whose build is **already generating**. Seen twice on 1 Oct 2026, both
+times because the same filter had just been requested elsewhere (Postman, or a
+previous call). The message is "Refreshing of the report may not be queried
+while the report is being generated", with `sField: is_refresh`. The right
+response is to poll with `is_refresh: 0`. The client treats it as permanent
+today.
+
+### Reconciled against the portal's CSV exports, row by row (1 Oct 2026)
+
+799 Transaction View, Accrual and cash, one API read per export, every row
+matched one-to-one on date and minute, client, total paid, status, items and
+method. Subtotal, net sales, tax, purchase total, paid, account change, status,
+method, items and revenue category then compared on every pair:
+
+| Export | Rows | Result |
+|---|---|---|
+| 14 Sep 2020 – 1 May 2021 | 980 | every row and column matches |
+| 1 May – 31 Dec 2021 | 2,223 | every row and column matches |
+| 2022 | 4,381 | every row and column matches |
+| 2023 | 6,096 | every row and column matches |
+| 2024 | 6,778 | every row and column matches |
+| 2025 | 7,525 | every row and column matches |
+| 2026 to 1 Oct | 6,047 | every row matches; Total Paid only via `o_total_paid.m_amount` (16 rows) |
+
+The CSV columns, as fields: Subtotal = `m_sale` (not `m_amount`, the unit price),
+Total Net Sales = `m_net_sale`, Purchase Total = `m_total_amount`, Total Paid =
+`o_total_paid.m_amount`, Account Change = `m_account_change`, Payment Status =
+`o_payment_status.text_status`, Revenue Category = `o_revenue_category.a_item` (on
+799; 739 has `text_revenue_category`). The earliest row is **14 Sep 2020** on both
+reports; the 17 Dec 2020 the one-window read showed was the defect above.
+
 ### What is still unknown about these two
 
-* How the portal computes full-history **Total Net Sales** and **Net Items Sold**
-  in Accrual-and-cash mode. Both come out above our plain sums ($47,592.09 and
-  1,313 items), while Total Paid and tax match exactly. See the two-keys section
-  above.
-* What `id_pay_transaction_status` 4, 7 and 12 mean. They are 1,363, 239 and 45
-  rows of the full history, and the portal's totals treat at least 2 and 12
-  differently.
+* The last **20 items** of the portal's full-history "Net Items Sold" on 739
+  (32,169 against 32,149). Every other tile matches; a per-year portal figure or
+  the full Item View CSV would locate them.
+* What `o_total_paid.m_amount` means on an Account Credited row, and why
+  `m_total_paid` is null there - asked of nobody yet.
+* Why one large 799 read repeats rows at offsets 15000-16999 (section above).
 * Whether the item report now covers **every** purchase item. In Cash mode it
   could not (10,913 rows against 20,561 stored purchase items). In Accrual and
   cash it returns 34,255 rows, more than `purchase_item` holds, but nobody has

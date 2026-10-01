@@ -47,6 +47,7 @@ const ITEM_FIELDS = [
   'm_amount',
   'm_sale',
   'm_net_sale',
+  'o_net_sale.m_amount',
   'm_discount_amount',
   'm_total_tax',
   'm_total_tip',

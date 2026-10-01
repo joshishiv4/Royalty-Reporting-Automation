@@ -51,19 +51,41 @@ read. Removing the key turns 5 tests red (mutation-checked).
 | 739, 1 Jan 2025: net sales | $12,087.50 | **$13,738.50** | $13,738.50 |
 | 799, 1 Jan 2025: rows | 54 | **62** | 57 + 5 failed |
 
-**Still open from this:** the portal's full-history Net Sales (+$47,592.09) and
-Net Items Sold (+1,313) do not equal our plain sums. That is a question about the
-portal's arithmetic, not about missing rows, and it belongs to M04b. Details in
-WL-API-NOTES.md, "The filter is TWO keys".
+**Since explained, the same day.** Net Sales was the wrong field: the portal sums
+`o_net_sale.m_amount`, which matches it to the cent, and `m_net_sale` is $47,592.09
+over on 110 Account Payments rows. Of the +1,313 items, all but 20 are explained
+(manual account adjustments and later-refunded sales are not counted). The 799
+CSV exports reconcile row for row for every year from 14 Sep 2020 to 1 Oct 2026.
+Migration `0052` stores the portal's amounts beside the raw ones
+(`m_net_sale_portal`, `m_total_paid_portal`). All in WL-API-NOTES.md.
 
 **No reload was needed, because nothing had loaded.** Measured the same day:
 `pay_transaction` and `pay_transaction_item` hold **0 rows**, so no Cash-mode row
 exists to be duplicated. If either table ever holds Cash-mode rows, it must be
 emptied rather than refreshed (DATA-MODEL.md).
 
-### Still open, 1 Oct 2026 - the transaction reports have STILL never completed
+### Still open, 1 Oct 2026 - one large read of 799 repeats rows and drops real ones
 
-The 23 Sep fix (below) is **not** confirmed. Eight days later both jobs still
+Reading 799 (Transaction View) for `1980-01-01 .. 2026-09-09` in one window
+returns **1,364 rows twice** (on the pages at `i_offset` 15000 and 16000) and
+**never returns 1,364 real ones**, with the row count unchanged and no error.
+Reproduced on a second read of the same finished build. Read one year at a time,
+the same report is clean and matches the portal's CSV exports row for row. The
+sync's first load reads one window from `SYNC_HISTORY_START`, so it would store
+the repeats and miss the rows. **Not fixed.** The likely fix is a first load
+read in yearly windows, plus a refusal when a page carries rows an earlier page
+already returned. WL-API-NOTES.md has the measurement.
+
+**Where the tables stand, measured 14:20 UTC:** both jobs show
+`last_clean_completion_at` 2026-10-01 14:17:59, and the tables hold 775 item and
+742 payment rows, all dated **1 Sep – 1 Oct 2026**. So the history before
+September is not loaded. These rows predate `0052` and read null in its two
+columns until their window is read again.
+
+### Superseded, 1 Oct 2026 - the transaction reports had never completed
+
+Kept for the record; both jobs have since completed (entry above). The 23 Sep
+fix (below) was **not** confirmed at the time. Eight days later both jobs still
 have `last_clean_completion_at` **null**, and `page_number` is 0.
 
 **Measured cause:** the sync is scheduled hourly but GitHub Actions does not run it
