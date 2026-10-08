@@ -507,7 +507,17 @@ begin
   -- Candidates: humans with a STUDENT role whose student row carries this
   -- address. Teachers are excluded here rather than later - this function is the
   -- portal's door, and the portal is the student portal.
-  select count(*), min(i.id)
+  --
+  -- `(array_agg(i.id))[1]` rather than `min(i.id)`: PostgreSQL has no min/max
+  -- AGGREGATE for uuid. The type sorts - it has btree ordering - so `order by id`
+  -- would have worked and `min(id)` reads as though it should, but core ships no
+  -- such aggregate and the call resolves to nothing. `check_function_bodies` only
+  -- syntax-checks a plpgsql body; it does not resolve the functions called inside
+  -- its SQL statements, so this created cleanly and raised 42883 at runtime on
+  -- every first sign-in. portal_auth_isolation.sql section E is what found it.
+  --
+  -- Which row is taken is not a question: the next test refuses anything but one.
+  select count(*), (array_agg(i.id))[1]
     into v_matches, v_identity
   from app.identity i
   join app.student s on s.id = i.student_id

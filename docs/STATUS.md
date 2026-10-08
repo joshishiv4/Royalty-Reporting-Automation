@@ -27,14 +27,57 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 number — the thing the project is named for — has not been written. See "Not
 started" below.
 
-### Portal sign-in, 8 Oct 2026 - the policies are written, nothing has signed in yet
+### Portal sign-in, 8 Oct 2026 - the policies are applied, nothing has signed in yet
 
 `0053` is the migration DATA-MODEL.md has been pointing at since `0048`: one auth
 anchor on `identity`, `0010`'s five policies re-pointed through it, SELECT policies
 on the ten `app` tables the dashboard reads, and `link_signed_in_identity()`.
-**Written and committed; not yet applied.** It is applied in the Supabase SQL
-editor like `0039`–`0049`, and `supabase/checks/portal_auth_isolation.sql` is what
-says whether it took.
+**Applied 8 Oct 2026** in the Supabase SQL editor, like `0039`–`0049`. The
+migration's own trailing checks pass: all five helpers are `SECURITY DEFINER`
+with `search_path` pinned to `""`, which is what keeps a definer function from
+being an escalation route.
+
+**The isolation check passes, and finding that out found a bug that would have
+broken every sign-in.** `link_signed_in_identity()` used `min(i.id)` to pull the
+single matching identity, and PostgreSQL has no min/max *aggregate* for `uuid` —
+the type sorts, so it reads as though it should work. `check_function_bodies` only
+syntax-checks a plpgsql body, so `0053` created the function cleanly and it raised
+`42883` on the first call: every first sign-in, for everyone. `0053` was amended in
+place to use `(array_agg(i.id))[1]` and re-run, and the check then passed in full —
+A and B (a student reads her own rows), C (and not the other student's), D (signed
+out reads nothing), E (the first sign-in link, its idempotence, and its identical
+refusal for an ambiguous and an unknown address) and F (one auth user cannot hold
+two identities).
+
+The check needed three fixes of its own to be worth believing, and each is worth
+knowing:
+
+- D assumed `anon` reaches the table and is filtered to zero rows. `0053` revokes
+  anon outright and table privileges are checked *before* row security, so the
+  refusal is the pass and a count asserted the weaker guarantee.
+- Every `FAIL` line now travels in the closing exception, not only in a `NOTICE`.
+  The Supabase SQL editor does not surface notices, so the first full run said
+  five checks failed and named none of them.
+- The `like '__pa_%'` guard that proves the rollback took was unescaped. `_` is
+  LIKE's single-character wildcard, so it matched three real students' surnames
+  and reported a clean rollback as surviving test data — printing their names to
+  do it. Now `like '\_\_pa\_%'`, re-run, zero rows.
+
+**The suite is live, measured not asserted.** Dropping `student_self_select` and
+re-running turns exactly A1 and C1 red — the two assertions that read `app.student`
+directly — and nothing else. A2, A3 and B1–B6 stay green because they resolve
+through `app.current_student_id()`, a `SECURITY DEFINER` helper that does not run
+under the caller's policies, and the dependent policies match on that helper rather
+than reading `app.student` themselves. One notion of "me" is why removing one
+policy does not quietly take the rest with it. The policy was restored by re-running
+`0053`.
+
+`rls_isolation_test.sql` passes too, so the WellnessLiving mirror still isolates
+after `person.auth_user_id` was dropped — and because that test now links through
+the hub, it re-proves `0040`'s trigger fires. Its anon section expects zero rows
+rather than a refusal, which is right for `public`: Supabase's bootstrap grants
+anon there by default. That is the same gap `0053` had to close for `app`, where
+nothing granted anything and the policies would have been theatre.
 
 **The sign-in is closed, by decision of 8 Oct 2026.** A code goes only to an
 address already in the database, and signing in never creates an account. Supabase

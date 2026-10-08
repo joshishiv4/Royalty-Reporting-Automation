@@ -19,15 +19,30 @@
 -- including the email claim the link function depends on.
 --
 -- THIS TEST CAN FAIL. That is the point of it. To prove it is not passing by
--- accident, drop one policy and run it again:
+-- accident, drop one policy - or hand a privilege back - and run it again.
 --
---     drop policy student_self_select on app.student;        -- section A goes red
+-- MEASURED, 8 Oct 2026:
+--
+--     drop policy student_self_select on app.student;
+--
+-- turns exactly A1 and C1 red - "alice sees 0 student rows" and "bob sees
+-- [(none)]" - and NOTHING else. A2 and A3 stay green, and that is the design
+-- rather than a hole in the test: they resolve through app.current_student_id(),
+-- which is SECURITY DEFINER and therefore does not run under the caller's
+-- policies. B1-B6 stay green for the same reason - they match on
+-- current_student_id() and never read app.student themselves. One notion of "me"
+-- is why removing one policy does not silently take the rest with it.
+--
+-- EXPECTED, not yet measured. If one of these does NOT go red, that is a finding:
+--
 --     drop policy attendance_record_self_select on app.attendance_record;
---                                                            -- A and B go red
+--                                                            -- B1 and B2 red
 --     drop policy class_session_attended_select on app.class_session;
---                                                            -- B goes red
+--                                                            -- B2 red
+--     grant select on app.student to anon;                   -- D1 red
 --
--- Restore by re-running 0053, which is safe to re-run.
+-- Restore by re-running 0053, which is safe to re-run. Between the drop and the
+-- restore the guarantee is genuinely gone, on the real database.
 --
 -- Requires 0053. Run as postgres / the SQL editor. Read the NOTICEs; any FAIL is
 -- real.
@@ -109,6 +124,7 @@ declare
   got        uuid;
   again      uuid;
   failures   int := 0;
+  fails      text[] := '{}';
 begin
   -- ===========================================================================
   -- A. The student's own row
@@ -119,13 +135,14 @@ begin
 
   select count(*), coalesce(string_agg(first_name, ','), '(none)')
     into n, who
-    from app.student where last_name like '__pa_%';
+    from app.student where last_name like '\_\_pa\_%';
 
   if n = 1 and who = 'alice' then
     raise notice 'PASS  A1  alice sees 1 student row, and it is alice';
   else
     failures := failures + 1;
-    raise notice 'FAIL  A1  alice sees % student rows (%), expected exactly 1 (alice)', n, who;
+    fails := fails || format('FAIL A1 alice sees %s student rows (%s), expected exactly 1 (alice)', n, who);
+    raise notice '%', fails[cardinality(fails)];
   end if;
 
   -- The helpers resolve her, which is what every policy below depends on.
@@ -133,7 +150,8 @@ begin
     raise notice 'PASS  A2  current_student_id() resolves alice';
   else
     failures := failures + 1;
-    raise notice 'FAIL  A2  current_student_id() returned %, expected alice', app.current_student_id();
+    fails := fails || format('FAIL A2 current_student_id() returned %s, expected alice', app.current_student_id());
+    raise notice '%', fails[cardinality(fails)];
   end if;
 
   -- Portal-native: no WellnessLiving uid, and that must read as NULL rather than
@@ -142,7 +160,8 @@ begin
     raise notice 'PASS  A3  a portal-native student has no WL uid, and says so';
   else
     failures := failures + 1;
-    raise notice 'FAIL  A3  current_wl_uid() returned %, expected NULL', app.current_wl_uid();
+    fails := fails || format('FAIL A3 current_wl_uid() returned %s, expected NULL', app.current_wl_uid());
+    raise notice '%', fails[cardinality(fails)];
   end if;
 
   -- ===========================================================================
@@ -155,44 +174,49 @@ begin
     raise notice 'PASS  B1  alice sees 1 attendance row, not bob''s';
   else
     failures := failures + 1;
-    raise notice 'FAIL  B1  alice sees % attendance rows, expected 1', n;
+    fails := fails || format('FAIL B1 alice sees %s attendance rows, expected 1', n);
+    raise notice '%', fails[cardinality(fails)];
   end if;
 
   select coalesce(string_agg(title, ','), '(none)') into who
-    from app.class_session where title like '__pa_%';
+    from app.class_session where title like '\_\_pa\_%';
   if who = '__pa_alice_session' then
     raise notice 'PASS  B2  alice sees only her own session';
   else
     failures := failures + 1;
-    raise notice 'FAIL  B2  alice sees sessions [%], expected __pa_alice_session', who;
+    fails := fails || format('FAIL B2 alice sees sessions [%s], expected __pa_alice_session', who);
+    raise notice '%', fails[cardinality(fails)];
   end if;
 
   select coalesce(string_agg(title, ','), '(none)') into who
-    from app.cohort where title like '__pa_%';
+    from app.cohort where title like '\_\_pa\_%';
   if who = '__pa_alice_cohort' then
     raise notice 'PASS  B3  alice sees only her own cohort';
   else
     failures := failures + 1;
-    raise notice 'FAIL  B3  alice sees cohorts [%], expected __pa_alice_cohort', who;
+    fails := fails || format('FAIL B3 alice sees cohorts [%s], expected __pa_alice_cohort', who);
+    raise notice '%', fails[cardinality(fails)];
   end if;
 
   -- The staff list is NOT public to a student. She may see the one who taught her.
   select coalesce(string_agg(first_name, ','), '(none)') into who
-    from app.teacher where last_name like '__pa_%';
+    from app.teacher where last_name like '\_\_pa\_%';
   if who = 'tina' then
     raise notice 'PASS  B4  alice sees the teacher who taught her, and no others';
   else
     failures := failures + 1;
-    raise notice 'FAIL  B4  alice sees teachers [%], expected tina alone', who;
+    fails := fails || format('FAIL B4 alice sees teachers [%s], expected tina alone', who);
+    raise notice '%', fails[cardinality(fails)];
   end if;
 
   select coalesce(string_agg(storage_path, ','), '(none)') into who
-    from app.creation where storage_path like '__pa_%';
+    from app.creation where storage_path like '\_\_pa\_%';
   if who = '__pa_alice_file' then
     raise notice 'PASS  B5  alice sees only her own upload';
   else
     failures := failures + 1;
-    raise notice 'FAIL  B5  alice sees uploads [%], expected __pa_alice_file', who;
+    fails := fails || format('FAIL B5 alice sees uploads [%s], expected __pa_alice_file', who);
+    raise notice '%', fails[cardinality(fails)];
   end if;
 
   -- The membership helper. Alice is a member; Bob is not.
@@ -201,7 +225,8 @@ begin
     raise notice 'PASS  B6  alice sees the organization she belongs to';
   else
     failures := failures + 1;
-    raise notice 'FAIL  B6  alice sees % organizations, expected 1', n;
+    fails := fails || format('FAIL B6 alice sees %s organizations, expected 1', n);
+    raise notice '%', fails[cardinality(fails)];
   end if;
 
   reset role;
@@ -214,21 +239,23 @@ begin
   set local role authenticated;
 
   select coalesce(string_agg(first_name, ','), '(none)') into who
-    from app.student where last_name like '__pa_%';
+    from app.student where last_name like '\_\_pa\_%';
   if who = 'bob' then
     raise notice 'PASS  C1  bob sees only bob';
   else
     failures := failures + 1;
-    raise notice 'FAIL  C1  bob sees [%], expected bob', who;
+    fails := fails || format('FAIL C1 bob sees [%s], expected bob', who);
+    raise notice '%', fails[cardinality(fails)];
   end if;
 
   select coalesce(string_agg(title, ','), '(none)') into who
-    from app.class_session where title like '__pa_%';
+    from app.class_session where title like '\_\_pa\_%';
   if who = '__pa_bob_session' then
     raise notice 'PASS  C2  bob sees only his own session';
   else
     failures := failures + 1;
-    raise notice 'FAIL  C2  bob sees sessions [%], expected __pa_bob_session', who;
+    fails := fails || format('FAIL C2 bob sees sessions [%s], expected __pa_bob_session', who);
+    raise notice '%', fails[cardinality(fails)];
   end if;
 
   -- Bob has no membership. He must see no organization - not "the only one".
@@ -237,7 +264,8 @@ begin
     raise notice 'PASS  C3  bob belongs to no organization and sees none';
   else
     failures := failures + 1;
-    raise notice 'FAIL  C3  bob sees % organizations, expected 0', n;
+    fails := fails || format('FAIL C3 bob sees %s organizations, expected 0', n);
+    raise notice '%', fails[cardinality(fails)];
   end if;
 
   reset role;
@@ -245,16 +273,23 @@ begin
   -- ===========================================================================
   -- D. Signed out
   -- ===========================================================================
+  -- `0053` revokes anon outright (`revoke all on all tables in schema app from
+  -- anon`), so a signed-out caller is not filtered to zero rows - it never
+  -- reaches the table at all. Table privileges are checked BEFORE row security,
+  -- so the result is 42501, not a count, and the refusal IS the pass. Counting
+  -- here would assert the weaker of the two guarantees and would go green again
+  -- if someone re-granted anon and left the policies to do the work.
   perform set_config('request.jwt.claims', NULL, true);
-  set local role anon;
 
-  select count(*) into n from app.student where last_name like '__pa_%';
-  if n = 0 then
-    raise notice 'PASS  D1  anon sees 0 student rows';
-  else
+  begin
+    set local role anon;
+    select count(*) into n from app.student where last_name like '\_\_pa\_%';
     failures := failures + 1;
-    raise notice 'FAIL  D1  anon sees % student rows, expected 0', n;
-  end if;
+    fails := fails || format('FAIL D1 anon reached app.student and saw %s rows - the revoke is gone', n);
+    raise notice '%', fails[cardinality(fails)];
+  exception when insufficient_privilege then
+    raise notice 'PASS  D1  anon is refused by grant, not merely filtered by policy';
+  end;
 
   reset role;
 
@@ -272,11 +307,13 @@ begin
       raise notice 'PASS  E1  a unique address links to exactly one identity';
     else
       failures := failures + 1;
-      raise notice 'FAIL  E1  linked to %, expected dave', got;
+      fails := fails || format('FAIL E1 linked to %s, expected dave', got);
+      raise notice '%', fails[cardinality(fails)];
     end if;
   exception when others then
     failures := failures + 1;
-    raise notice 'FAIL  E1  link raised % for a unique address', sqlerrm;
+    fails := fails || format('FAIL E1 link raised %s for a unique address', sqlerrm);
+    raise notice '%', fails[cardinality(fails)];
   end;
 
   -- Called twice. A retried request after a dropped response must not read as a
@@ -287,11 +324,13 @@ begin
       raise notice 'PASS  E2  linking twice returns the same identity';
     else
       failures := failures + 1;
-      raise notice 'FAIL  E2  second call returned %, expected %', again, got;
+      fails := fails || format('FAIL E2 second call returned %s, expected %s', again, got);
+      raise notice '%', fails[cardinality(fails)];
     end if;
   exception when others then
     failures := failures + 1;
-    raise notice 'FAIL  E2  second call raised %, expected the same identity', sqlerrm;
+    fails := fails || format('FAIL E2 second call raised %s, expected the same identity', sqlerrm);
+    raise notice '%', fails[cardinality(fails)];
   end;
 
   reset role;
@@ -305,13 +344,15 @@ begin
   begin
     got := app.link_signed_in_identity();
     failures := failures + 1;
-    raise notice 'FAIL  E3  an ambiguous address linked to %, expected a refusal', got;
+    fails := fails || format('FAIL E3 an ambiguous address linked to %s, expected a refusal', got);
+    raise notice '%', fails[cardinality(fails)];
   exception when others then
     if sqlerrm like '%no_single_identity%' then
       raise notice 'PASS  E3  an address on two students is refused, not guessed';
     else
       failures := failures + 1;
-      raise notice 'FAIL  E3  refused with the wrong error: %', sqlerrm;
+      fails := fails || format('FAIL E3 refused with the wrong error: %s', sqlerrm);
+      raise notice '%', fails[cardinality(fails)];
     end if;
   end;
 
@@ -326,13 +367,15 @@ begin
   begin
     got := app.link_signed_in_identity();
     failures := failures + 1;
-    raise notice 'FAIL  E4  an unknown address linked to %, expected a refusal', got;
+    fails := fails || format('FAIL E4 an unknown address linked to %s, expected a refusal', got);
+    raise notice '%', fails[cardinality(fails)];
   exception when others then
     if sqlerrm like '%no_single_identity%' then
       raise notice 'PASS  E4  an unknown address is refused with the SAME error as E3';
     else
       failures := failures + 1;
-      raise notice 'FAIL  E4  refused with the wrong error: %', sqlerrm;
+      fails := fails || format('FAIL E4 refused with the wrong error: %s', sqlerrm);
+      raise notice '%', fails[cardinality(fails)];
     end if;
   end;
 
@@ -349,7 +392,8 @@ begin
      where id = 'c1c1c1c1-0000-0000-0000-000000000003';
 
     failures := failures + 1;
-    raise notice 'FAIL  F1  one auth user now holds two identities';
+    fails := fails || format('FAIL F1 one auth user now holds two identities');
+    raise notice '%', fails[cardinality(fails)];
   exception when unique_violation then
     raise notice 'PASS  F1  a second identity for the same auth user is rejected';
   end;
@@ -358,7 +402,11 @@ begin
   if failures = 0 then
     raise notice '---- ALL PASSED: a student reads their own rows and nobody else''s ----';
   else
-    raise exception '% portal auth check(s) FAILED - see the notices above', failures;
+    -- The failed lines go in the EXCEPTION, not only in the notices. The
+    -- Supabase SQL editor does not surface NOTICE, so a run that reported only
+    -- a count left you knowing five things broke and not which five.
+    raise exception E'% portal auth check(s) FAILED:\n%',
+      failures, array_to_string(fails, E'\n');
   end if;
 end
 $$;
@@ -367,4 +415,12 @@ $$;
 rollback;
 
 -- Belt and braces: prove the test data really is gone. Expect ZERO rows.
-select id, first_name, last_name from app.student where last_name like '__pa_%';
+--
+-- The underscores are ESCAPED, and that is not fussiness. `_` is LIKE's
+-- single-character wildcard, so the unescaped `'__pa_%'` reads as "any two
+-- characters, then pa, then any character". Three REAL students have surnames of
+-- that shape, so a clean rollback was reported as three surviving test rows - and
+-- their names were printed to say it. A check that cries wolf on live data is
+-- worse than no check. The default LIKE escape is
+-- backslash; `\_` is a literal underscore.
+select id, first_name, last_name from app.student where last_name like '\_\_pa\_%';

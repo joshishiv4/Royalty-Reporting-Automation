@@ -10,8 +10,16 @@
 - [x] `0053`: the `SELECT` grants — `0047` gave `app` tables to `service_role` only
 - [x] `0053`: enable RLS on `raw_wl` and `raw_ghl`
 - [x] `supabase/checks/portal_auth_isolation.sql` — two JWTs, each sees only its own, rolled back
-- [ ] **Apply `0053` in the SQL editor, then run both check files** — written, not applied
-- [ ] Prove student A cannot read student B, by removing a policy and watching the check fail
+- [x] **Apply `0053` in the SQL editor** — applied 8 Oct 2026; all five helpers
+      `SECURITY DEFINER` with `search_path=""`
+- [x] **`portal_auth_isolation.sql` passes** — A–F all green, 8 Oct 2026, after
+      `0053` was amended and re-run
+- [x] **`rls_isolation_test.sql` passes** — the WL mirror, 8 Oct 2026; no exception
+      and zero rows from its guard, so `0040`'s trigger still fires too
+- [x] Escaped `like` guard confirmed - the final select returns ZERO rows
+- [x] Prove student A cannot read student B, by removing a policy and watching the
+      check fail - measured 8 Oct 2026: dropping `student_self_select` turns A1 and
+      C1 red and nothing else
 - [ ] Supabase dashboard: email OTP on, `{{ .Token }}` template, shorter expiry, custom SMTP
 - [ ] `@supabase/ssr`, cookie session, middleware guard, real sign-out
 - [ ] The OTP screens replacing the role picker at `/login`
@@ -22,9 +30,12 @@
 
 ## Last step
 
-Step 2 written, 8 Oct 2026 — `0053`, both check files and all four docs. **Not
-applied, and not run.** Next is applying it in the SQL editor and running the
-checks; step 3 is the Supabase dashboard config.
+`0053` is applied and both check files pass, 8 Oct 2026. The migration had one
+real defect - `min(uuid)`, which would have failed every first sign-in - and the
+portal check had three of its own. The mutation is measured: dropping
+`student_self_select` turns exactly A1 and C1 red. Step 2 is done. Step 3 is the
+Supabase dashboard config: email OTP on, `{{ .Token }}` template, shorter expiry,
+custom SMTP.
 
 ## Blockers
 
@@ -228,3 +239,150 @@ trigger still runs.
   migrations, none unregistered), but the other 800-odd tests did not execute.
   Nothing in this step touches TypeScript, which lowers the risk and does not
   remove it.
+
+### 2026-10-08 — `0053` applied, and the check's own bug
+
+Applied in the SQL editor. The migration's three trailing verification selects
+pass: five helpers, all `prosecdef`, all `search_path=""` rather than
+`(none - UNPINNED)`.
+
+`portal_auth_isolation.sql` then aborted:
+
+    ERROR: 42501: permission denied for table student
+    HINT:  GRANT SELECT ON app.student TO anon;
+    CONTEXT: select count(*) from app.student where last_name like '__pa_%'
+
+**The check was wrong, not the migration, and it was wrong in the direction of
+being too weak.** Section D asked whether a signed-out caller sees zero rows, so
+it assumed `anon` reaches the table and is filtered by policy. `0053` revokes
+anon outright, and table privileges are checked *before* row security — so anon
+is refused at the grant and never reaches RLS at all. The guarantee the database
+actually provides is the stronger one, and the test could not express it.
+
+D1 now runs the select inside a sub-block and treats `insufficient_privilege` as
+the PASS; reaching the table at all, with any row count, is the FAIL. That keeps
+it able to fail for the right reason: re-grant anon and leave the policies to do
+the work, and D1 goes red where the old version would have gone green. The
+mutation is recorded in the file header beside the three policy drops.
+
+Not re-run yet. Because the `do` block raised, the transaction aborted and the
+`rollback;` ran, so nothing was kept — but **E (the first-sign-in link) and F
+(one auth user cannot hold two identities) have never executed**, and nothing
+about them is proven.
+
+The HINT Postgres printed is the one change that must not be made.
+
+### 2026-10-08 — the check found a real bug in `0053`: `min(uuid)`
+
+With D1 fixed the run reached the end and reported `5 portal auth check(s)
+FAILED`. The Supabase SQL editor does not surface `RAISE NOTICE`, so a count was
+all it said. Every `FAIL` line now also appends to a `text[]` that the closing
+`raise exception` prints, which turned five anonymous failures into one named
+cause:
+
+    FAIL E1 link raised function min(uuid) does not exist for a unique address
+    FAIL E2 second call raised function min(uuid) does not exist
+    FAIL E3 refused with the wrong error: function min(uuid) does not exist
+    FAIL E4 refused with the wrong error: function min(uuid) does not exist
+    FAIL F1 one auth user now holds two identities
+
+**`link_signed_in_identity()` could never have run.** It used `min(i.id)` to pull
+the single matching identity. `uuid` has btree ordering, so it sorts and `min()`
+reads as though it should work, but core PostgreSQL ships no min/max **aggregate**
+for the type. `check_function_bodies` only syntax-checks a plpgsql body — it does
+not resolve the functions called inside its SQL statements — so `0053` created the
+function without complaint and it raised `42883` on the first call. Every first
+sign-in, for everyone, would have failed.
+
+Fixed in place with `(array_agg(i.id))[1]`. Zero matches yields NULL, which is
+harmless because `v_matches <> 1` refuses before the value is read.
+
+**F1 was a knock-on, not a sixth defect.** E1 never linked dave, so claiming his
+auth user for Carol One hit no conflicting row. The index F1 relies on,
+`identity_auth_user_id_key`, does exist — `0039` line 258.
+
+**A–D passed.** The policies, the four helpers, the grants and the anon revoke are
+all sound; what was broken was the door, and only the door.
+
+`0053` was amended rather than superseded by a `0054`. It is `create or replace`,
+built to be re-run, nothing had ever called the function, and `0018`, `0029` and
+`0030` were each edited after their introducing commit — so the precedent is the
+repo's own. The cost is that the database and the file disagree until `0053` is
+re-run.
+
+### 2026-10-08 — the check passes, and its last line was crying wolf
+
+`0053` re-applied with `(array_agg(i.id))[1]`, and `portal_auth_isolation.sql`
+then ran to the end with no exception: **A through F all pass.** F1 went green on
+its own, as predicted — once E1 links dave there is a real row for Carol One's
+update to collide with, and `identity_auth_user_id_key` does the rest.
+
+The final guard then reported three surviving rows after the rollback:
+
+    Luis    Espana Rivera
+    Jay     Kapadia
+    Michelle Espada
+
+**Those are real students, and the rollback was clean.** `_` is LIKE's
+single-character wildcard, so `last_name like '__pa_%'` means "any two
+characters, then `pa`, then any character, then anything" — Es-pa-d-a, Es-pa-n-a,
+Ka-pa-d-ia. The guard that exists to prove the test data is gone was matching
+live data instead, and printing people's names to do it.
+
+Escaped in all nine places: `like '\_\_pa\_%'`. Backslash is LIKE's default escape
+character, so `\_` is a literal underscore. The eight inside the `do` block were
+harmless — they run under RLS as alice or bob, who can only see their own row —
+but a predicate that is wrong for a reason unrelated to what it is testing is a
+trap waiting for the next person, and the prefix was chosen to be unmistakable
+precisely so this query could be trusted.
+
+Re-run with the escape: ZERO rows. The isolation proof is complete.
+
+### 2026-10-08 — the mutation, measured
+
+`drop policy student_self_select on app.student;` then re-ran the check:
+
+    2 portal auth check(s) FAILED:
+    FAIL A1 alice sees 0 student rows ((none)), expected exactly 1 (alice)
+    FAIL C1 bob sees [(none)], expected bob
+
+**Exactly the two assertions that read `app.student` directly, and nothing else.**
+The file header said "section A goes red", which was imprecise in both directions,
+and is now corrected to the measurement.
+
+A2 and A3 stayed green, and so did B1-B6. That is the design rather than a gap:
+they resolve through `app.current_student_id()`, which is `SECURITY DEFINER` and
+so does not run under the caller's policies, and the dependent policies match on
+that helper rather than reading `app.student` themselves —
+`attendance_record.student_id = app.current_student_id()`. One notion of "me" is
+why one policy can be removed without the others quietly following.
+
+C3 passes either way: it expects bob to see 0 organizations.
+
+The other three mutations in the header are predictions, and are now labelled as
+such. Policy restored by re-running `0053`.
+
+### 2026-10-08 — `rls_isolation_test.sql` passes
+
+Run after `0053` was restored: "Success. No rows returned". No exception means
+`failures = 0`, and the guard at the end found nothing, so the rollback took. The
+WellnessLiving mirror still isolates after `person.auth_user_id` was dropped, and
+because the test now links through the hub it also re-proves `0040`'s trigger
+fires.
+
+Its anon section expects **0 rows** rather than a refusal, and that is correct
+here: these tables are in `public`, where Supabase's own bootstrap grants anon by
+default. That difference is exactly the gap `0053` had to close for `app`, where
+nothing granted anything and the policies would have been theatre.
+
+**Two defects left in that file, found by reading it, not by running it.** Both
+are the ones already fixed in `portal_auth_isolation.sql`:
+
+- Failures report only through `RAISE NOTICE` and the closing `raise exception`
+  carries a bare count. The Supabase SQL editor does not surface notices, so a
+  future failure says how many and not which.
+- The `like '__rls_test_%'` patterns are unescaped. Harmless today - WL keys are
+  numeric and would have to contain literal `rls` and `test` to collide - but it
+  is the same trap that reported three real students as surviving test data.
+
+Not fixed in this commit, because the run that proves the fix is a separate run.
