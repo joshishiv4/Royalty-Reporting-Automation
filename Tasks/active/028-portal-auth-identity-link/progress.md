@@ -17,6 +17,8 @@
 - [x] **`rls_isolation_test.sql` passes** — the WL mirror, 8 Oct 2026; no exception
       and zero rows from its guard, so `0040`'s trigger still fires too
 - [x] Escaped `like` guard confirmed - the final select returns ZERO rows
+- [x] **`rls_isolation_test.sql` re-run after its repairs** — 8 Oct 2026, still
+      "Success. No rows returned"; the file in the repo is the file that passed
 - [x] Prove student A cannot read student B, by removing a policy and watching the
       check fail - measured 8 Oct 2026: dropping `student_self_select` turns A1 and
       C1 red and nothing else
@@ -375,7 +377,7 @@ here: these tables are in `public`, where Supabase's own bootstrap grants anon b
 default. That difference is exactly the gap `0053` had to close for `app`, where
 nothing granted anything and the policies would have been theatre.
 
-**Two defects left in that file, found by reading it, not by running it.** Both
+**Two defects in that file, found by reading it, not by running it.** Both
 are the ones already fixed in `portal_auth_isolation.sql`:
 
 - Failures report only through `RAISE NOTICE` and the closing `raise exception`
@@ -385,4 +387,26 @@ are the ones already fixed in `portal_auth_isolation.sql`:
   numeric and would have to contain literal `rls` and `test` to collide - but it
   is the same trap that reported three real students as surviving test data.
 
-Not fixed in this commit, because the run that proves the fix is a separate run.
+Fixed straight after the commit, on the ask, with the reasoning stated plainly:
+neither defect made the passing run wrong. The escape could only over-match, never
+hide a failure, and WL keys are digits so it could not match at all. The bare count
+costs nothing until the day something fails - but that day cost two runs in the
+sibling file, and the second run is what revealed `min(uuid)`. The real price of
+the change is that this file now needs one run to be trustworthy again.
+
+### 2026-10-08 — `rls_isolation_test.sql` brought level with its sibling
+
+Both repairs applied: the four `FAIL` lines now append to a `text[]` that the
+closing `raise exception` prints, and all six `like '__rls_test_%'` patterns are
+escaped to `'\_\_rls\_test\_%'`.
+
+Stated honestly, because "it passed, why change it" is the right question: neither
+defect made the passing run wrong. An over-matching `LIKE` can only raise a false
+alarm, never conceal a failure, so it could not have hidden anything; and a WL key
+is digits, so it would have to contain the literal substrings `rls` and `test` to
+collide at all. The bare failure count costs nothing on a green run. What it costs
+is the first red one - measured today at two runs in `portal_auth_isolation.sql`,
+and the second of those is what surfaced `min(uuid)`.
+
+Re-run after the edit: "Success. No rows returned". The file in the repo is now
+the file that passed, which is the whole point of running it again.
