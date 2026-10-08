@@ -1,9 +1,9 @@
 # Status and plan
 
-Last updated **1 Oct 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (This update covers the transaction-report
-entries only. The portal work in `0039`–`0049` is not yet reflected in the plan
-table below.)
+Last updated **8 Oct 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (The 1 Oct update covered the transaction-report
+entries only. The portal work in `0039`–`0049` is still not reflected in the plan
+table below; `0053` is, because it starts M05.)
 
 ## The plan
 
@@ -14,7 +14,7 @@ table below.)
 | **M03** sync engine | The code that reads WL and writes to those tables | ✅ done — 17 passes, 6 scheduled jobs, live |
 | **M04a** GHL matching | Contact matching against GoHighLevel | ✅ done — `src/ghl/`, `ghl_match_sync` runs nightly |
 | **M04b** royalty calculation | The number this project exists to produce | ⬜ **not started — this is the next work**. Its missing input got closer on 17 Sep: WL's own transaction reports carry a revenue category (see below) |
-| **M05** portal | Student portal reading the same database | ⬜ not started |
+| **M05** portal | Student portal reading the same database | 🟦 **started 8 Oct 2026** — `0053` wires the sign-in, `0054` makes it reachable. Task 028 |
 
 **M03 is complete and running unattended.** Seventeen passes read WellnessLiving
 into eighteen tables, grouped into six named jobs on their own crons, with a lease
@@ -26,6 +26,134 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### Portal sign-in, 8 Oct 2026 - the policies are applied, nothing has signed in yet
+
+`0053` is the migration DATA-MODEL.md has been pointing at since `0048`: one auth
+anchor on `identity`, `0010`'s five policies re-pointed through it, SELECT policies
+on the ten `app` tables the dashboard reads, and `link_signed_in_identity()`.
+**Applied 8 Oct 2026** in the Supabase SQL editor, like `0039`–`0049`. The
+migration's own trailing checks pass: all five helpers are `SECURITY DEFINER`
+with `search_path` pinned to `""`, which is what keeps a definer function from
+being an escalation route.
+
+**The isolation check passes, and finding that out found a bug that would have
+broken every sign-in.** `link_signed_in_identity()` used `min(i.id)` to pull the
+single matching identity, and PostgreSQL has no min/max *aggregate* for `uuid` —
+the type sorts, so it reads as though it should work. `check_function_bodies` only
+syntax-checks a plpgsql body, so `0053` created the function cleanly and it raised
+`42883` on the first call: every first sign-in, for everyone. `0053` was amended in
+place to use `(array_agg(i.id))[1]` and re-run, and the check then passed in full —
+A and B (a student reads her own rows), C (and not the other student's), D (signed
+out reads nothing), E (the first sign-in link, its idempotence, and its identical
+refusal for an ambiguous and an unknown address) and F (one auth user cannot hold
+two identities).
+
+The check needed three fixes of its own to be worth believing, and each is worth
+knowing:
+
+- D assumed `anon` reaches the table and is filtered to zero rows. `0053` revokes
+  anon outright and table privileges are checked *before* row security, so the
+  refusal is the pass and a count asserted the weaker guarantee.
+- Every `FAIL` line now travels in the closing exception, not only in a `NOTICE`.
+  The Supabase SQL editor does not surface notices, so the first full run said
+  five checks failed and named none of them.
+- The `like '__pa_%'` guard that proves the rollback took was unescaped. `_` is
+  LIKE's single-character wildcard, so it matched three real students' surnames
+  and reported a clean rollback as surviving test data — printing their names to
+  do it. Now `like '\_\_pa\_%'`, re-run, zero rows.
+
+**The suite is live, measured not asserted.** Dropping `student_self_select` and
+re-running turns exactly A1 and C1 red — the two assertions that read `app.student`
+directly — and nothing else. A2, A3 and B1–B6 stay green because they resolve
+through `app.current_student_id()`, a `SECURITY DEFINER` helper that does not run
+under the caller's policies, and the dependent policies match on that helper rather
+than reading `app.student` themselves. One notion of "me" is why removing one
+policy does not quietly take the rest with it. The policy was restored by re-running
+`0053`.
+
+`rls_isolation_test.sql` passes too, so the WellnessLiving mirror still isolates
+after `person.auth_user_id` was dropped — and because that test now links through
+the hub, it re-proves `0040`'s trigger fires. Its anon section expects zero rows
+rather than a refusal, which is right for `public`: Supabase's bootstrap grants
+anon there by default. That is the same gap `0053` had to close for `app`, where
+nothing granted anything and the policies would have been theatre.
+
+**The sign-in is closed, by decision of 8 Oct 2026.** A code goes only to an
+address already in the database, and signing in never creates an account. Supabase
+Auth issues the code rather than a hand-rolled OTP table — every rule here is
+`auth.uid()`, and a home-made OTP issues no JWT, so RLS could never engage and
+every route would keep the service-role key.
+
+**The closed door was closed against everyone, and `0054` is the key — found by
+running the form, 8 Oct 2026.** The first real attempt at a sign-in returned the
+cheerful 202 the design calls for and no email, and the cause was not the SMTP
+everyone expected:
+
+```
+POST /auth/v1/otp  ->  422 otp_disabled  "Signups not allowed for otp"
+auth.users ......... 0 rows
+```
+
+`shouldCreateUser: false` makes Supabase Auth look for an existing row in
+`auth.users`. The rule "a code goes only to an address already in the database"
+means `app.student`. **Nothing in the flow had ever written to `auth.users`**, so
+every student was refused before delivery was attempted — and because every
+refusal is deliberately identical, this looked exactly like the unconfigured
+sender. The sign-in had been unreachable since the first commit and the uniform
+202 is what hid it. A reminder that a design which refuses to explain itself to an
+attacker also refuses to explain itself to you.
+
+`0054` makes the portal provision the auth user itself, for an admitted address
+only: `app.identity_for_email(text)` carries the matching rule,
+`link_signed_in_identity()` now calls it instead of resolving inline, and
+`/auth/otp` calls it before creating anything. `shouldCreateUser: false` stays —
+the account is opened against a student row the studio already had, never on an
+address nobody vouched for. **Not yet applied; not yet exercised.** It needs the
+SQL editor, like `0039`–`0053`, and the delivery blocker below is still ahead of a
+successful sign-in.
+
+**Email does not identify a student, measured before the rule was written:**
+
+| | |
+|---|---|
+| `app.student` rows | 1,297 |
+| no email at all | **17** — cannot sign in by email, ever |
+| addresses on more than one row | **51**, covering 123 rows |
+| worst collision | **16 rows share one address** |
+| `identity.auth_user_id` populated | **0** |
+
+So the rule is **exactly one match or no code**, and zero, two and sixteen are
+reported identically — a form that answers differently is an oracle for who has an
+account. **1,112 of 1,250** student identities can sign in under it; the remaining
+138 need a human, and RUNBOOK §10 says what to do with each.
+
+**Two bugs found in the portal on the way here, both fixed** (`spin-dj-pathways`,
+commit `1055ff3`). Its Supabase client had no `db.schema`, so it read `public`
+while `0047` had moved the tables to `app` — **the dashboard route had returned
+nothing since `0047` landed**, invisibly, because the UI falls back to fixtures on
+a failed fetch. And it passed every attended session id into one `.in()` filter,
+which exceeds the URL limit past ~300 ids; `attendance_record` holds 45,987 rows
+across 904 students and **21 are already over that**.
+
+**The portal now has a real sign-in, and it is not yet connected to what it
+shows.** `spin-dj-pathways` gained `@supabase/ssr`, a cookie session, a guard in
+front of `/student`, the two-stage OTP screens in place of the role picker, and a
+sign-out that actually ends the session rather than navigating away from it. Next
+16 renamed `middleware.ts` to `proxy.ts`, which no Supabase guide reflects yet.
+Everything runs server-side through route handlers, so no anon key or auth code
+reaches the browser bundle.
+
+**Read the gap plainly:** the dashboard still fetches
+`/api/v1/students/<DEMO_STUDENT_ID>/dashboard`, so a student who signs in
+successfully still sees the demo student's data. The sign-in is real; what it
+reveals is not theirs until `/students/me` replaces the id in the path. Nothing
+has been exercised against a live sign-in either, because of the SMTP blocker
+below.
+
+**Still blocked on configuration, not code:** custom SMTP. Supabase's built-in
+sender mails project members only, a few an hour, so no student can receive a code
+until it is set — see RUNBOOK §4f.
 
 ### The transaction reports were missing 42% of the money, 1 Oct 2026 - fixed in code
 
