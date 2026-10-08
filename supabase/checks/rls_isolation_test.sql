@@ -14,7 +14,16 @@
 -- is exactly what the API does per request, so the policies are exercised the
 -- same way the portal will exercise them.
 --
--- Requires 0010 for the policies and person.auth_user_id.
+-- WHICH ANCHOR THIS USES. `0053` dropped `person.auth_user_id` and re-pointed
+-- these five policies through `identity`, so the link is now made on the hub
+-- rather than on the person row. The proof is unchanged in every other respect -
+-- same two people, same assertions - because what is being proved did not change.
+--
+-- The portal's own tables in `app` are proved separately, by
+-- portal_auth_isolation.sql. Two files because they are two different claims:
+-- this one says a student cannot read another student's WELLNESSLIVING rows.
+--
+-- Requires 0053 for the policies and the helpers.
 -- Run as postgres / the SQL editor. Read the four NOTICEs; any FAIL is real.
 -- =============================================================================
 
@@ -24,10 +33,22 @@ begin;
 -- the Supabase SQL editor commits between statements, so an `on commit drop` temp
 -- table was gone before the next statement could read it (ERROR 42P01). No temp
 -- table means no such dependency.
-insert into public.person (uid, k_business, auth_user_id, first_name, ghl_match_state)
+insert into public.person (uid, k_business, first_name, ghl_match_state)
 values
-  ('__rls_test_alice', '__rls_test_biz', '11111111-1111-1111-1111-111111111111', 'alice', 'unmatched'),
-  ('__rls_test_bob',   '__rls_test_biz', '22222222-2222-2222-2222-222222222222', 'bob',   'unmatched');
+  ('__rls_test_alice', '__rls_test_biz', 'alice', 'unmatched'),
+  ('__rls_test_bob',   '__rls_test_biz', 'bob',   'unmatched');
+
+-- The link, which since 0053 lives on the hub rather than on the person row.
+--
+-- No identity is inserted here, and that is not an omission: the insert above
+-- fires 0040's `person_identity_insert`, which creates the identity and the
+-- student role. So this update also quietly proves that trigger still runs - if
+-- it ever stops, these two statements update zero rows and every assertion below
+-- fails rather than passing against a person nobody can resolve.
+update app.identity set auth_user_id = '11111111-1111-1111-1111-111111111111'
+ where uid = '__rls_test_alice';
+update app.identity set auth_user_id = '22222222-2222-2222-2222-222222222222'
+ where uid = '__rls_test_bob';
 
 -- One purchase each, so the joined policies are exercised too and not just the
 -- simple one on person.

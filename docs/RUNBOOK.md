@@ -266,6 +266,30 @@ doubt, revoke and re-issue rather than reasoning about whether the exposure matt
 Schedule: every 90 days, and immediately if it appeared in a log, a ticket, a screen share
 or a screenshot.
 
+### 4f. Supabase Auth SMTP — a separate credential from §4e, and portal sign-in needs it
+
+**This is not the sync service's SMTP.** §4e is the dead-letter notifier, which this repo
+sends itself through nodemailer. The one below is configured **inside the Supabase
+dashboard** (Authentication → Emails → SMTP Settings) and is what delivers a student's
+one-time code. Nothing in this repository reads it, and nothing here will fail if it is
+wrong — the only symptom is that students do not receive codes.
+
+**Why it cannot be skipped.** Supabase's built-in sender delivers only to members of the
+project and only a handful of messages an hour. It is enough to test a sign-in with your own
+address and not enough for one real student.
+
+Also set, on the same screens:
+
+- **Authentication → Emails → Magic Link template:** `{{ .Token }}` in place of
+  `{{ .ConfirmationURL }}`. This is the whole difference between a link and a 6-digit code;
+  the API call is identical either way.
+- **OTP expiry:** the default is one hour. Shorten it — ten minutes is ample for a code
+  typed from an inbox.
+
+Rotation: whatever the sending provider requires. Verify by requesting a code for an address
+you control and watching it arrive, because `transporter.verify()` does not apply — the
+sending is Supabase's, not ours.
+
 ---
 
 ## 5. If a credential leaks
@@ -867,3 +891,76 @@ Say so when reporting these:
 - **Any margin or profit figure** — staff pay amounts are unavailable
 - **Service names** — 9 services are in the bookable catalogue against ~200 referenced by transactions. The rest are stubs named from the purchase that referenced them, and are countable via the `unresolved_service` view
 - **Anything older than the loaded history** — the daily run covers a recent window; older periods exist only if they were deliberately loaded
+
+---
+
+## 10. Portal sign-in
+
+Applies once `0053` is applied. Sign-in is **closed**: a code goes only to an address already
+in the database, and signing in never creates an account.
+
+### 10a. A student says they get no code
+
+Three different faults wear the same face, because the portal reports them identically on
+purpose — a form that answers differently is an oracle for who has an account. Tell them
+apart here, never in the UI.
+
+Run as `service_role` / the SQL editor, with the address they gave you:
+
+```sql
+select i.id as identity_id, i.auth_user_id, s.id as student_id, s.first_name, s.last_name
+from app.identity i
+join app.student s on s.id = i.student_id
+where lower(trim(s.email)) = lower(trim('THE ADDRESS'));
+```
+
+| Rows | What it means | What to do |
+|---|---|---|
+| **1**, `auth_user_id` null | Normal. They have never signed in | The fault is delivery, not identity — check §4f, then the sending provider's log |
+| **1**, `auth_user_id` set | They are already linked | If it is not their account, this is 10c |
+| **0** | We hold no student with that address | Ask which address the studio has for them. Do **not** add it to make the sign-in work — see 10b |
+| **2 or more** | Ambiguous, and refused on purpose | 10b |
+
+### 10b. The address is shared, or missing
+
+Measured 8 Oct 2026: **51 addresses sit on more than one student row** (123 rows; the worst
+is shared by **16**), and **17 students have no address at all**. Together that is roughly
+138 of 1,250 student identities who cannot sign in, and it is a data question rather than a
+bug.
+
+The fix is in WellnessLiving, not here. A shared address is usually a parent's, used for
+several children; the studio gives each student their own, the sync carries it through, and
+the sign-in starts working. **Do not edit `app.student.email` directly** — the sync owns it
+for any student WL knows about and will put the old value back.
+
+Never resolve ambiguity by picking. `link_signed_in_identity()` refuses two matches
+deliberately: choosing would admit one human to another's data, and the mistake is invisible
+afterwards because the dashboard would look perfectly normal.
+
+### 10c. A sign-in resolves to no identity, or to the wrong one
+
+The portal calls `app.link_signed_in_identity()` once, immediately after Supabase Auth
+verifies the code. It raises rather than guessing. The errors, all `28000`:
+
+| Error | Meaning |
+|---|---|
+| `no_email_claim` | The JWT carried no email. An auth provider other than email OTP, or a misconfigured template |
+| `no_single_identity_for_email` | Zero or several students hold that address — 10a, 10b |
+| `identity_already_linked` | Two first sign-ins raced, and this one lost. Harmless: the winner is linked. Ask them to sign in again |
+
+To **unlink** a human — they were linked to the wrong identity, or an auth account is being
+re-issued:
+
+```sql
+update app.identity set auth_user_id = null where id = 'THE IDENTITY ID';
+```
+
+Then delete the auth user in Authentication → Users, or the next sign-in re-links to the same
+wrong row. Unlinking destroys nothing: every portal row hangs off `student_id`, not off the
+auth user.
+
+### 10d. Checking the whole thing still isolates
+
+`supabase/checks/portal_auth_isolation.sql`. Read-only in effect — it writes inside a
+transaction and rolls back. Run it after any change to a policy, and after any migration that
+touches `app`. It names the exact policy to drop if you want to confirm it can still fail.

@@ -336,7 +336,16 @@ have never been exercised by a real request.
 A policy written now would be written against a shape no request has ever taken.
 So the tenancy tables are RLS-enabled with no policies, meaning service_role
 only, and the org-scoped policies belong in the migration that also wires portal
-login. What that migration needs:
+login.
+
+**That migration is `0053`, and all three bullets below are now done.** They are
+kept rather than deleted because the reasoning is the record — the list is why
+`0048` was right to write nothing, and it is also the specification `0053` was
+built against. `0053` adds a fourth thing this list did not anticipate: the
+`SELECT` grants, without which a policy answers `permission denied` rather than
+an empty set.
+
+What that migration needed:
 
 - **One auth anchor, not two.** `person.auth_user_id` and `identity.auth_user_id`
   both exist and both are empty. `identity` is the correct one — it is the only
@@ -1288,9 +1297,37 @@ payload out takes its links and leaves the royalty row untouched.
 RLS is enabled on all 18 tables. `service_role` carries `BYPASSRLS`, which is how
 the sync writes at all.
 
-`0010` adds five SELECT policies for `authenticated` — `person`, `purchase`,
-`purchase_item`, `attendance`, `session` — all keyed off `person.auth_user_id`,
-which joins a Supabase auth user to a WL uid.
+`0010` added five SELECT policies for `authenticated` — `person`, `purchase`,
+`purchase_item`, `attendance`, `session`. **`0053` re-pointed all five through
+`identity`** and dropped `person.auth_user_id`: there is now one auth anchor, and
+it is the only one a portal-native human can have, because `person.uid` is
+WellnessLiving's and `NOT NULL`. A human WL has never heard of cannot have a
+`person` row to hang a login on.
+
+`0053` also wrote the portal's own policies — ten `app` tables, all SELECT, all
+hanging off `app.current_student_id()`. Everything else about the posture is
+unchanged: **the portal reads; nothing about it writes.**
+
+**Policies are evaluated as the caller, including their subqueries.** This is why
+`0053`'s four helpers are `security definer` and not merely convenient: a policy
+on `app.student` that read `app.identity` inline would itself be filtered by the
+policy on `app.identity`, so the lookup meant to establish who you are returns
+nothing, and every table reads empty for everybody. It looks exactly like a data
+problem.
+
+**A policy without a `GRANT` is not a policy.** `0047` granted `USAGE` on schema
+`app` to `authenticated` and then granted table privileges to `service_role`
+only — in `public` the question never arises, because Supabase's own bootstrap
+sets default privileges there. The result is not an empty read but
+`permission denied for table student`, a 42501, which a reviewer reading the
+policies alone would never predict. `0053` adds the `SELECT` grants and revokes
+`anon` outright.
+
+**The three link tables get no policy, deliberately.** `cohort_link`,
+`session_link` and `attendance_link` exist to carry `k_class`, `k_period`,
+`dt_start_utc` and `uid` and nothing else. The standing rule is that the portal
+reads the hub and never learns WellnessLiving exists, so `service_role` only is
+the intended answer rather than an omission.
 
 **RLS enabled with no policies is not a working state.** With RLS on and nothing
 granted, `authenticated` sees zero rows including its own — a locked door with no
@@ -1299,8 +1336,14 @@ key. That was the state before `0010`.
 No policies on `lead`, `raw_*`, `sync_*` or `staff_pay_rate`. Those are operational
 tables and absence of a policy means absence of access.
 
-Proof, not assertion: [`supabase/checks/rls_isolation_test.sql`](../supabase/checks/rls_isolation_test.sql)
-inserts two people with different auth ids, fakes each one's JWT the way the API
-does, checks each sees only their own rows, and rolls back. Asserting on zero rows
-would prove nothing — a policy returning nothing passes "cannot see another user's
-data" for the wrong reason.
+Proof, not assertion, in two files because they are two different claims:
+[`rls_isolation_test.sql`](../supabase/checks/rls_isolation_test.sql) for the
+WellnessLiving mirror and
+[`portal_auth_isolation.sql`](../supabase/checks/portal_auth_isolation.sql) for the
+portal's own tables and the sign-in itself. Both insert two people with different
+auth ids, fake each one's JWT the way PostgREST does, check each sees only their
+own rows, and roll back. Asserting on zero rows would prove nothing — a policy
+returning nothing passes "cannot see another user's data" for the wrong reason.
+
+Both can fail, and `portal_auth_isolation.sql` names the exact policy to drop to
+watch it go red.

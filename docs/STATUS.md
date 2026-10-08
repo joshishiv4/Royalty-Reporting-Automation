@@ -1,9 +1,9 @@
 # Status and plan
 
-Last updated **1 Oct 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (This update covers the transaction-report
-entries only. The portal work in `0039`–`0049` is not yet reflected in the plan
-table below.)
+Last updated **8 Oct 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (The 1 Oct update covered the transaction-report
+entries only. The portal work in `0039`–`0049` is still not reflected in the plan
+table below; `0053` is, because it starts M05.)
 
 ## The plan
 
@@ -14,7 +14,7 @@ table below.)
 | **M03** sync engine | The code that reads WL and writes to those tables | ✅ done — 17 passes, 6 scheduled jobs, live |
 | **M04a** GHL matching | Contact matching against GoHighLevel | ✅ done — `src/ghl/`, `ghl_match_sync` runs nightly |
 | **M04b** royalty calculation | The number this project exists to produce | ⬜ **not started — this is the next work**. Its missing input got closer on 17 Sep: WL's own transaction reports carry a revenue category (see below) |
-| **M05** portal | Student portal reading the same database | ⬜ not started |
+| **M05** portal | Student portal reading the same database | 🟦 **started 8 Oct 2026** — `0053` wires the sign-in. Task 028 |
 
 **M03 is complete and running unattended.** Seventeen passes read WellnessLiving
 into eighteen tables, grouped into six named jobs on their own crons, with a lease
@@ -26,6 +26,48 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### Portal sign-in, 8 Oct 2026 - the policies are written, nothing has signed in yet
+
+`0053` is the migration DATA-MODEL.md has been pointing at since `0048`: one auth
+anchor on `identity`, `0010`'s five policies re-pointed through it, SELECT policies
+on the ten `app` tables the dashboard reads, and `link_signed_in_identity()`.
+**Written and committed; not yet applied.** It is applied in the Supabase SQL
+editor like `0039`–`0049`, and `supabase/checks/portal_auth_isolation.sql` is what
+says whether it took.
+
+**The sign-in is closed, by decision of 8 Oct 2026.** A code goes only to an
+address already in the database, and signing in never creates an account. Supabase
+Auth issues the code rather than a hand-rolled OTP table — every rule here is
+`auth.uid()`, and a home-made OTP issues no JWT, so RLS could never engage and
+every route would keep the service-role key.
+
+**Email does not identify a student, measured before the rule was written:**
+
+| | |
+|---|---|
+| `app.student` rows | 1,297 |
+| no email at all | **17** — cannot sign in by email, ever |
+| addresses on more than one row | **51**, covering 123 rows |
+| worst collision | **16 rows share one address** |
+| `identity.auth_user_id` populated | **0** |
+
+So the rule is **exactly one match or no code**, and zero, two and sixteen are
+reported identically — a form that answers differently is an oracle for who has an
+account. **1,112 of 1,250** student identities can sign in under it; the remaining
+138 need a human, and RUNBOOK §10 says what to do with each.
+
+**Two bugs found in the portal on the way here, both fixed** (`spin-dj-pathways`,
+commit `1055ff3`). Its Supabase client had no `db.schema`, so it read `public`
+while `0047` had moved the tables to `app` — **the dashboard route had returned
+nothing since `0047` landed**, invisibly, because the UI falls back to fixtures on
+a failed fetch. And it passed every attended session id into one `.in()` filter,
+which exceeds the URL limit past ~300 ids; `attendance_record` holds 45,987 rows
+across 904 students and **21 are already over that**.
+
+**Still blocked on configuration, not code:** custom SMTP. Supabase's built-in
+sender mails project members only, a few an hour, so no student can receive a code
+until it is set — see RUNBOOK §4f.
 
 ### The transaction reports were missing 42% of the money, 1 Oct 2026 - fixed in code
 

@@ -4,24 +4,27 @@
 
 - [x] Settle the `app`-schema bug — the dashboard route queries `public`, the tables live in `app`
 - [x] Fix the unbounded `.in()` that broke the route for the 21 busiest students
-- [ ] `0053`: drop `person.auth_user_id`, re-point `0010`'s five policies through `identity`
-- [ ] `0053`: SELECT policies on the `app` tables the dashboard reads
-- [ ] `0053`: `security definer` membership helper, and the first-sign-in link RPC
-- [ ] `0053`: enable RLS on `raw_wl` and `raw_ghl`
-- [ ] `supabase/checks/portal_auth_isolation.sql` — two JWTs, each sees only its own, rolled back
+- [x] `0053`: drop `person.auth_user_id`, re-point `0010`'s five policies through `identity`
+- [x] `0053`: SELECT policies on the `app` tables the dashboard reads
+- [x] `0053`: `security definer` membership helper, and the first-sign-in link RPC
+- [x] `0053`: the `SELECT` grants — `0047` gave `app` tables to `service_role` only
+- [x] `0053`: enable RLS on `raw_wl` and `raw_ghl`
+- [x] `supabase/checks/portal_auth_isolation.sql` — two JWTs, each sees only its own, rolled back
+- [ ] **Apply `0053` in the SQL editor, then run both check files** — written, not applied
 - [ ] Prove student A cannot read student B, by removing a policy and watching the check fail
 - [ ] Supabase dashboard: email OTP on, `{{ .Token }}` template, shorter expiry, custom SMTP
 - [ ] `@supabase/ssr`, cookie session, middleware guard, real sign-out
 - [ ] The OTP screens replacing the role picker at `/login`
 - [ ] `/students/me` replacing `/students/[id]`; `DEMO_STUDENT_ID` deleted
 - [ ] Confirm no write policy was added
-- [ ] RUNBOOK.md: sign-in resolving to no identity; the 17 with no address; the 50 ambiguous; SMTP rotation
-- [ ] DATA-MODEL.md, ARCHITECTURE.md, STATUS.md — same commit as the change
+- [x] RUNBOOK.md: §10 sign-in, §4f the Supabase Auth SMTP that is NOT the sync's
+- [x] DATA-MODEL.md, ARCHITECTURE.md, STATUS.md — same commit as the change
 
 ## Last step
 
-Step 1 done, 8 Oct 2026 — both route bugs fixed in `spin-dj-pathways` and proven
-against live data. Next is `0053`.
+Step 2 written, 8 Oct 2026 — `0053`, both check files and all four docs. **Not
+applied, and not run.** Next is applying it in the SQL editor and running the
+checks; step 3 is the Supabase dashboard config.
 
 ## Blockers
 
@@ -170,3 +173,58 @@ service; the file is gitignored), then `npm run dev` and fetch the route.
 **Found, not fixed, recorded:** the portal repo cannot be linted. `npm run lint`
 runs `next lint`, which Next 16 removed, and there is no `eslint.config.*` file at
 all. Neither bug above would have been caught by anything automated.
+
+### 2026-10-08 — step 2 written: migration 0053, two checks, four docs
+
+`0053` does the four things DATA-MODEL.md has asked for since `0048`, plus a fifth
+nobody had written down.
+
+**One auth anchor.** `person.auth_user_id` is dropped and `0010`'s five policies
+re-point through `identity`. A guard refuses the drop if any row carries one — the
+measurement that says it is safe was taken on 8 Oct and is not a promise about the
+day this is applied.
+
+**The order of that drop is load-bearing, and the first draft had it wrong.** All
+five of `0010`'s policies read `person.auth_user_id`, so Postgres records a
+dependency and refuses to drop the column while they exist. `CASCADE` would have
+taken the policies with it and left the mirror with RLS on and nothing granted —
+every row readable by nobody, found later as "the portal shows nothing". The five
+are now dropped by name first and rebuilt in section 3.
+
+**The helpers are not an optimisation.** A policy's subquery runs as the caller, so
+a policy on `app.student` that read `app.identity` inline would be filtered by the
+policy on `app.identity`, and the lookup establishing who you are returns nothing.
+All four are `security definer` with `search_path` pinned to `''`.
+
+**A fifth thing, not in DATA-MODEL's list: the grants.** `0047` granted `USAGE` on
+schema `app` to `authenticated` and then granted table privileges to
+`service_role` only. In `public` the question never arises because Supabase's
+bootstrap sets default privileges there. The failure is not an empty read but
+`permission denied for table student` — a 42501 — which is why reading the
+policies alone would not have predicted it. `0053` adds the `SELECT` grants and
+revokes `anon` outright.
+
+**The link function takes no parameters**, deliberately. The email comes from the
+JWT claim Supabase Auth has just verified by sending a code to it; a parameter
+would let any signed-in caller name any address and be linked to that human. It is
+idempotent, and it refuses zero and many with the *same* error so the caller cannot
+tell them apart.
+
+**Checks.** `portal_auth_isolation.sql` is new and covers the `app` tables, the
+helpers, the link function and the one-auth-user-one-identity index — the last
+proven by attempting the second link, not by reading the index definition. Alice
+and Bob in it are **portal-native**: no `uid`, no `person` row, which is the case
+the hub exists for. `rls_isolation_test.sql` had to change too: it inserted
+`person.auth_user_id`, which `0053` removes. It now links on the hub, and because
+the person insert fires `0040`'s trigger, that update also quietly proves the
+trigger still runs.
+
+**NOT APPLIED AND NOT RUN.** Two separate gaps, and neither is a detail:
+
+- `0053` is applied by hand in the Supabase SQL editor, as `0039`–`0049` were.
+  Until somebody does that, every policy here is a file.
+- `npm run verify` could not run: **`ENOSPC`, no space left on device.** C: has
+  **0 MB** free. The migration-table rule was checked by hand instead (53
+  migrations, none unregistered), but the other 800-odd tests did not execute.
+  Nothing in this step touches TypeScript, which lowers the risk and does not
+  remove it.
