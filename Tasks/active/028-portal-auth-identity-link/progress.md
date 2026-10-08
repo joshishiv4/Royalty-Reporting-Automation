@@ -23,21 +23,26 @@
       check fail - measured 8 Oct 2026: dropping `student_self_select` turns A1 and
       C1 red and nothing else
 - [ ] Supabase dashboard: email OTP on, `{{ .Token }}` template, shorter expiry, custom SMTP
-- [ ] `@supabase/ssr`, cookie session, middleware guard, real sign-out
-- [ ] The OTP screens replacing the role picker at `/login`
-- [ ] `/students/me` replacing `/students/[id]`; `DEMO_STUDENT_ID` deleted
+- [x] **`@supabase/ssr`, cookie session, proxy guard, real sign-out** — 8 Oct 2026.
+      Next 16 renamed `middleware.ts` to `proxy.ts`; the guard is there
+- [x] **The OTP screens replacing the role picker at `/login`** — two stages,
+      every refusal worded identically
+- [ ] `/students/me` replacing `/students/[id]`; `DEMO_STUDENT_ID` deleted —
+      **until this lands, a signed-in student still sees the demo student's data**
 - [ ] Confirm no write policy was added
 - [x] RUNBOOK.md: §10 sign-in, §4f the Supabase Auth SMTP that is NOT the sync's
 - [x] DATA-MODEL.md, ARCHITECTURE.md, STATUS.md — same commit as the change
 
 ## Last step
 
-`0053` is applied and both check files pass, 8 Oct 2026. The migration had one
-real defect - `min(uuid)`, which would have failed every first sign-in - and the
-portal check had three of its own. The mutation is measured: dropping
-`student_self_select` turns exactly A1 and C1 red. Step 2 is done. Step 3 is the
-Supabase dashboard config: email OTP on, `{{ .Token }}` template, shorter expiry,
-custom SMTP.
+Steps 4 and 5 built together, 8 Oct 2026, in `spin-dj-pathways`: the session
+plumbing and the OTP screens, so the gate and the door arrived at once and
+`/student` was never locked with no way in. Typechecks and builds; **nothing has
+been exercised against a real sign-in, because step 3 is still open** - without
+custom SMTP, Supabase delivers only to project members.
+
+Next: step 3 in the dashboard (yours - email OTP template, expiry, SMTP), then
+step 6, which is the one that matters for what a student actually sees.
 
 ## Blockers
 
@@ -410,3 +415,63 @@ and the second of those is what surfaced `min(uuid)`.
 
 Re-run after the edit: "Success. No rows returned". The file in the repo is now
 the file that passed, which is the whole point of running it again.
+
+### 2026-10-08 — steps 4 and 5: the session, the guard, and the screens
+
+Built together rather than in sequence, because the guard alone would have made
+`/student` unreachable until the screens existed - there would have been no way
+to sign in to the thing the guard was protecting.
+
+**Next 16 moved the file.** `middleware.ts` is deprecated and renamed `proxy.ts`
+at the repo root, exporting `proxy` rather than `middleware`. Every
+`@supabase/ssr` guide in circulation still says middleware. Found by reading
+`node_modules/next/dist/docs/`, which `AGENTS.md` in that repo demands before
+writing any code, and which was right to.
+
+What landed in `spin-dj-pathways`:
+
+| File | What it does |
+|---|---|
+| `app/lib/supabase-session.ts` | The anon-key client bound to a request. Buffers cookie writes and `commit()`s them onto whichever response is returned |
+| `proxy.ts` | Session refresh plus the optimistic redirect for `/student/*` |
+| `app/auth/otp/route.ts` | Sends a code. `shouldCreateUser: false`. Returns 202 for every outcome |
+| `app/auth/verify/route.ts` | Verifies, then calls `app.link_signed_in_identity()`. A failed link signs them back out |
+| `app/auth/signout/route.ts` | POST. Revokes the refresh token and clears the cookies |
+| `app/login/page.jsx` + `SignInCard.jsx` | Server shell reading `next`, client form in two stages |
+| `app/student/layout.jsx` | `onLogout` was `router.push('/login')` - a navigation that signed nobody out of anything |
+| `.env.example` | Did not exist. Names all four variables and holds no values |
+
+**Three decisions worth the words.**
+
+*Everything runs server-side.* No browser Supabase client, so no
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` and no auth code in the client bundle. The form
+posts to route handlers. The cost is no client-side `onAuthStateChange`; the
+refresh happens in the proxy, which is where @supabase/ssr documents it.
+
+*`getClaims()` in the proxy, `getUser()` at the data.* getUser() asks the Auth
+server on every navigation; getClaims() verifies the JWT locally against the
+project's signing keys. Next's own guide says a proxy check is optimistic and
+must not be the only defence - and here it genuinely is not, because `0053`'s
+row security answers underneath it. `getSession()` is used nowhere.
+
+*A failed link signs the user out.* Verifying the code and linking the identity
+both have to succeed. A student holding a session with no identity row is the
+worst outcome available: every policy resolves "me" through the hub, so they
+would be signed in and looking at an empty dashboard with nothing to explain it.
+
+**`setAll` takes a second argument in @supabase/ssr 0.12** and ignoring it is a
+real defect. It carries `Cache-Control: private, no-cache, no-store,
+must-revalidate, max-age=0`. A response that sets an auth cookie must never be
+cached, or a CDN can serve one student's session token to the next person.
+
+**What is NOT done, and must not be read as done.** `npm run build` passes and
+typecheck is clean, but no code has been exercised against a real sign-in: step 3
+is open, and until custom SMTP is configured Supabase delivers only to project
+members. And step 6 has not started - `live-data.js` still fetches
+`/api/v1/students/<DEMO_STUDENT_ID>/dashboard`, so **a student who signs in
+successfully still sees the demo student's data**. The sign-in is real; what it
+reveals is not yet theirs.
+
+`/teacher` and `/organization` lost their entrance when the role picker went.
+Both routes still exist and still answer if typed. Staff sign-in is its own piece
+of work and is not in this task.

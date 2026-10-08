@@ -108,6 +108,21 @@ a failed fetch. And it passed every attended session id into one `.in()` filter,
 which exceeds the URL limit past ~300 ids; `attendance_record` holds 45,987 rows
 across 904 students and **21 are already over that**.
 
+**The portal now has a real sign-in, and it is not yet connected to what it
+shows.** `spin-dj-pathways` gained `@supabase/ssr`, a cookie session, a guard in
+front of `/student`, the two-stage OTP screens in place of the role picker, and a
+sign-out that actually ends the session rather than navigating away from it. Next
+16 renamed `middleware.ts` to `proxy.ts`, which no Supabase guide reflects yet.
+Everything runs server-side through route handlers, so no anon key or auth code
+reaches the browser bundle.
+
+**Read the gap plainly:** the dashboard still fetches
+`/api/v1/students/<DEMO_STUDENT_ID>/dashboard`, so a student who signs in
+successfully still sees the demo student's data. The sign-in is real; what it
+reveals is not theirs until `/students/me` replaces the id in the path. Nothing
+has been exercised against a live sign-in either, because of the SMTP blocker
+below.
+
 **Still blocked on configuration, not code:** custom SMTP. Supabase's built-in
 sender mails project members only, a few an hour, so no student can receive a code
 until it is set — see RUNBOOK §4f.
