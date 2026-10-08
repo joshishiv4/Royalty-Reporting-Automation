@@ -373,16 +373,27 @@ those.
 Three passes read a WellnessLiving *report* rather than an endpoint —
 `client_list_sync`, `tx_item_sync`, `tx_payment_sync` — and a report is built
 asynchronously on WL's side. The full transaction history took **90 seconds** to
-build, measured; a Vercel function has 60. So these passes never wait. Each
-invocation does one thing and defers:
+build, measured; a Vercel function has 60. So no step ever waits on WL inside a
+call. Each step does one thing and defers:
 
 ```
 handle null      →  request the build (is_refresh=1, ONCE), save handle+window, defer 5s
-past deadline    →  abandon it, clear the cursor, defer 2s (restart clean)
+past deadline    →  abandon it, clear the cursor, and re-request in the same step
 not complete     →  bump the attempt, defer on 5/10/20/30s
 complete         →  read pages from the saved offset until a short page ends it,
                     or the 25s page budget hands the rest to the next invocation
 ```
+
+**The pass waits between steps; the step does not.** When nothing is claimable
+but this pass deferred an item due within a minute (`MAX_DEFERRED_WAIT_MS`),
+`runPass` sleeps until it is due and claims it again, inside its own budget. So
+one run walks request → poll → read, and a Vercel route still stops at its 50s
+budget. Before 8 Oct 2026 the pass ended at the first empty claim, so each
+*scheduled run* did one step — and with Actions running every 4-8 hours the
+3-hour handle had always expired, so the transaction reports re-requested every
+run and read nothing for six days. A pass whose deferral finished in the same
+run closes `ok`, not `partial`. Tested in
+[`tests/sync-pass-deferred-wait.test.ts`](../tests/sync-pass-deferred-wait.test.ts).
 
 Everything that makes this safe is one of three rules, each of which was a real
 failure first:

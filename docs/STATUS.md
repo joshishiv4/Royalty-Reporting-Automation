@@ -1,8 +1,8 @@
 # Status and plan
 
-Last updated **1 Oct 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (This update covers the transaction-report
-entries only. The portal work in `0039`–`0049` is not yet reflected in the plan
+Last updated **8 Oct 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (The 8 Oct update covers the report-pass entry
+below only. The portal work in `0039`–`0049` is not yet reflected in the plan
 table below.)
 
 ## The plan
@@ -26,6 +26,39 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### The transaction reports read nothing for six days, 2-8 Oct 2026 - fixed in code
+
+Found by reading `sync_run` and `sync_job_state` on 7 Oct, not by an alert.
+**No run failed.** Every run of `tx_item_sync` and `tx_payment_sync` since
+2 Oct 13:45 UTC ended `partial` in about 5 seconds with 0 rows, and
+`pay_transaction` was last written **1 Oct 12:46 UTC**.
+
+**Measured cause.** `runPass` ended the moment a batch claimed nothing. A report
+pass asks WL for a build and defers its item 5 s, so the next batch claims
+nothing and the pass closes. Each scheduled run did **one step**. Actions ran the
+sync every **4-8 hours** (5 runs in 25 hours on 7-8 Oct), so the 3-hour handle
+had always expired at the next run, and the step was "request" again. The 7 Oct 00:33 UTC
+run: item deferred to 00:33:27.99, pass closed at 00:33:25.6.
+`client_list_sync` escaped because its two requests take longer than 5 s, so its
+item was already due when the pass looked. It finished and still closed
+`partial`, because any deferral counted as unfinished work.
+
+This is the "one WL poll per scheduled run" entry below, which named the
+candidate fix. The 23 Sep fix (3-hour handle) assumed runs under 3 hours apart.
+
+**Fixed in code, 8 Oct.** A pass that deferred an item due within a minute
+sleeps until it is due and claims it again, inside its own budget, so one run
+requests, polls and reads. A deferral that finishes in the same run closes `ok`.
+`tests/sync-pass-deferred-wait.test.ts` drives a whole pass on a fake clock;
+removing the wait, restoring the old `partial` rule, or ignoring the budget each
+turns it red (mutation-checked). The schedule is unchanged: the fix makes the
+gap between runs irrelevant rather than trying to shorten it.
+
+**Not yet confirmed against live data.** Proof is `tx_payment_sync` and
+`tx_item_sync` closing `ok` with `last_clean_completion_at` moving, and
+`pay_transaction.synced_at` newer than 1 Oct. Scheduled runs only pick this up
+once it is merged to `main`.
 
 ### The transaction reports were missing 42% of the money, 1 Oct 2026 - fixed in code
 
@@ -262,7 +295,7 @@ was stopped at 12:29:46 UTC while it held `purchase_element_sync`. The next one,
 state. The row stayed `running` and nothing worked the 15,981 pending
 `purchase_item_element` items until a later run took the expired lease.
 
-**Open, not fixed - the report jobs get one WL poll per scheduled run.** When the
+**Fixed in code 8 Oct (entry at the top) - the report jobs get one WL poll per scheduled run.** When the
 build is not ready, the item is deferred 5-30 s, nothing is claimable, and the
 pass ends. On hourly Actions that is one poll an hour. Both builds requested at
 11:36 were still "not ready" at 12:30. A read-only poll at 12:40 found WL had
