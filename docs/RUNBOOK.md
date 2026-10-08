@@ -409,10 +409,12 @@ resumes. The `concurrency` group still queues runs rather than overlapping them,
 because a second runner would spend its time discovering every job is locked.
 
 **`transactions` behaves differently from the other six, and that is expected.**
-It reads an asynchronous WellnessLiving report, so a single invocation normally
-ends `partial`: it requests a build, or polls one, or reads a few pages, and
-defers the rest. A run that reports `partial` night after night while
-`pay_transaction` grows is the pass working. What is NOT expected is
+It reads an asynchronous WellnessLiving report, and since 8 Oct 2026 a single
+run requests the build, waits for it (sleeping between polls, inside the pass
+budget) and reads it, so a normal run ends `ok`. `partial` now means the build
+outlasted the budget or a poll was deferred more than a minute. A run that
+reports `partial` with `pay_transaction.synced_at` not moving is NOT the pass
+working — before 8 Oct that pattern hid six days of nothing (STATUS.md). What is NOT expected is
 `sync_job_state.report_handle` staying set with `page_number` unchanged across
 several runs — that means the build is being restarted rather than read, and the
 first thing to check is whether `last_key` (the frozen window) is being rewritten
