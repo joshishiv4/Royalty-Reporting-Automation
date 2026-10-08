@@ -921,6 +921,27 @@ where lower(trim(s.email)) = lower(trim('THE ADDRESS'));
 | **0** | We hold no student with that address | Ask which address the studio has for them. Do **not** add it to make the sign-in work — see 10b |
 | **2 or more** | Ambiguous, and refused on purpose | 10b |
 
+**Then check that Supabase Auth has an account at all.** This is the fault that
+wore the delivery disguise for a whole day, 8 Oct 2026: `auth.users` was empty,
+`shouldCreateUser: false` refused everyone, and the uniform 202 made it look like
+unconfigured SMTP. Authentication → Users in the dashboard, or:
+
+```sql
+select id, email, email_confirmed_at, last_sign_in_at
+from auth.users
+where lower(email) = lower(trim('THE ADDRESS'));
+```
+
+| | What it means | What to do |
+|---|---|---|
+| **1 row** | Normal. The portal provisioned them on their first request for a code | The fault is delivery — §4f, then the sending provider's log |
+| **0 rows**, and the student query above returned exactly 1 | Provisioning did not happen | Confirm `0054` is applied (`select app.identity_for_email('THE ADDRESS')` should return a uuid, not an error), then look for `[auth] provisioning refused` in the portal's server log |
+| **0 rows**, and the student query returned 0 or 2+ | Correct. The roll refused the address before any account could be made | 10b |
+
+An account here is **not** a sign-in: it is created with `email_confirm: true` and
+no password, against a student row the studio already had, and it is reachable
+only by a code mailed to that address.
+
 ### 10b. The address is shared, or missing
 
 Measured 8 Oct 2026: **51 addresses sit on more than one student row** (123 rows; the worst

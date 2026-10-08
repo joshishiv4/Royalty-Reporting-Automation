@@ -27,8 +27,11 @@
       Next 16 renamed `middleware.ts` to `proxy.ts`; the guard is there
 - [x] **The OTP screens replacing the role picker at `/login`** — two stages,
       every refusal worded identically
-- [ ] `/students/me` replacing `/students/[id]`; `DEMO_STUDENT_ID` deleted —
-      **until this lands, a signed-in student still sees the demo student's data**
+- [x] **`/students/me` replacing `/students/[id]`; `DEMO_STUDENT_ID` deleted** — 8 Oct
+      2026, `e675a3a`. No id in the path, 401 without a session, and the client hook
+      sends a 401 to /login rather than falling back to fixtures
+- [ ] **`0054` applied in the SQL editor** — without it `/auth/otp` cannot ask the
+      roll and nobody can sign in; see the 8 Oct entry in the log
 - [ ] Confirm no write policy was added
 - [x] RUNBOOK.md: §10 sign-in, §4f the Supabase Auth SMTP that is NOT the sync's
 - [x] DATA-MODEL.md, ARCHITECTURE.md, STATUS.md — same commit as the change
@@ -316,6 +319,10 @@ built to be re-run, nothing had ever called the function, and `0018`, `0029` and
 `0030` were each edited after their introducing commit — so the precedent is the
 repo's own. The cost is that the database and the file disagree until `0053` is
 re-run.
+
+(That `0054` now exists is unrelated: it carries a change of BEHAVIOUR — the
+matching rule moving into its own function so the OTP route can call it — not a
+repair to `0053`'s text. The reasoning above stands.)
 
 ### 2026-10-08 — the check passes, and its last line was crying wolf
 

@@ -1308,6 +1308,18 @@ WellnessLiving's and `NOT NULL`. A human WL has never heard of cannot have a
 hanging off `app.current_student_id()`. Everything else about the posture is
 unchanged: **the portal reads; nothing about it writes.**
 
+**`0054` moved the matching rule into a function, because two callers now need
+it.** `link_signed_in_identity()` resolved the address inline, and that was fine
+while verification was the only moment anyone asked. It is not: the OTP route has
+to ask the same question *before* sending a code, since Supabase Auth checks
+`auth.users` — which this flow never wrote to, so `shouldCreateUser: false`
+refused every student and the sign-in was unreachable from the first commit. The
+rule is now `app.identity_for_email(text)`, called by both. It returns **NULL on
+zero or many** instead of raising, because at the OTP step those are routine
+answers rather than errors, and it is granted to **`service_role` only** —
+`authenticated` holding it would be a membership probe for any address a
+signed-in student cares to try.
+
 **Policies are evaluated as the caller, including their subqueries.** This is why
 `0053`'s four helpers are `security definer` and not merely convenient: a policy
 on `app.student` that read `app.identity` inline would itself be filtered by the

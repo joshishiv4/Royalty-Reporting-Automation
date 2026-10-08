@@ -14,7 +14,7 @@ table below; `0053` is, because it starts M05.)
 | **M03** sync engine | The code that reads WL and writes to those tables | ✅ done — 17 passes, 6 scheduled jobs, live |
 | **M04a** GHL matching | Contact matching against GoHighLevel | ✅ done — `src/ghl/`, `ghl_match_sync` runs nightly |
 | **M04b** royalty calculation | The number this project exists to produce | ⬜ **not started — this is the next work**. Its missing input got closer on 17 Sep: WL's own transaction reports carry a revenue category (see below) |
-| **M05** portal | Student portal reading the same database | 🟦 **started 8 Oct 2026** — `0053` wires the sign-in. Task 028 |
+| **M05** portal | Student portal reading the same database | 🟦 **started 8 Oct 2026** — `0053` wires the sign-in, `0054` makes it reachable. Task 028 |
 
 **M03 is complete and running unattended.** Seventeen passes read WellnessLiving
 into eighteen tables, grouped into six named jobs on their own crons, with a lease
@@ -84,6 +84,34 @@ address already in the database, and signing in never creates an account. Supaba
 Auth issues the code rather than a hand-rolled OTP table — every rule here is
 `auth.uid()`, and a home-made OTP issues no JWT, so RLS could never engage and
 every route would keep the service-role key.
+
+**The closed door was closed against everyone, and `0054` is the key — found by
+running the form, 8 Oct 2026.** The first real attempt at a sign-in returned the
+cheerful 202 the design calls for and no email, and the cause was not the SMTP
+everyone expected:
+
+```
+POST /auth/v1/otp  ->  422 otp_disabled  "Signups not allowed for otp"
+auth.users ......... 0 rows
+```
+
+`shouldCreateUser: false` makes Supabase Auth look for an existing row in
+`auth.users`. The rule "a code goes only to an address already in the database"
+means `app.student`. **Nothing in the flow had ever written to `auth.users`**, so
+every student was refused before delivery was attempted — and because every
+refusal is deliberately identical, this looked exactly like the unconfigured
+sender. The sign-in had been unreachable since the first commit and the uniform
+202 is what hid it. A reminder that a design which refuses to explain itself to an
+attacker also refuses to explain itself to you.
+
+`0054` makes the portal provision the auth user itself, for an admitted address
+only: `app.identity_for_email(text)` carries the matching rule,
+`link_signed_in_identity()` now calls it instead of resolving inline, and
+`/auth/otp` calls it before creating anything. `shouldCreateUser: false` stays —
+the account is opened against a student row the studio already had, never on an
+address nobody vouched for. **Not yet applied; not yet exercised.** It needs the
+SQL editor, like `0039`–`0053`, and the delivery blocker below is still ahead of a
+successful sign-in.
 
 **Email does not identify a student, measured before the rule was written:**
 
