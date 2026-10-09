@@ -6,22 +6,23 @@
 - [x] `app.current_teacher_id()`, with the 0053 grant pattern - `0055`
 - [x] Teacher `for select` policies - SIX, not seven: `identity` needed none
 - [x] Three definer reachability helpers, after inline subqueries caused 42P17
-- [ ] **Re-run the amended `0055`** - live still carries the recursive version
-- [ ] Run `portal_auth_isolation.sql` whole: A-F unchanged, G green
+- [x] **Re-run the amended `0055`** - done 9 Oct 2026
+- [x] Run `portal_auth_isolation.sql` whole - clean, A-F unchanged and G green
+- [ ] Prove section G can FAIL (drop student_taught_select, expect only G2 red)
 - [ ] Prove additivity: student isolation section C passes unchanged
 - [x] Teacher section in `supabase/checks/portal_auth_isolation.sql` - section G
 - [ ] Decide Jared Feldman's address (data fix or RUNBOOK §10a note)
-- [ ] `GET /api/v1/me` returning the role from the identity
-- [ ] `proxy.ts` guards `/teacher`, no cross-role redirect loop
-- [ ] `/auth/verify` picks the destination by role
-- [ ] `/teacher` roster page
+- [x] `GET /api/v1/me` returning the role from the identity
+- [x] `proxy.ts` guards `/teacher`; the cross-role redirect is in the layouts
+- [x] `/auth/verify` picks the destination by role
+- [x] `/teacher` roster page
+- [ ] A real teacher signs in and sees a real roster
 - [x] Docs: DATA-MODEL and the ARCHITECTURE migration table (STATUS when 0055 is applied)
 
 ## Last step
 
-`0055` was applied, raised 42P17, and has been AMENDED IN PLACE. It must be
-re-run in the SQL editor - until it is, live carries the recursive policies and
-a student read can fail. Then run the check file whole.
+`0055` is applied and the isolation check passes, A-G. The portal half is built
+and committed. Next: prove section G can fail, then a real teacher sign-in.
 
 ## Blockers
 
@@ -140,3 +141,45 @@ caught this before it reached the database.
 in `npm run verify` exercises a policy — 844 tests passed over a migration that
 could not run. SQL correctness here is proved only in the SQL editor, so
 "committed and tests pass" must never be reported as more than it is.
+
+### 2026-10-09 — `0055` re-run clean, and the portal half built
+
+**The isolation check passes.** "Success. No rows returned" is the full pass:
+any failed assertion raises an exception rather than a notice (the file does
+that deliberately, because the Supabase editor hides NOTICE), so a clean run
+means A–G all green — and the zero rows are the escaped-LIKE proof that the
+fixture rolled back. Sections A–F passed **unchanged** alongside the new G,
+which was the condition for believing the policies are additive.
+
+**Still unproven, and the repo's own rule names it:** section G has never been
+shown to go red. "A test that cannot fail is not a test." The mutation is in the
+file header — drop `student_taught_select`, expect **only G2** red, restore by
+re-running `0055`.
+
+**The portal half** (`spin-dj-pathways`, `cccafcd`):
+
+- `/api/v1/me` — the role, read from `app.identity` through the viewer's JWT.
+  Explicitly **not** a permission check: a student who forged the answer gets a
+  teacher-shaped page listing nothing, because `current_teacher_id()` is NULL.
+- `/api/v1/teachers/me/roster` — roster, sessions, cohorts. No id in the path.
+  It needs no `.in()` filter, so the URL-length trap that broke 21 students'
+  dashboards cannot arise: the filter is a policy, not a query string.
+- **The cross-role guard is in the layouts, not the proxy.** A role is not in the
+  JWT, so checking it costs a round trip, and the proxy runs on every navigation
+  including prefetches — which is why it uses `getClaims()` and not `getUser()`.
+  `requireRole()` runs once on entry to a section instead.
+- **The loop that had to be designed out:** an identity with neither role.
+  `/login` bounces signed-in visitors to `/student`, whose guard would send them
+  straight back. It goes to `/unlinked` — outside every guarded prefix — which
+  says what happened and offers a sign-out.
+- `app/student/layout.jsx` became a Server Component to `await` the guard, so
+  its client half moved to `StudentShell.jsx` unchanged. A layout cannot be both.
+- `app/teacher/page.jsx` was a `RoleComingSoonPage` placeholder and is now the
+  roster. **Overwritten before reading it** — recovered from git afterwards and
+  confirmed to be a placeholder, but the order was wrong.
+
+**What is NOT done.** No teacher has ever signed in. The portal builds and
+typechecks and that proves nothing about a sign-in: `0055` was exercised in the
+SQL editor with a fabricated teacher, not through this form with a real one.
+Until one does, the acceptance criterion "a teacher completes the OTP round trip"
+is open — and so is Jared Feldman's case, which will refuse him when he tries.
