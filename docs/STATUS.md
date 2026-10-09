@@ -1,6 +1,6 @@
 # Status and plan
 
-Last updated **8 Oct 2026**. Keep the date honest — a stale status file is worse
+Last updated **9 Oct 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed. (The 1 Oct update covered the transaction-report
 entries only. The portal work in `0039`–`0049` is still not reflected in the plan
 table below; `0053` is, because it starts M05.)
@@ -14,7 +14,7 @@ table below; `0053` is, because it starts M05.)
 | **M03** sync engine | The code that reads WL and writes to those tables | ✅ done — 17 passes, 6 scheduled jobs, live |
 | **M04a** GHL matching | Contact matching against GoHighLevel | ✅ done — `src/ghl/`, `ghl_match_sync` runs nightly |
 | **M04b** royalty calculation | The number this project exists to produce | ⬜ **not started — this is the next work**. Its missing input got closer on 17 Sep: WL's own transaction reports carry a revenue category (see below) |
-| **M05** portal | Student portal reading the same database | 🟦 **started 8 Oct 2026** — `0053` wires the sign-in, `0054` makes it reachable. Task 028 |
+| **M05** portal | Student portal reading the same database | 🟦 **a student signs in, 9 Oct 2026** — `0053` wires the sign-in, `0054` made it reachable, and a real student has now completed one. Task 028; teacher sign-in is task 032 |
 
 **M03 is complete and running unattended.** Seventeen passes read WellnessLiving
 into eighteen tables, grouped into six named jobs on their own crons, with a lease
@@ -26,6 +26,28 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### A student signs in, 9 Oct 2026 - end to end, against live
+
+`0054` is **applied**, custom SMTP and the `{{ .Token }}` template are
+**configured**, and a student has completed the whole round trip: a code
+requested through the portal's own form, delivered to a real inbox, exchanged
+for a session, linked to exactly one `identity`, and a dashboard rendered from
+that student's own rows under Row Level Security.
+
+That closes the three things the 8 Oct entry below left open — the unapplied
+migration, the unconfigured sender, and the demo student id in the dashboard
+path, which `spin-dj-pathways` `e675a3a` replaced with `/students/me`.
+`DEMO_STUDENT_ID` no longer appears anywhere in that app.
+
+**What this does not yet cover: teachers.** All 47 of them have an email and an
+`identity` row, and not one can sign in — `app.identity_for_email()` joins
+`app.student` only, and every policy in `0053` resolves "me" through
+`app.current_student_id()`. Measured 9 Oct 2026 and scoped as **task 032**
+(read-only roster, no writes). The measurement's one sharp finding: every teacher
+address also sits on an orphaned duplicate student row, which is harmless, except
+for one teacher whose address resolves to two identities and who is therefore
+refused like a stranger. Task 032 records the case rather than tie-breaking it.
 
 ### Portal sign-in, 8 Oct 2026 - the policies are applied, nothing has signed in yet
 
@@ -109,9 +131,8 @@ only: `app.identity_for_email(text)` carries the matching rule,
 `link_signed_in_identity()` now calls it instead of resolving inline, and
 `/auth/otp` calls it before creating anything. `shouldCreateUser: false` stays —
 the account is opened against a student row the studio already had, never on an
-address nobody vouched for. **Not yet applied; not yet exercised.** It needs the
-SQL editor, like `0039`–`0053`, and the delivery blocker below is still ahead of a
-successful sign-in.
+address nobody vouched for. **Applied 9 Oct 2026** in the SQL editor, like
+`0039`–`0053`, and exercised the same day by a real sign-in.
 
 **Email does not identify a student, measured before the rule was written:**
 
@@ -144,16 +165,12 @@ sign-out that actually ends the session rather than navigating away from it. Nex
 Everything runs server-side through route handlers, so no anon key or auth code
 reaches the browser bundle.
 
-**Read the gap plainly:** the dashboard still fetches
-`/api/v1/students/<DEMO_STUDENT_ID>/dashboard`, so a student who signs in
-successfully still sees the demo student's data. The sign-in is real; what it
-reveals is not theirs until `/students/me` replaces the id in the path. Nothing
-has been exercised against a live sign-in either, because of the SMTP blocker
-below.
-
-**Still blocked on configuration, not code:** custom SMTP. Supabase's built-in
-sender mails project members only, a few an hour, so no student can receive a code
-until it is set — see RUNBOOK §4f.
+**The gap this entry recorded is closed.** The dashboard fetched
+`/api/v1/students/<DEMO_STUDENT_ID>/dashboard`, so a student who signed in
+successfully still saw the demo student's data — real sign-in, somebody else's
+rows. `/students/me` replaced the id in the path (`e675a3a`), and the SMTP
+blocker that kept any of it from being exercised is configured. See the 9 Oct
+entry above.
 
 ### The transaction reports were missing 42% of the money, 1 Oct 2026 - fixed in code
 

@@ -22,7 +22,8 @@
 - [x] Prove student A cannot read student B, by removing a policy and watching the
       check fail - measured 8 Oct 2026: dropping `student_self_select` turns A1 and
       C1 red and nothing else
-- [ ] Supabase dashboard: email OTP on, `{{ .Token }}` template, shorter expiry, custom SMTP
+- [x] **Supabase dashboard: email OTP on, `{{ .Token }}` template, expiry, custom SMTP**
+      — configured 9 Oct 2026, and proven by a code that actually arrived
 - [x] **`@supabase/ssr`, cookie session, proxy guard, real sign-out** — 8 Oct 2026.
       Next 16 renamed `middleware.ts` to `proxy.ts`; the guard is there
 - [x] **The OTP screens replacing the role picker at `/login`** — two stages,
@@ -30,15 +31,18 @@
 - [x] **`/students/me` replacing `/students/[id]`; `DEMO_STUDENT_ID` deleted** — 8 Oct
       2026, `e675a3a`. No id in the path, 401 without a session, and the client hook
       sends a 401 to /login rather than falling back to fixtures
-- [ ] **`0054` applied in the SQL editor** — without it `/auth/otp` cannot ask the
-      roll and nobody can sign in; see the 8 Oct entry in the log
+- [x] **`0054` applied in the SQL editor** — 9 Oct 2026. Without it `/auth/otp`
+      could not ask the roll and nobody could sign in; see the 8 Oct entry in the log
 - [ ] Confirm no write policy was added
 - [x] RUNBOOK.md: §10 sign-in, §4f the Supabase Auth SMTP that is NOT the sync's
 - [x] DATA-MODEL.md, ARCHITECTURE.md, STATUS.md — same commit as the change
 
 ## Last step
 
-Steps 4 and 5 built together, 8 Oct 2026, in `spin-dj-pathways`: the session
+A student signs in end to end, 9 Oct 2026, and sees her own data. One item
+remains: confirm against the live catalog that no write policy was added.
+
+Steps 4 and 5 were built together, 8 Oct 2026, in `spin-dj-pathways`: the session
 plumbing and the OTP screens, so the gate and the door arrived at once and
 `/student` was never locked with no way in. Typechecks and builds; **nothing has
 been exercised against a real sign-in, because step 3 is still open** - without
@@ -46,6 +50,9 @@ custom SMTP, Supabase delivers only to project members.
 
 Next: step 3 in the dashboard (yours - email OTP template, expiry, SMTP), then
 step 6, which is the one that matters for what a student actually sees.
+
+**Both done since - see the 9 Oct entry.** A student signs in and reads her own
+rows.
 
 ## Blockers
 
@@ -471,14 +478,35 @@ real defect. It carries `Cache-Control: private, no-cache, no-store,
 must-revalidate, max-age=0`. A response that sets an auth cookie must never be
 cached, or a CDN can serve one student's session token to the next person.
 
-**What is NOT done, and must not be read as done.** `npm run build` passes and
-typecheck is clean, but no code has been exercised against a real sign-in: step 3
-is open, and until custom SMTP is configured Supabase delivers only to project
-members. And step 6 has not started - `live-data.js` still fetches
-`/api/v1/students/<DEMO_STUDENT_ID>/dashboard`, so **a student who signs in
-successfully still sees the demo student's data**. The sign-in is real; what it
-reveals is not yet theirs.
+**What was NOT done when this entry was written** - both since closed, see the
+9 Oct entry. `npm run build` passed and typecheck was clean, but no code had been
+exercised against a real sign-in while step 3 was open, and `live-data.js` still
+fetched `/api/v1/students/<DEMO_STUDENT_ID>/dashboard`, so a student who signed
+in successfully saw the demo student.s data.
 
 `/teacher` and `/organization` lost their entrance when the role picker went.
 Both routes still exist and still answer if typed. Staff sign-in is its own piece
 of work and is not in this task.
+
+### 2026-10-09 — a student signs in, end to end
+
+`0054` applied in the SQL editor. Custom SMTP and the `{{ .Token }}` template
+configured in the Supabase dashboard. A student then completed the whole round
+trip against live: code requested through the portal's own form, delivered to a
+real inbox, exchanged for a session, linked to one `identity`, and a dashboard
+rendered from that student's own rows under RLS.
+
+Confirmed by the user. Three things the 8 Oct entries listed as open are now
+closed — the unapplied migration, the unconfigured sender, and the demo student
+id, which `e675a3a` had already removed.
+
+**One checklist item is still open and should not be ticked by assumption:**
+"confirm no write policy was added". `0053` and `0054` were written as read-only
+and nothing in them grants a write, but that has not been *checked* against the
+live catalog, and the check is cheap — list the policies on the `app` tables and
+confirm every one is `cmd = SELECT`. Worth doing before task 032 adds seven more.
+
+**Teacher sign-in is not part of this task and now has its own**: task 032,
+scoped 9 Oct 2026 to a read-only roster. Measured first: all 47 teachers have an
+email and an identity, and none can sign in, because `identity_for_email()` joins
+`app.student` only and every policy resolves "me" through `current_student_id()`.
