@@ -1320,6 +1320,35 @@ answers rather than errors, and it is granted to **`service_role` only** —
 `authenticated` holding it would be a membership probe for any address a
 signed-in student cares to try.
 
+**`0055` widened that function to either role, and gave teachers a roster.** The
+same two-callers argument covers it: `link_signed_in_identity()` needed no edit,
+which is what `0054` bought. The second half matters more. Every one of `0053`'s
+policies resolves "me" through `current_student_id()`, so a teacher who passed
+the widened admission test would have held a perfectly valid session and read
+**nothing** — the empty-dashboard outcome `/auth/verify` signs people out to
+avoid. So `app.current_teacher_id()` arrives as the exact mirror of
+`current_student_id()`, and six SELECT policies hang off it: own `teacher` row,
+the `class_session_teacher` rows naming you, those sessions, their cohorts, the
+attendance on them, and the students who attended.
+
+**A roster is reachability through attendance, not enrolment.** A student who
+enrolled and never came is on nobody's roster, because `attendance_record` is
+what the database can actually prove. **The teacher policies are added alongside
+the student ones, never replacing them** — two permissive policies are OR'd, so a
+student's reach is unchanged by construction, and `0055`'s trailing check asserts
+all six of `0053`'s survived. Still SELECT everywhere: **the portal reads.**
+
+**Every teacher is also a client in WellnessLiving, and that turned out to be
+harmless.** Measured 9 Oct 2026: all 47 teacher addresses also sit on an
+`app.student` row, and exactly 47 student rows have no `identity` — the same 47
+humans. `0040`'s trigger applied the `0039` rule (staff profile type wins) and
+left the duplicate student row orphaned, and an orphaned row is invisible to a
+join through `identity`, so a lookup across both roles still returns one answer.
+One teacher is the exception — his address is on two student rows, one of which
+has its own identity — and he is refused like a stranger. Left that way
+deliberately: a tie-break preferring the teacher row would mail a code to
+whoever holds that address and sign them in as the teacher.
+
 **Policies are evaluated as the caller, including their subqueries.** This is why
 `0053`'s four helpers are `security definer` and not merely convenient: a policy
 on `app.student` that read `app.identity` inline would itself be filtered by the
