@@ -1,5 +1,6 @@
 -- =============================================================================
--- Portal auth isolation proof - two students, and neither can read the other
+-- Portal auth isolation proof - two students who cannot read each other, and
+-- (section G, 0055) a teacher who sees the one she taught and nothing else
 --
 -- RUNS INSIDE A TRANSACTION AND ROLLS BACK. It creates students, a class, the
 -- attendance joining them, and then signs in as each one in turn. Nothing
@@ -41,11 +42,34 @@
 --                                                            -- B2 red
 --     grant select on app.student to anon;                   -- D1 red
 --
--- Restore by re-running 0053, which is safe to re-run. Between the drop and the
--- restore the guarantee is genuinely gone, on the real database.
+-- And for section G, added with 0055:
 --
--- Requires 0053. Run as postgres / the SQL editor. Read the NOTICEs; any FAIL is
--- real.
+-- MEASURED, 9 Oct 2026:
+--
+--     drop policy student_taught_select on app.student;
+--
+-- turns exactly G2 red - "tina sees 0 students ((none)), expected exactly 1
+-- (alice)" - and NOTHING else. Not G3, not G4, not G5, and none of A-F.
+--
+-- That spread is the design rather than a gap in the test, and it is the same
+-- shape the student mutation above has. G3 and G4 resolve through
+-- app.teaches_session(), and G2's own count resolves through
+-- app.teaches_student() - both SECURITY DEFINER, so they do not run under the
+-- caller's policies and dropping one policy does not silently take the rest
+-- with it. A-F never read a teacher's view at all. One notion of "who do I
+-- teach", stated in one function, is why.
+--
+-- EXPECTED, not yet measured. If one of these does NOT go red, that is a finding:
+--
+--     drop policy teacher_self_select on app.teacher;        -- G5 red
+--     create policy x on app.attendance_record for update
+--       to authenticated using (true);                       -- G7 red
+--
+-- Restore by re-running 0053 and 0055, both safe to re-run. Between the drop and
+-- the restore the guarantee is genuinely gone, on the real database.
+--
+-- Requires 0053 and 0055. Run as postgres / the SQL editor. Read the NOTICEs;
+-- any FAIL is real.
 -- =============================================================================
 
 begin;
@@ -71,6 +95,17 @@ insert into app.student (id, first_name, last_name, email) values
 insert into app.teacher (id, first_name, last_name, email) values
   ('0e0e0e0e-0000-0000-0000-000000000001', 'tina',  '__pa_test', '__pa_tina@test.invalid'),
   ('0e0e0e0e-0000-0000-0000-000000000002', 'trevor','__pa_test', '__pa_trevor@test.invalid');
+
+-- Tina is signed in as a TEACHER, which is what section G exercises. Her row
+-- carries `teacher_id` and no `student_id`: `identity_one_role_check` forbids
+-- both, and the entire roster rests on that exclusivity being real. Trevor
+-- teaches Bob's session and is deliberately NOT signed in — he is the colleague
+-- Tina must not be able to see.
+insert into app.identity (id, teacher_id, auth_user_id) values
+  ('7e7e7e7e-0000-0000-0000-000000000001', '0e0e0e0e-0000-0000-0000-000000000001',
+   '77777777-7777-7777-7777-777777777777'),
+  ('7e7e7e7e-0000-0000-0000-000000000002', '0e0e0e0e-0000-0000-0000-000000000002',
+   null);
 
 -- The identities. Alice and Bob are signed in; Carol One, Carol Two and Dave are
 -- not linked to anything yet, which is what the link function is tested against.
@@ -119,6 +154,7 @@ declare
   bob_auth   uuid := '22222222-2222-2222-2222-222222222222';
   dave_auth  uuid := '44444444-4444-4444-4444-444444444444';
   eve_auth   uuid := '55555555-5555-5555-5555-555555555555';
+  tina_auth  uuid := '77777777-7777-7777-7777-777777777777';
   n          int;
   who        text;
   got        uuid;
@@ -396,6 +432,111 @@ begin
     raise notice '%', fails[cardinality(fails)];
   exception when unique_violation then
     raise notice 'PASS  F1  a second identity for the same auth user is rejected';
+  end;
+
+  -- ===========================================================================
+  -- G. The teacher's roster - 0055
+  --
+  -- Tina teaches Alice's session. Trevor teaches Bob's. So every assertion here
+  -- has the same shape as A-C: a thing she must see, and the matching thing she
+  -- must not, with a real row on both sides.
+  --
+  -- THE LAST TWO ARE THE POINT OF THE SECTION. G6 proves the student policies
+  -- were not widened - a teacher's arrival must not change what a student reads -
+  -- and G7 proves the read-only decision is enforced by the database rather than
+  -- by everyone remembering it.
+  -- ===========================================================================
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', tina_auth, 'email', '__pa_tina@test.invalid')::text, true);
+  set local role authenticated;
+
+  if app.current_teacher_id() = '0e0e0e0e-0000-0000-0000-000000000001'
+     and app.current_student_id() is null then
+    raise notice 'PASS  G1  current_teacher_id() resolves tina, and she is no student';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL G1 teacher=%s student=%s, expected tina and NULL',
+                             app.current_teacher_id(), app.current_student_id());
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  -- The roster: alice attended Tina's session, bob did not.
+  select count(*), coalesce(string_agg(first_name, ','), '(none)')
+    into n, who
+    from app.student where last_name like '\_\_pa\_%';
+
+  if n = 1 and who = 'alice' then
+    raise notice 'PASS  G2  tina sees 1 student, and it is the one she taught';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL G2 tina sees %s students (%s), expected exactly 1 (alice)', n, who);
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  select coalesce(string_agg(title, ','), '(none)') into who
+    from app.class_session where title like '\_\_pa\_%';
+  if who = '__pa_alice_session' then
+    raise notice 'PASS  G3  tina sees only the session she is named on';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL G3 tina sees sessions [%s], expected only __pa_alice_session', who);
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  select count(*) into n from app.attendance_record
+   where class_session_id in ('5e551011-0000-0000-0000-000000000001',
+                              '5e551011-0000-0000-0000-000000000002');
+  if n = 1 then
+    raise notice 'PASS  G4  tina sees 1 attendance row, not bob''s';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL G4 tina sees %s attendance rows, expected 1', n);
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  -- Herself, and not her colleague. A teacher is not handed the staff list.
+  select count(*), coalesce(string_agg(first_name, ','), '(none)')
+    into n, who
+    from app.teacher where last_name like '\_\_pa\_%';
+
+  if n = 1 and who = 'tina' then
+    raise notice 'PASS  G5  tina sees herself and not trevor';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL G5 tina sees %s teachers (%s), expected exactly 1 (tina)', n, who);
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  -- Alice's uploads are NOT on the roster. 0055 adds no policy on app.creation,
+  -- deliberately: whose work is shown to whom is a different question and was
+  -- not inherited from a roster policy by accident.
+  select count(*) into n from app.creation where storage_path like '\_\_pa\_%';
+  if n = 0 then
+    raise notice 'PASS  G6  tina sees no creations - the roster does not carry uploads';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL G6 tina sees %s creation rows, expected 0', n);
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  -- READ-ONLY, PROVED. Every policy 0055 adds is `for select`, so there is no
+  -- policy permitting this UPDATE and RLS must refuse it. A row she CAN read is
+  -- used on purpose: "she cannot write the row she cannot see" would pass for
+  -- the wrong reason.
+  begin
+    update app.attendance_record set is_attended = false
+     where class_session_id = '5e551011-0000-0000-0000-000000000001';
+    -- No exception? Then either a write policy exists or RLS is off. Either way
+    -- the read-only promise is gone.
+    if found then
+      failures := failures + 1;
+      fails := fails || 'FAIL G7 tina UPDATED an attendance row - the roster is not read-only';
+      raise notice '%', fails[cardinality(fails)];
+    else
+      raise notice 'PASS  G7  tina''s update matched no row - no write policy';
+    end if;
+  exception when insufficient_privilege then
+    raise notice 'PASS  G7  tina''s update was refused - no write policy';
   end;
 
   -- ===========================================================================

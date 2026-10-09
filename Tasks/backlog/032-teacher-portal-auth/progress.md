@@ -8,7 +8,7 @@
 - [x] Three definer reachability helpers, after inline subqueries caused 42P17
 - [x] **Re-run the amended `0055`** - done 9 Oct 2026
 - [x] Run `portal_auth_isolation.sql` whole - clean, A-F unchanged and G green
-- [ ] Prove section G can FAIL (drop student_taught_select, expect only G2 red)
+- [x] Prove section G can FAIL - measured 9 Oct 2026, only G2 goes red
 - [ ] Prove additivity: student isolation section C passes unchanged
 - [x] Teacher section in `supabase/checks/portal_auth_isolation.sql` - section G
 - [ ] Decide Jared Feldman's address (data fix or RUNBOOK §10a note)
@@ -183,3 +183,30 @@ typechecks and that proves nothing about a sign-in: `0055` was exercised in the
 SQL editor with a fabricated teacher, not through this form with a real one.
 Until one does, the acceptance criterion "a teacher completes the OTP round trip"
 is open — and so is Jared Feldman's case, which will refuse him when he tries.
+
+### 2026-10-09 — section G is a test that can fail
+
+Mutation run, as the repo requires of any new guarantee:
+
+```
+drop policy student_taught_select on app.student;
+```
+
+turns **exactly G2** red — "tina sees 0 students ((none)), expected exactly 1
+(alice)" — and nothing else. Not G3, not G4, not G5, and none of A–F.
+
+**That narrow spread is the design, not a hole.** G3 and G4 resolve through
+`app.teaches_session()` and G2's own count through `app.teaches_student()`, both
+`SECURITY DEFINER`, so they do not run under the caller's policies — exactly the
+property that fixed the 42P17, now visible from the other side. Removing one
+policy does not silently take the rest of the section with it. A–F never read a
+teacher's view at all, which is the additivity claim holding up under a mutation
+rather than under an assertion.
+
+The file header records this as **measured** alongside the 8 Oct student
+mutation; G5 and G7's mutations remain listed as expected-but-unmeasured, which
+is honest and is the next cheap thing anyone can do here.
+
+Restored by re-running `0055`. Between the drop and the restore the roster
+guarantee was genuinely gone on the real database, which is the cost the file
+header warns about.
