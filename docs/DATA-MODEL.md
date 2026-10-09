@@ -1349,6 +1349,52 @@ has its own identity — and he is refused like a stranger. Left that way
 deliberately: a tie-break preferring the teacher row would mail a code to
 whoever holds that address and sign them in as the teacher.
 
+### Teacher notes, and the first write path (0056)
+
+`app.teacher_note` is the first table in this database a signed-in user may
+**write**. Everything before it — `0010`'s five, `0053`'s ten, `0055`'s six — is
+`for select`. `0055` named the line it stood on: "the first [write policy] is a
+larger argument than a migration should settle on its way past." `0056` is that
+argument, made on its own.
+
+**Two kinds, carried by two columns that cannot contradict each other.** A
+`private` note is the teacher's own — personal, `student_id` NULL, read by its
+author alone. A `public` note is about one student the teacher taught — `student_id`
+set, read by its author **and** that one student. `visibility` says which, and
+`teacher_note_kind_check` binds the pair: `private ⇒ student_id null`,
+`public ⇒ student_id not null`. Neither application code nor a policy can mint a row
+that disagrees with its own kind, because the row itself is refused.
+
+The five policies, all `to authenticated` and none naming a table (the 42P17 rule
+from `0055`, so only the definer helpers appear):
+
+| Command | Rule |
+|---|---|
+| SELECT (author) | `author_teacher_id = current_teacher_id()` — a teacher sees all their own, both kinds |
+| SELECT (student) | `visibility = 'public' and student_id = current_student_id()` — a student sees only public notes addressed to them |
+| INSERT / UPDATE | author only, and for a public note `teaches_student(student_id)` as well |
+| DELETE | author only |
+
+**The roster check is a write-time rule, on purpose.** A teacher may only *address*
+a public note to a student `teaches_student()` says they taught — enforced in the
+INSERT/UPDATE `with check`. The student's **read** matches on `student_id` alone and
+does not re-check it. The roster is attendance-derived and moves over time; a note
+once sent would otherwise blink out of a student's own view when an attendance row
+changes months later. So who you may write to is checked when you write; what a
+student reads is simply what was addressed to them.
+
+`student_id = current_student_id()` is also why a private note can never reach a
+student by accident: `current_student_id()` is NULL for a teacher, the kind check
+keeps `student_id` NULL on every private row, and NULL compared with `=` is NULL,
+never true. There is no `is null` anywhere in the file — the single most important
+absence in it, for the reason `0055` states.
+
+`organization_stamp` and `set_updated_at` triggers as every owned table; no
+`synced_at`, because nothing syncs a note from anywhere. `GRANT`s to
+`authenticated` for all four commands, because a policy without one is
+`permission denied` rather than a refusal (below). Proven by
+[`teacher_note_isolation.sql`](../supabase/checks/teacher_note_isolation.sql).
+
 **Policies are evaluated as the caller, including their subqueries.** This is why
 `0053`'s four helpers are `security definer` and not merely convenient: a policy
 on `app.student` that read `app.identity` inline would itself be filtered by the
