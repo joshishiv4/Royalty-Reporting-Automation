@@ -290,6 +290,12 @@ Rotation: whatever the sending provider requires. Verify by requesting a code fo
 you control and watching it arrive, because `transporter.verify()` does not apply — the
 sending is Supabase's, not ours.
 
+**Configured and proven 9 Oct 2026.** A student requested a code through the portal's own
+form, it arrived, and the sign-in completed. Before that date every sign-in failed and the
+uniform 202 made the cause unreadable from the outside — see STATUS.md. The sending
+provider and the account it sends from are **not recorded here yet**; fill them in, because
+§10a tells an operator to check "the sending provider's log" and does not say whose.
+
 ---
 
 ## 5. If a credential leaks
