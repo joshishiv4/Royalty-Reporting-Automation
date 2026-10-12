@@ -85,6 +85,10 @@ create table if not exists app.quiz_attempt (
   id              uuid        primary key default gen_random_uuid(),
   student_id      uuid        not null references app.student (id) on delete restrict,
   organization_id uuid        not null references app.organization (id) on delete restrict,
+  -- Short interest tags the model inferred from this attempt's answers (including
+  -- the free-text). Filled by the server after the LLM call; shown on the home
+  -- "Things I'm Into" card.
+  interests       text[],
   created_at      timestamptz not null default now()
 );
 
@@ -139,6 +143,46 @@ create table if not exists app.quiz_suggestion (
 comment on table app.quiz_suggestion is
   'The course the model suggested for an attempt, snapshotted as text. Written by '
   'the service role after the Claude call; read by the attempt''s student only.';
+
+-- -----------------------------------------------------------------------------
+-- Reconcile an already-applied earlier version of this migration
+-- -----------------------------------------------------------------------------
+-- `create table if not exists` skips an existing table, so columns and
+-- constraints added to this file after it was first applied need explicit,
+-- idempotent ALTERs. On a fresh database these are all no-ops (the columns
+-- already exist with these shapes); on a database that ran an earlier 0059 they
+-- bring it up to date - so re-running 0059 is enough, no hand-written ALTER.
+alter table app.quiz_question   add column if not exists allow_text boolean not null default false;
+alter table app.quiz_answer     add column if not exists answer_text text;
+alter table app.quiz_answer     alter column option_id drop not null;
+alter table app.quiz_suggestion add column if not exists rank integer not null default 1;
+alter table app.quiz_attempt    add column if not exists interests text[];
+
+do $$
+begin
+  -- quiz_answer must allow an option, text, or both.
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'quiz_answer_has_content' and conrelid = 'app.quiz_answer'::regclass
+  ) then
+    alter table app.quiz_answer add constraint quiz_answer_has_content
+      check (option_id is not null or (answer_text is not null and length(btrim(answer_text)) > 0));
+  end if;
+
+  -- quiz_suggestion moved from one-per-attempt to one-per-rank.
+  if exists (
+    select 1 from pg_constraint
+    where conname = 'quiz_suggestion_attempt_unique' and conrelid = 'app.quiz_suggestion'::regclass
+  ) then
+    alter table app.quiz_suggestion drop constraint quiz_suggestion_attempt_unique;
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'quiz_suggestion_attempt_rank_unique' and conrelid = 'app.quiz_suggestion'::regclass
+  ) then
+    alter table app.quiz_suggestion add constraint quiz_suggestion_attempt_rank_unique unique (attempt_id, rank);
+  end if;
+end $$;
 
 -- -----------------------------------------------------------------------------
 -- Triggers: organization stamp (the two root tables) and updated_at

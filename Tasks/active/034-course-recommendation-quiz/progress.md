@@ -17,7 +17,10 @@
 ## Last step
 *One line summary of where work paused.*
 
-Feature built end-to-end and portal `next build` is green. Blocked only on (1) applying `0059` in the SQL editor and (2) a real ANTHROPIC_API_KEY in the environment, after which it can be exercised live.
+Feature built end-to-end; portal `next build` green. Catalogue switched to the
+portal's own cohort data (see log) after the WL staff_service table was found empty,
+and the recommender is provider-switchable (Gemini or Claude by env). Blocked only
+on applying `0059` and setting an API key.
 
 ## Blockers
 
@@ -35,3 +38,16 @@ None blocking design. At implementation: needs an `ANTHROPIC_API_KEY`, and a con
   server-side with the service role and snapshots the chosen course/teacher into
   `app.quiz_suggestion` (no mirror read from the portal, no cross-schema FK).
 - Four decisions captured in task.md. PRD ready for confirmation.
+- Built: `0059` (schema + RLS + seed + checks), `quiz_isolation.sql`, portal routes,
+  recommender, "Find your course" tab. Top-3 ranked suggestions; general
+  interest-finding questions.
+- Added a **Gemini** path: provider chosen by env (`GEMINI_API_KEY` → Gemini
+  `gemini-2.0-flash`/`GEMINI_MODEL`; else Claude). `.env.example` documents both;
+  the model used is stored on each suggestion.
+- **"No match" on dev — diagnosed:** `public.staff_service` has **0 rows** here
+  (123 services / 12 resolved / 20 staff, but no teacher↔service links), so the
+  WL-based catalogue was empty. Switched `buildCatalogue()` to the portal's own
+  data: `app.cohort` (5 courses) × teachers via `class_session_teacher` →
+  `app.teacher` (41,314 links / 48 teachers). Catalogue now non-empty with real
+  teacher↔course pairs. **Catalogue tables are now** `app.cohort`,
+  `app.class_session`, `app.class_session_teacher`, `app.teacher`. Docs updated.

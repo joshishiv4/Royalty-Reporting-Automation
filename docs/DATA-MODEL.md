@@ -1416,7 +1416,10 @@ Claude-suggested course. `quiz_question` and `quiz_option` are the quiz itself �
 studio config, readable by any signed-in user. `quiz_attempt`, `quiz_answer` and
 `quiz_suggestion` are one student's run: the attempt, the answers given, and the
 **up to three ranked courses** the model picked (`quiz_suggestion.rank`, 1 = best
-fit; `unique (attempt_id, rank)`).
+fit; `unique (attempt_id, rank)`). The same model call also returns a few **interest
+tags** inferred from the answers (including the free text); the server stores them
+on `quiz_attempt.interests` (`text[]`), and the home "Things I'm Into" card reads
+the latest attempt's. The interests are the model's, not a category mapping of ours.
 
 **A question can offer options, a free-text box, or both.** `quiz_question.allow_text`
 turns on a free-text box; a question with option rows and `allow_text = false` is
@@ -1428,11 +1431,13 @@ together to the model.
 
 **The suggestion is snapshotted as text, not a foreign key.** `quiz_suggestion`
 holds `course_title`, `course_category`, `teacher_name` and the model's `rationale`
-as plain columns. The catalogue the model chooses from is the existing WL service
-catalogue (`service` × `staff_service` × `service_category`, teacher via
-`identity.k_staff`), read **server-side with the service role** at request time —
-the portal is specified never to read the mirror, so the chosen course is copied
-into `app` as text and no FK crosses the boundary. A course renamed in WL later
+as plain columns. The catalogue the model chooses from is the portal's own course data —
+each `app.cohort` is a course and its teachers are whoever taught its sessions
+(`class_session` → `class_session_teacher` → `teacher`) — read **server-side with
+the service role** at request time. (The WL `service` × `staff_service` catalogue
+was the first plan, but `staff_service` is empty on this environment, so there are
+no teacher↔course links there; the portal-native cohort data has them.) The chosen
+course is copied into `app` as text, so no FK is needed. A course renamed in WL later
 does not rewrite what a student was once recommended, which is correct.
 
 **Writes are service-role only; the student id comes from the JWT, not the
