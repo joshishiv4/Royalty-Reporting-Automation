@@ -20,7 +20,7 @@
 ## Last step
 *One line summary of where work paused. Updated whenever a session ends.*
 
-Portal side built and `next build` is green. Blocked only on applying `0056` in the Supabase SQL editor — after which the end-to-end run (teacher writes, student reads) can be done.
+Added edit-version history (`0057` + `teacher_note_revision`, trigger-written, author-read, unforgeable) with a "View history" panel in the teacher UI. Portal `next build` green. Blocked only on applying `0056` then `0057` in the Supabase SQL editor.
 
 ## Blockers
 *Anything preventing progress. Empty when there are none.*
@@ -65,6 +65,41 @@ None. (Teacher auth, the one real dependency, is already in place via migration 
   new "Teacher notes, and the first write path (0056)" subsection under Access
   control. Structural tests pass: docs-current (4), app-schema (5),
   no-hardcoded-config (11).
+### 2026-10-12
+- Added **edit-version history** for both note kinds. `0057` creates
+  `app.teacher_note_revision` (child of `teacher_note`, no `organization_id` —
+  derived from the note like a `*_link` row), written by a `BEFORE UPDATE` trigger
+  (`record_teacher_note_revision`, SECURITY DEFINER) that keeps the OLD body on
+  every real text change. RLS: author-reads-only, and **no user write grant** — the
+  definer trigger is the single writer, so history can't be forged or rewritten.
+  CASCADE from the note. Trailing checks assert the trigger, definer+search_path,
+  one SELECT-only policy, and no write grant for `authenticated`.
+- Extended `teacher_note_isolation.sql` with section H: an edit records one
+  revision holding the pre-edit text; author reads it; a hand-written revision is
+  refused; another teacher reads none.
+- Portal: `GET /api/v1/notes/[id]/history` (author-only via RLS) and a "View
+  history" panel per note in NotesManager — shows Current (from the note) then the
+  stored previous versions, newest first; cache invalidated on edit. `next build`
+  green, route registered.
+- Docs: ARCHITECTURE migration row `0057` + checks-row note; DATA-MODEL history
+  subsection. docs-current passes.
+- **Decision flagged:** history is **teacher(author)-only**; students still see
+  only a public note's current text. Flip = one more SELECT policy on
+  `teacher_note_revision` matching the student on `note_id`. Left out on purpose.
+
+- Switched delete to **soft delete** (`0058`). `teacher_note.deleted_at` nullable;
+  "delete" is an UPDATE that stamps it, so the row + revision history are kept. The
+  **hard-delete path is removed** — dropped `teacher_note_author_delete` and revoked
+  DELETE from `authenticated` (else a hard delete would also cascade-erase history);
+  `service_role` keeps DELETE. Student policy gains `deleted_at is null`; author
+  policy left wide for a future Trash/restore; teacher list filters deleted in the
+  handler. Portal: DELETE route now UPDATEs deleted_at; teacher + student GETs
+  exclude deleted. Isolation check E3/F3 → soft-delete, added F4 (row retained) and
+  F5 (student no longer sees it). Docs + docs-current pass; portal build green.
+  **Deleted notes are now retained in the DB, hidden from the UI.** Restore UI not
+  built — offered.
+
+### Earlier
 - **Decision to flag:** making `organization_stamp()` DEFINER is the one change
   that reaches beyond the new table. It is safe and documented, but it is a shared
   function — surfaced to the user.

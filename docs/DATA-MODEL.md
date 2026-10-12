@@ -1395,6 +1395,20 @@ absence in it, for the reason `0055` states.
 `permission denied` rather than a refusal (below). Proven by
 [`teacher_note_isolation.sql`](../supabase/checks/teacher_note_isolation.sql).
 
+**Edit history is a child table, written by a trigger, read by the author (0057).**
+`app.teacher_note_revision` keeps each PREVIOUS body of a note: the current text
+stays on `teacher_note`, every earlier version is a row here, written by a
+`BEFORE UPDATE` trigger whenever the body changes. It carries **no
+`organization_id`** — a revision's organization is its note's, reached through
+`note_id`, exactly as a `*_link` row's is its owned row's. It is **read by the
+note's author only** (a student reading a public note still sees only its current
+text — history is an authoring aid, and widening it to the student is one more
+SELECT policy, deliberately not added), and **writable by nobody through the API**:
+`authenticated` holds `SELECT` only and the trigger is `SECURITY DEFINER`, so the
+record of an edit cannot be forged or rewritten by the editor. That last point is
+the whole reason it is a table with its own grants rather than a column on the
+note. Section H of the isolation check proves it.
+
 **Policies are evaluated as the caller, including their subqueries.** This is why
 `0053`'s four helpers are `security definer` and not merely convenient: a policy
 on `app.student` that read `app.identity` inline would itself be filtered by the

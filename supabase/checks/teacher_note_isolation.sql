@@ -29,16 +29,20 @@
 --     drop policy teacher_note_author_insert on app.teacher_note;  -- A1,A2 red
 --     drop policy teacher_note_author_select on app.teacher_note;  -- B1 red
 --     drop policy teacher_note_student_select on app.teacher_note; -- C1 red
---     drop policy teacher_note_author_update on app.teacher_note;  -- F1 red
---     drop policy teacher_note_author_delete on app.teacher_note;  -- F3 red
+--     drop policy teacher_note_author_update on app.teacher_note;  -- F1, F3 red
+--
+-- Delete is a SOFT delete since 0058 (an UPDATE of deleted_at), so F3 rests on the
+-- UPDATE policy, not a delete policy; there is no delete policy to drop. F5 (a
+-- deleted note hidden from the student) goes red by removing the `deleted_at is
+-- null` guard from teacher_note_student_select.
 --
 -- The INSERT roster rule (A3) and the cross-teacher refusals (E) rest on the
 -- `with`/`using` clauses rather than on a whole policy, so the way to watch those
 -- go red is to widen the clause, e.g. replace the insert `with check` body with
 -- `(true)`.
 --
--- Restore by re-running 0056 (safe to re-run). Requires 0053, 0055 and 0056. Run
--- as postgres / the SQL editor. Read the NOTICEs; any FAIL is real.
+-- Restore by re-running 0056-0058 (safe to re-run). Requires 0053, 0055, 0056,
+-- 0057, 0058. Run as postgres / the SQL editor. Read the NOTICEs; any FAIL is real.
 -- =============================================================================
 
 begin;
@@ -272,11 +276,13 @@ begin
     raise notice 'PASS  E2  trevor''s edit was refused';
   end;
 
+  -- Delete is now a soft delete (0058): an UPDATE stamping deleted_at. trevor's
+  -- hits the author-only UPDATE policy, so it matches no row - not his to delete.
   begin
-    delete from app.teacher_note where id = public_id;
+    update app.teacher_note set deleted_at = now() where id = public_id;
     if found then
       failures := failures + 1;
-      fails := fails || 'FAIL E3 trevor deleted tina''s note';
+      fails := fails || 'FAIL E3 trevor soft-deleted tina''s note';
       raise notice '%', fails[cardinality(fails)];
     else
       raise notice 'PASS  E3  trevor''s delete of tina''s note matched no row';
@@ -319,12 +325,94 @@ begin
       raise notice '%', fails[cardinality(fails)];
   end;
 
-  delete from app.teacher_note where id = public_id;
+  -- Soft delete (0058): stamp deleted_at rather than remove the row.
+  update app.teacher_note set deleted_at = now() where id = public_id;
   if found then
-    raise notice 'PASS  F3  tina deletes her own note';
+    raise notice 'PASS  F3  tina soft-deletes her own note';
   else
     failures := failures + 1;
     fails := fails || 'FAIL F3 tina could not delete her own note';
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  -- The row is RETAINED, not removed - the whole point of a soft delete.
+  select count(*) into n
+    from app.teacher_note where id = public_id and deleted_at is not null;
+  if n = 1 then
+    raise notice 'PASS  F4  the deleted note is kept, deleted_at set';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL F4 deleted note not retained (found %s)', n);
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  reset role;
+
+  -- The student it was written to no longer sees it - the policy excludes it.
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', alice_auth, 'email', '__tn_alice@test.invalid')::text, true);
+  set local role authenticated;
+
+  select count(*) into n
+    from app.teacher_note where visibility = 'public' and body like '\_\_tn %';
+  if n = 0 then
+    raise notice 'PASS  F5  alice no longer sees the deleted public note';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL F5 alice still sees %s deleted public note(s)', n);
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  reset role;
+
+  -- Back to tina for the history checks below.
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', tina_auth, 'email', '__tn_tina@test.invalid')::text, true);
+  set local role authenticated;
+
+  -- ===========================================================================
+  -- H. Edit history (0057). F1 changed private_id's body once, so exactly one
+  -- revision exists, holding the PREVIOUS text. The author reads it; nobody may
+  -- forge one by hand; another teacher reads none. tina is re-signed in above.
+  -- ===========================================================================
+  select count(*), coalesce(string_agg(body, ','), '(none)')
+    into n, v_vis
+    from app.teacher_note_revision
+   where note_id = private_id;
+
+  if n = 1 and v_vis = '__tn tina private' then
+    raise notice 'PASS  H1  tina sees 1 revision, holding the pre-edit text';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL H1 tina sees %s revision(s) (%s), expected 1 (__tn tina private)', n, v_vis);
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  -- History is not the editor's to write: authenticated holds no insert
+  -- privilege, so a hand-written revision is refused outright.
+  begin
+    insert into app.teacher_note_revision (note_id, author_teacher_id, body)
+    values (private_id, tina_id, '__tn forged revision');
+    failures := failures + 1;
+    fails := fails || 'FAIL H2 a revision was inserted by hand - history is forgeable';
+    raise notice '%', fails[cardinality(fails)];
+  exception when insufficient_privilege then
+    raise notice 'PASS  H2  a hand-written revision is refused';
+  end;
+
+  reset role;
+
+  -- Another teacher cannot read tina's note history.
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', trevor_auth, 'email', '__tn_trevor@test.invalid')::text, true);
+  set local role authenticated;
+
+  select count(*) into n from app.teacher_note_revision where note_id = private_id;
+  if n = 0 then
+    raise notice 'PASS  H3  trevor sees none of tina''s note history';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL H3 trevor sees %s revision(s) of tina''s note, expected 0', n);
     raise notice '%', fails[cardinality(fails)];
   end if;
 
