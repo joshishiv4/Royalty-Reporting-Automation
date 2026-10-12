@@ -1409,6 +1409,46 @@ record of an edit cannot be forged or rewritten by the editor. That last point i
 the whole reason it is a table with its own grants rather than a column on the
 note. Section H of the isolation check proves it.
 
+### The course-recommendation quiz (0059)
+
+Five `app` tables behind the student interest quiz whose result is a
+Claude-suggested course. `quiz_question` and `quiz_option` are the quiz itself —
+studio config, readable by any signed-in user. `quiz_attempt`, `quiz_answer` and
+`quiz_suggestion` are one student's run: the attempt, the answers given, and the
+course the model picked.
+
+**A question can offer options, a free-text box, or both.** `quiz_question.allow_text`
+turns on a free-text box; a question with option rows and `allow_text = false` is
+multiple-choice, one with no options and `allow_text = true` is free-text, and one
+with both is a choice plus an optional note. So `quiz_answer.option_id` is
+**nullable** and `answer_text` sits beside it, with a check that an answer carries
+at least one of the two. The recommender sends the chosen label and the typed text
+together to the model.
+
+**The suggestion is snapshotted as text, not a foreign key.** `quiz_suggestion`
+holds `course_title`, `course_category`, `teacher_name` and the model's `rationale`
+as plain columns. The catalogue the model chooses from is the existing WL service
+catalogue (`service` × `staff_service` × `service_category`, teacher via
+`identity.k_staff`), read **server-side with the service role** at request time —
+the portal is specified never to read the mirror, so the chosen course is copied
+into `app` as text and no FK crosses the boundary. A course renamed in WL later
+does not rewrite what a student was once recommended, which is correct.
+
+**Writes are service-role only; the student id comes from the JWT, not the
+request.** The route that builds the catalogue and calls Claude also writes the
+attempt, answers and suggestion, using the student id it resolved from the caller's
+own session — the distinction STATUS.md draws for the uploads route: a
+caller-supplied id is the hole, a session-resolved one is not. So `authenticated`
+holds **SELECT only** and cannot forge any of it — the same posture as
+`teacher_note_revision`, one step wider.
+
+**Reads are RLS, student-owns-own.** `student_id` is denormalised onto
+`quiz_answer` and `quiz_suggestion` so each read policy is a plain column
+comparison against `app.current_student_id()` and joins nothing (the 42P17 rule).
+`organization_stamp` fills the two root tables; the children derive their
+organization from their parent. Proven in
+[`quiz_isolation.sql`](../supabase/checks/quiz_isolation.sql).
+
 **Policies are evaluated as the caller, including their subqueries.** This is why
 `0053`'s four helpers are `security definer` and not merely convenient: a policy
 on `app.student` that read `app.identity` inline would itself be filtered by the

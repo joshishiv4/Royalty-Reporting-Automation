@@ -5,6 +5,7 @@ Sorted by status (done last), then priority, then ID.
 
 | ID  | Title | Status | Priority | Depends on | Path |
 |-----|-------|--------|----------|------------|------|
+| 034 | Course-recommendation quiz — interest questions → a Claude-suggested course | active | high | 033 | `active/034-course-recommendation-quiz/` |
 | 033 | Teacher notes — private (personal) and public (to a student), the portal's first write path | active | high | 032 | `active/033-teacher-student-notes/` |
 | 025 | Identity hub — identity, student and teacher, maintained by trigger | active | high | — | `active/025-identity-hub/` |
 | 028 | Portal auth — email OTP sign-in linked to an identity | active | high | 025 | `active/028-portal-auth-identity-link/` |
