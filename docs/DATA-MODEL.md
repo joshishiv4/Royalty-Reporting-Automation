@@ -1415,7 +1415,8 @@ Five `app` tables behind the student interest quiz whose result is a
 Claude-suggested course. `quiz_question` and `quiz_option` are the quiz itself —
 studio config, readable by any signed-in user. `quiz_attempt`, `quiz_answer` and
 `quiz_suggestion` are one student's run: the attempt, the answers given, and the
-course the model picked.
+**up to three ranked courses** the model picked (`quiz_suggestion.rank`, 1 = best
+fit; `unique (attempt_id, rank)`).
 
 **A question can offer options, a free-text box, or both.** `quiz_question.allow_text`
 turns on a free-text box; a question with option rows and `allow_text = false` is

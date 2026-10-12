@@ -129,9 +129,11 @@ create table if not exists app.quiz_suggestion (
   rationale       text        not null,
   -- Which Claude model produced this, for the record.
   model           text        not null,
+  -- 1 = best fit. An attempt gets up to three ranked suggestions.
+  rank            integer     not null default 1,
   created_at      timestamptz not null default now(),
-  -- One suggestion per attempt.
-  constraint quiz_suggestion_attempt_unique unique (attempt_id)
+  -- One row per rank per attempt (at most one #1, one #2, one #3).
+  constraint quiz_suggestion_attempt_rank_unique unique (attempt_id, rank)
 );
 
 comment on table app.quiz_suggestion is
@@ -215,34 +217,43 @@ create policy quiz_suggestion_self_select on app.quiz_suggestion
 -- =============================================================================
 -- Keyed on `code`, so re-running does not duplicate. Categories in category_hint
 -- are nudges for the model, not shown to the student and not a schema of record.
+-- General interest-finding questions. They ask about what the student is drawn
+-- to rather than naming courses; the category_hint on each option is the quiet
+-- mapping the recommender uses, and is never shown to the student.
 insert into app.quiz_question (code, prompt, sort, allow_text) values
-  ('goal',      'What do you most want to get out of music right now?', 1, false),
-  ('format',    'How do you like to learn?',                            2, false),
-  -- Both: pick an interest AND optionally say more in your own words.
-  ('interest',  'Which of these pulls you in the most?',                3, true),
-  ('experience','How much have you done before?',                       4, false),
+  ('genre',    'What kind of music are you most into?',            1, false),
+  ('grabs',    'When you hear a song you love, what grabs you first?', 2, false),
+  ('spend',    'How do you most enjoy spending time with music?',  3, false),
+  -- Both: a general interest pick AND room to say more in their own words.
+  ('proud',    'What would you be proudest to make or do?',        4, true),
+  ('experience','How much have you played or made music before?',  5, false),
   -- Text only: no options, just a free-text box.
-  ('anything',  'Anything else you''d like us to know?',                5, true)
+  ('anything', 'Anything else about what you''re into?',           6, true)
 on conflict (code) do nothing;
 
 insert into app.quiz_option (code, question_id, label, category_hint, sort)
 select v.code, q.id, v.label, v.hint, v.sort
 from app.quiz_question q
 join (values
-  ('goal',       'goal_perform',   'Perform in front of people',        'live sound', 1),
-  ('goal',       'goal_create',    'Make my own tracks',                'production', 2),
-  ('goal',       'goal_sing',      'Sing / use my voice',               'voice',      3),
-  ('goal',       'goal_instrument','Play an instrument well',           'piano',      4),
-  ('format',     'format_hands',   'Hands-on with gear',                'dj',         1),
-  ('format',     'format_theory',  'Understand how music works',        'piano',      2),
-  ('format',     'format_software','On a computer / software',          'production', 3),
-  ('interest',   'interest_dj',    'DJing and mixing',                  'dj',         1),
-  ('interest',   'interest_prod',  'Beat-making and producing',         'production', 2),
-  ('interest',   'interest_voice', 'Singing and vocals',                'voice',      3),
-  ('interest',   'interest_keys',  'Keys and piano',                    'piano',      4),
-  ('experience', 'exp_none',       'Total beginner',                    null,         1),
-  ('experience', 'exp_some',       'A little',                          null,         2),
-  ('experience', 'exp_lots',       'Quite a bit',                       null,         3)
+  ('genre',      'genre_hiphop', 'Hip-hop and rap',                   'production', 1),
+  ('genre',      'genre_edm',    'Electronic and dance',              'dj',         2),
+  ('genre',      'genre_pop',    'Pop and R&B',                       'voice',      3),
+  ('genre',      'genre_live',   'Rock, jazz or live bands',          'live sound', 4),
+  ('grabs',      'grabs_beat',   'The beat and the rhythm',           'production', 1),
+  ('grabs',      'grabs_vocals', 'The vocals',                        'voice',      2),
+  ('grabs',      'grabs_melody', 'The melody and instruments',        'piano',      3),
+  ('grabs',      'grabs_energy', 'The energy of the crowd',           'live sound', 4),
+  ('spend',      'spend_computer','Making things on a computer',      'production', 1),
+  ('spend',      'spend_perform','Performing for people',             'live sound', 2),
+  ('spend',      'spend_sing',   'Singing along',                     'voice',      3),
+  ('spend',      'spend_play',   'Playing an instrument',             'piano',      4),
+  ('proud',      'proud_track',  'A track people dance to',           'dj',         1),
+  ('proud',      'proud_song',   'A song I wrote and sang',           'voice',      2),
+  ('proud',      'proud_show',   'A great live performance',          'live sound', 3),
+  ('proud',      'proud_play',   'Playing a piece beautifully',       'piano',      4),
+  ('experience', 'exp_none',     'Just starting out',                 null,         1),
+  ('experience', 'exp_some',     'A little',                          null,         2),
+  ('experience', 'exp_lots',     'Quite a bit',                       null,         3)
 ) as v(qcode, code, label, hint, sort) on v.qcode = q.code
 on conflict (code) do nothing;
 
