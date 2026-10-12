@@ -1156,6 +1156,29 @@ other dedupe read (pending and in-progress rows) also ordered by `id`. For
 **Every paged read of `sync_queue` should order by the columns of the index that
 serves it, never by `id`.**
 
+**The post-drain count needed its own index (`0057`), and must never fail a
+pass.** `countEligible()` closes every pass with `state = 'pending' and work_type
+= ? and next_attempt_at <= ?`. Nothing indexed that shape: `sync_queue_claimable_idx`
+(`0007`) leads on `next_attempt_at` with no `work_type`, and `0050`'s index is
+partial on `state = 'done'`. Measured 9 Oct 2026 on an **idle** database, all
+returning nothing: `purchase_item_element` (399,140 queued) **2,638 ms**,
+`client_visits` 849 ms, `session_attendance` 697 ms — slowest, again, exactly
+where it finds nothing. `0057` indexes `(work_type, next_attempt_at) where state
+= 'pending'`.
+
+The index is half of it. **This count decides only what the run row says, so its
+failure is reported, not raised.** It sits after the drain and outside the catch
+that records a pass failure, so a `57014` there threw straight out of `runPass`:
+`closeRun` never ran. On 9 Oct 2026 at 11:19:08Z `purchase_element_sync` had
+drained all 399,140 elements by 11:09:57, and the timeout nine minutes later left
+its run row reading `running` until the stale sweep retired it, while the
+orchestrator logged `failed` with `claimed`/`done`/`dead` all zero — placeholders
+from its catch, not measurements. A failed count now reads `UNKNOWN_REMAINING`
+(`-1`) and the pass closes `partial`. **Never `0`:** zero is the one value meaning
+drained, and reporting it would close the run `ok` and move the completion
+watermark past work nobody counted.
+
+
 **Absolute times, not durations.** `next_attempt_at` is a timestamp. A duration
 only means something relative to a process that is still alive; a timestamp is
 still correct after a crash, a redeploy, or a fortnight in the queue.

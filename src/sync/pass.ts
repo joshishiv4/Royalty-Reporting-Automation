@@ -2503,10 +2503,19 @@ async function runPass(
   // A deferral that was waited for and then FINISHED in this pass is not
   // outstanding: counting it made client_list_sync read 'partial' on runs that
   // had written the whole client list.
-  const itemsRemaining = await countEligible(db, iso(), spec.workType);
+  //
+  // COUNTING IS NOT THE WORK, SO IT CANNOT FAIL THE PASS. This count used to sit
+  // outside the catch above, so a statement timeout here threw straight out of
+  // runPass: closeRun never ran, the run row read 'running' until the stale
+  // sweep found it half an hour later, and a pass that had drained all 399,140
+  // purchase elements reported 'failed'. Measured 9 Oct 2026 11:19:08Z on
+  // purchase_element_sync, whose queue was at 100% with the drain finished at
+  // 11:09:57. Unknown is UNKNOWN_REMAINING, never 0: a zero would read as a
+  // clean 'ok' and move the completion watermark on a count that never ran.
+  const itemsRemaining = await countEligibleOrUnknown(db, iso(), spec.workType);
   const deferredOutstanding = deferred > 0 && deferredPending !== false;
   const state: SyncPassSummary['state'] =
-    failure !== null ? 'failed' : itemsRemaining > 0 || deferredOutstanding ? 'partial' : 'ok';
+    failure !== null ? 'failed' : itemsRemaining !== 0 || deferredOutstanding ? 'partial' : 'ok';
 
   await closeRun(db, ctx.runId, iso(), {
     state,
@@ -2696,7 +2705,7 @@ export async function runFullSyncPassParallel(
               done: 0,
               requeued: 0,
               dead: 0,
-              itemsRemaining: -1,
+              itemsRemaining: UNKNOWN_REMAINING,
               error: error instanceof Error ? error.message : String(error),
             },
           }));
@@ -2728,6 +2737,38 @@ async function nextPendingAttemptAt(db: SupabaseClient, workType: string): Promi
   );
   const at = Date.parse(rows[0]?.next_attempt_at ?? '');
   return Number.isFinite(at) ? at : null;
+}
+
+/**
+ * What `items_remaining` says when the count itself could not be taken.
+ *
+ * NOT 0, AND NOT A THROW. Zero is the one value that means "drained", and
+ * reporting it on a count that failed would close the run 'ok' and move the
+ * completion watermark past work nobody has looked at. A throw is what used to
+ * happen, and it orphaned the run row. Negative is out of the range a real count
+ * can produce, so it cannot be mistaken for one, and the pass reads 'partial' -
+ * the cautious verdict the deferral logic already uses for "unknown".
+ */
+export const UNKNOWN_REMAINING = -1;
+
+/**
+ * countEligible, with its failure turned into UNKNOWN_REMAINING.
+ *
+ * The count runs after the work is done and only decides what the run row says
+ * about it. On 9 Oct 2026 a 57014 statement timeout here cost purchase_element_sync
+ * a completed pass: 399,140 items drained, reported 'failed', run row left
+ * 'running'. The work is not in doubt when this fails - only the number is.
+ */
+async function countEligibleOrUnknown(
+  db: SupabaseClient,
+  now: string,
+  workType: string,
+): Promise<number> {
+  try {
+    return await countEligible(db, now, workType);
+  } catch {
+    return UNKNOWN_REMAINING;
+  }
 }
 
 async function countEligible(db: SupabaseClient, now: string, workType: string): Promise<number> {
