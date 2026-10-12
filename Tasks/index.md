@@ -5,6 +5,7 @@ Sorted by status (done last), then priority, then ID.
 
 | ID  | Title | Status | Priority | Depends on | Path |
 |-----|-------|--------|----------|------------|------|
+| 033 | Teacher notes — private (personal) and public (to a student), the portal's first write path | active | high | 032 | `active/033-teacher-student-notes/` |
 | 025 | Identity hub — identity, student and teacher, maintained by trigger | active | high | — | `active/025-identity-hub/` |
 | 028 | Portal auth — email OTP sign-in linked to an identity | active | high | 025 | `active/028-portal-auth-identity-link/` |
 | 026 | organization, program and cohort — the context row source | backlog | high | 025 | `backlog/026-organization-program-cohort/` |
