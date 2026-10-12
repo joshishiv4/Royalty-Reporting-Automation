@@ -1,9 +1,9 @@
 # Status and plan
 
-Last updated **8 Oct 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (The 8 Oct update covers the report-pass entry
-below only. The portal work in `0039`–`0049` is not yet reflected in the plan
-table below.)
+Last updated **12 Oct 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (The 12 Oct update covers the orphaned-run entry
+below only, and the 8 Oct one the report-pass entry under it. The portal work in
+`0039`–`0049` is not yet reflected in the plan table below.)
 
 ## The plan
 
@@ -26,6 +26,49 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### A completed pass reported `failed` and orphaned its run, 9 Oct 2026 - fixed in code
+
+`purchase_element_sync` drained its whole queue and was logged as a failure:
+
+```
+{"msg":"pass failed","job":"purchase_element_sync","state":"failed",
+ "claimed":0,"done":0,"requeued":0,"dead":0,"itemsRemaining":-1,
+ "error":"57014: canceling statement due to statement timeout"}
+```
+
+**Every number in that line is a placeholder.** `claimed`/`done`/`dead` are the
+zeros `runFullSyncPassParallel`'s catch fills in, and `itemsRemaining: -1` is its
+"unknown" sentinel — the signature of an exception that escaped `runPass`
+entirely, not a measurement of a pass that did nothing. The work had in fact
+finished: `purchase_item_element` read 399,140 done, 0 pending, 0 failed, with
+its last change at 11:09:57, nine minutes before the timeout at 11:19:08Z.
+
+**The cause was the count, not the sync.** `countEligible()` runs after the drain
+to fill `items_remaining`, and sat outside the try/catch that records a pass
+failure. Its statement timed out, threw past `closeRun()` — the only thing that
+moves a run off `running` — and left the row open for `abandonStaleRuns()` to
+retire half an hour later. The same table it was counting had just been drained
+without trouble.
+
+**Why that query was slow** is `0060`: nothing indexed
+`state = 'pending' and work_type = ? and next_attempt_at <= ?`. On an idle
+database, returning no rows, it took 2,638 ms for `purchase_item_element`
+(399,140 queued) against 849 ms and 697 ms for the other large queues — slowest
+where it finds nothing, the same shape `0050` fixed for the dedupe read. Under a
+live pass that reaches the statement timeout.
+
+**Fixed both ends.** `0060` adds the partial index. `countEligibleOrUnknown()`
+reports a failed count as `UNKNOWN_REMAINING` (`-1`) and the pass closes
+`partial` — never `0`, which would read as drained and move the completion
+watermark on a count that never ran. `tests/sync-pass-count-failure.test.ts`
+drives a whole pass whose post-drain count throws: restoring the unguarded call,
+or making the sentinel `0`, each turns it red.
+
+**Same family as 5-7 Oct.** Four `57014` timeouts on `sync_queue` plus one
+`HTTP 502` hit `attendance_sync` and `purchase_element_sync` — the two largest
+queues — across those three days. Those runs recorded their failure properly;
+this one did not, because of where the timeout landed.
 
 ### The transaction reports read nothing for six days, 2-8 Oct 2026 - fixed in code
 
