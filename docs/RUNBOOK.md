@@ -816,6 +816,60 @@ problem, not a data problem. Go to section 4.
 
 ---
 
+### 8h. `57014: canceling statement due to statement timeout` — the queue is too big
+
+`sync_queue` keeps every `done` row until something deletes it, and past about a
+million rows ordinary statements start crossing the timeout. The symptom moves
+around — the fresh-done dedupe read (30 Sep, killed 16 of 18 passes), the
+post-drain count (9 Oct), `enqueue_sync_items` itself (13 Oct, `attendance_sync`,
+3,500 items left unqueued) — so treat the table size as the cause whichever
+statement is named.
+
+Check it first. If a plain count will not finish, that is your answer:
+
+```bash
+node scripts/queue-status.mjs
+```
+
+The daily `queue-prune` workflow holds the line at **20 days**. To run it by hand
+— dry run first, which is the default and prints what it would delete:
+
+```bash
+APP_ENV=prod npm start -- queue:prune
+```
+
+Then, to actually delete:
+
+```bash
+APP_ENV=prod npm start -- queue:prune --apply
+```
+
+`--days=N` overrides the window, `--batch=N` the rows per statement, and
+`--max-batches=N` bounds one run. `done: false` in the output means the backlog
+did not clear in this run — expected while it is still large; run it again.
+
+**Never take `--days` below 2.** `enqueue()`'s dedupe reads the last 24 hours of
+`done` rows to decide a target was already refreshed today; prune inside that
+window and it re-queues the same work the same day. The command refuses anything
+at or under 1 day, but it cannot stop you editing the cron.
+
+**Run a large clear while the sync is idle.** Competing with a live pass for the
+same table is how a cleanup becomes an incident. The 05:00 schedule is chosen for
+that reason — after the night's syncs, before the 06:00 alert sweep.
+
+**If deleting rows does not make it fast again**, the problem is bloat rather than
+row count: the indexes stay bloated after a DELETE. `REINDEX TABLE
+public.sync_queue` — or `VACUUM (FULL, ANALYZE) public.sync_queue`, which takes
+an exclusive lock and must not run while the sync does. Confirm first from a SQL
+console:
+
+```sql
+select n_live_tup, n_dead_tup, last_autovacuum
+  from pg_stat_user_tables where relname = 'sync_queue';
+```
+
+---
+
 ## 10. Data traps and open questions
 
 What is unresolved, and which numbers are provisional. Anyone inheriting this

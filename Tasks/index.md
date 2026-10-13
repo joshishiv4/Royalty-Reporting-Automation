@@ -5,6 +5,7 @@ Sorted by status (done last), then priority, then ID.
 
 | ID  | Title | Status | Priority | Depends on | Path |
 |-----|-------|--------|----------|------------|------|
+| 035 | sync_queue retention — prune done rows on a 20-day window | active | high | — | `active/035-sync-queue-retention/` |
 | 025 | Identity hub — identity, student and teacher, maintained by trigger | active | high | — | `active/025-identity-hub/` |
 | 026 | organization, program and cohort — the context row source | backlog | high | 025 | `backlog/026-organization-program-cohort/` |
 | 031 | Session projection — cohort, class_session, attendance_record and their links | backlog | high | 025, 026 | `backlog/031-session-cohort-projection/` |

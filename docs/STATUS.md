@@ -1,8 +1,8 @@
 # Status and plan
 
-Last updated **12 Oct 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (The 12 Oct update covers the orphaned-run entry
-below only, and the 8 Oct one the report-pass entry under it. The portal work in
+Last updated **13 Oct 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (The 13 Oct update covers the retention entry
+below, the 12 Oct one the orphaned run under it, the 8 Oct one the report pass. The portal work in
 `0039`–`0049` is not yet reflected in the plan table below.)
 
 ## The plan
@@ -26,6 +26,55 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### `sync_queue` retention, 13 Oct 2026 - written at last, backlog still to clear
+
+`attendance_sync` failed at 01:15:53 UTC:
+
+```
+SupabaseError: 57014: canceling statement due to statement timeout
+  [table=enqueue_sync_items]
+```
+
+leaving **3,500 `session_attendance` items pending**. Nothing dead, and the
+failure reported itself properly - the timeout landed inside the error boundary,
+unlike the 9 Oct orphaned run.
+
+**The cause is the one this file has carried since 23 Sep: the table is never
+pruned.** Measured 13 Oct:
+
+| query | rows | time |
+|---|---|---|
+| `state = 'done'` | **1,506,074** | 3,222 ms |
+| `state = 'pending'` | 3,500 | 1,055 ms |
+| `work_type = 'session_attendance'` | 943,399 | 2,354 ms |
+| `count(*)` whole table | — | **cancelled, 10,141 ms** |
+
+A count of the table no longer completes. Counting 3,500 rows through a partial
+index takes a second. Growth: 532,415 (23 Sep) → 869,798 (1 Oct) → 1,506,074
+`done` (13 Oct), nearly tripled in three weeks.
+
+**Two indexes bought time; neither shrank the table.** `0050` fixed the fresh-done
+dedupe read (8.5-9.7 s → 0.28-1.1 s) and said so itself: *"It does not shrink the
+table, so the cleanup above is still open."* `0060` fixed the post-drain count.
+The failure has now moved to the INSERT in `enqueue_sync_items` - a third
+statement, same cause.
+
+**`0063` is the actual fix.** `prune_sync_queue(p_before, p_limit)` deletes `done`
+rows past a cutoff, in batches; `pruneDoneItems` loops it; `queue:prune` runs it
+from the CLI, dry-run unless `--apply`; `.github/workflows/queue-prune.yml` runs
+it daily at 05:00, an hour before the alert sweep and after the night's syncs
+have drained. Retention is **20 days**. The floor is 24 hours - `enqueue()`'s
+dedupe reads the last day's `done` rows, and pruning into that window re-queues
+the same work the same day - and both the CLI and
+`tests/sync-queue-prune.test.ts` enforce it.
+
+**Not done: the 1.5M-row backlog is still there.** `0063` must be applied and the
+prune run against the existing rows, when the sync is idle, before any of the
+measurements above change. **And one open question that changes what "done" means
+here:** if the slowness is bloat rather than row count, the indexes stay bloated
+after a DELETE and want `REINDEX` or `VACUUM FULL` to reclaim. `n_dead_tup` from
+a SQL console settles it; PostgREST will not answer it. Task 035 carries both.
 
 ### A completed pass reported `failed` and orphaned its run, 9 Oct 2026 - fixed in code
 
@@ -495,7 +544,7 @@ View)"**. Both were probed live against dev the same day and both work.
 | Rows, Accrual and cash, to 9 Sep 2026 | **34,255** | — |
 | Pages at `i_limit` 1000 | 11 | 11 |
 | Full-history build time | **90s** | ~60s |
-| A 7-day window | 62 rows, **6s** | — |
+| A 20-day window | 62 rows, **6s** | — |
 
 **What is built:** migration `0038` (`pay_transaction`, `pay_transaction_item`),
 `src/sync/transactions.ts`, `src/sync/tx-window.ts`, two passes

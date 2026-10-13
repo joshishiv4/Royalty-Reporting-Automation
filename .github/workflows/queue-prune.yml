@@ -1,0 +1,48 @@
+name: queue-prune
+
+# THE RETENTION WINDOW ON sync_queue, ENFORCED.
+#
+# sync_queue was never pruned and its size became the commonest cause of a failed
+# pass. It reached 1,506,074 'done' rows by 13 Oct 2026, at which point count(*)
+# over the table no longer completed - cancelled at 10,141 ms - and
+# attendance_sync failed inside enqueue_sync_items with a statement timeout,
+# leaving 3,500 items unqueued. Two indexes (0050, 0060) each moved that
+# bottleneck without shrinking the table; this is what actually shrinks it.
+#
+# ---------------------------------------------------------------------------
+# WHY A SEPARATE SCHEDULE RATHER THAN A STEP IN THE SYNC
+#
+# This is maintenance, not sync work. Folded into a pass it would run eighteen
+# times a night for a job that needs doing once, and - worse - a prune that
+# failed would colour a sync run red, which is the "state: failed means two
+# different things" problem 0035 and the skipped state exist to avoid.
+#
+# 05:00, an hour before the alert sweep and after the night's syncs have drained.
+# A prune competing with a live pass for the same table is how a cleanup becomes
+# an incident.
+# ---------------------------------------------------------------------------
+#
+# --max-batches bounds one run at 100 statements (500k rows at the default batch
+# of 5,000). That is a stop, not a target: the first runs meet a backlog that
+# will not clear in one night, and `done: false` in the output says so. A loop
+# with no bound is how a cleanup becomes an outage.
+
+on:
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: queue-prune
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    # The shared environment block, so the secrets are written once - see
+    # alerts.yml on why a copy here would be the failure sync-run.yml prevents.
+    uses: ./.github/workflows/sync-run.yml
+    secrets: inherit
+    with:
+      command: queue:prune
+      args: --apply --max-batches=100
+      timeout-minutes: 30
