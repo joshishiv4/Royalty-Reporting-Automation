@@ -1,0 +1,377 @@
+{
+  "taken_at": "2026-10-13T06:46:05.819Z",
+  "note": "quiz content in app schema BEFORE the 13 Oct 2026 revision. Reverse by restoring these rows.",
+  "quiz_question": [
+    {
+      "id": "c8e7f0e3-9f3f-488b-834f-ae8e95dfff50",
+      "code": "genre",
+      "prompt": "What kind of music are you most into?",
+      "sort": 1,
+      "is_active": true,
+      "allow_text": false,
+      "organization_id": "8b6ca06a-3600-4d2f-9adc-bf797f3f256e",
+      "created_at": "2026-10-12T12:55:28.50678+00:00",
+      "updated_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "13ef67a2-160b-4662-a059-17c125dc26f3",
+      "code": "goal",
+      "prompt": "What do you most want to get out of music right now?",
+      "sort": 1,
+      "is_active": true,
+      "allow_text": true,
+      "organization_id": "8b6ca06a-3600-4d2f-9adc-bf797f3f256e",
+      "created_at": "2026-10-12T12:31:24.221102+00:00",
+      "updated_at": "2026-10-12T12:33:44.975052+00:00"
+    },
+    {
+      "id": "5b33f406-815f-4ea4-aabd-107f25cfe316",
+      "code": "format",
+      "prompt": "How do you like to learn?",
+      "sort": 2,
+      "is_active": true,
+      "allow_text": false,
+      "organization_id": "8b6ca06a-3600-4d2f-9adc-bf797f3f256e",
+      "created_at": "2026-10-12T12:31:24.221102+00:00",
+      "updated_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "7895f05b-c022-4468-8b57-7c78e2628aa6",
+      "code": "grabs",
+      "prompt": "When you hear a song you love, what grabs you first?",
+      "sort": 2,
+      "is_active": true,
+      "allow_text": false,
+      "organization_id": "8b6ca06a-3600-4d2f-9adc-bf797f3f256e",
+      "created_at": "2026-10-12T12:55:28.50678+00:00",
+      "updated_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "a30eb4f1-625a-459d-979e-5a216dfdfcbe",
+      "code": "interest",
+      "prompt": "Which of these pulls you in the most?",
+      "sort": 3,
+      "is_active": true,
+      "allow_text": true,
+      "organization_id": "8b6ca06a-3600-4d2f-9adc-bf797f3f256e",
+      "created_at": "2026-10-12T12:31:24.221102+00:00",
+      "updated_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "6a9b1940-6c46-4ea9-9c73-e8ed45a3e3fc",
+      "code": "spend",
+      "prompt": "How do you most enjoy spending time with music?",
+      "sort": 3,
+      "is_active": true,
+      "allow_text": false,
+      "organization_id": "8b6ca06a-3600-4d2f-9adc-bf797f3f256e",
+      "created_at": "2026-10-12T12:55:28.50678+00:00",
+      "updated_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "7f5aaecb-a6ee-459d-92c9-665fd1c85d4c",
+      "code": "experience",
+      "prompt": "How much have you done before?",
+      "sort": 4,
+      "is_active": true,
+      "allow_text": false,
+      "organization_id": "8b6ca06a-3600-4d2f-9adc-bf797f3f256e",
+      "created_at": "2026-10-12T12:31:24.221102+00:00",
+      "updated_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "a5a06465-5c22-4da1-97e7-a1bfd5755605",
+      "code": "proud",
+      "prompt": "What would you be proudest to make or do?",
+      "sort": 4,
+      "is_active": true,
+      "allow_text": true,
+      "organization_id": "8b6ca06a-3600-4d2f-9adc-bf797f3f256e",
+      "created_at": "2026-10-12T12:55:28.50678+00:00",
+      "updated_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "d054b07e-7a43-4065-82e8-3ca8e5aab1f6",
+      "code": "anything",
+      "prompt": "Anything else you'd like us to know?",
+      "sort": 5,
+      "is_active": true,
+      "allow_text": true,
+      "organization_id": "8b6ca06a-3600-4d2f-9adc-bf797f3f256e",
+      "created_at": "2026-10-12T12:31:24.221102+00:00",
+      "updated_at": "2026-10-12T12:31:24.221102+00:00"
+    }
+  ],
+  "quiz_option": [
+    {
+      "id": "b5cfe353-e972-4b98-950f-0a1fd852ed5f",
+      "code": "goal_perform",
+      "question_id": "13ef67a2-160b-4662-a059-17c125dc26f3",
+      "label": "Perform in front of people",
+      "category_hint": "live sound",
+      "sort": 1,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "24156750-9c1f-4ada-b56d-efbbb28ff8be",
+      "code": "goal_create",
+      "question_id": "13ef67a2-160b-4662-a059-17c125dc26f3",
+      "label": "Make my own tracks",
+      "category_hint": "production",
+      "sort": 2,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "31726f98-09c3-4e0b-868b-213291967b31",
+      "code": "goal_sing",
+      "question_id": "13ef67a2-160b-4662-a059-17c125dc26f3",
+      "label": "Sing / use my voice",
+      "category_hint": "voice",
+      "sort": 3,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "d82b519c-5be3-4547-b7d6-e5024e18f20d",
+      "code": "goal_instrument",
+      "question_id": "13ef67a2-160b-4662-a059-17c125dc26f3",
+      "label": "Play an instrument well",
+      "category_hint": "piano",
+      "sort": 4,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "62e317f4-d216-4e17-a79b-4531914f4d8b",
+      "code": "format_hands",
+      "question_id": "5b33f406-815f-4ea4-aabd-107f25cfe316",
+      "label": "Hands-on with gear",
+      "category_hint": "dj",
+      "sort": 1,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "1e75401e-e9c4-4bea-922c-e999c930d59d",
+      "code": "format_theory",
+      "question_id": "5b33f406-815f-4ea4-aabd-107f25cfe316",
+      "label": "Understand how music works",
+      "category_hint": "piano",
+      "sort": 2,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "f6dfff18-8d41-4602-95f4-be6e323ebd6b",
+      "code": "format_software",
+      "question_id": "5b33f406-815f-4ea4-aabd-107f25cfe316",
+      "label": "On a computer / software",
+      "category_hint": "production",
+      "sort": 3,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "f64bc9fb-b047-48ef-bdb3-d6c2a1655e00",
+      "code": "spend_computer",
+      "question_id": "6a9b1940-6c46-4ea9-9c73-e8ed45a3e3fc",
+      "label": "Making things on a computer",
+      "category_hint": "production",
+      "sort": 1,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "1d258f64-25f9-4e63-8c5d-179ad6757194",
+      "code": "spend_perform",
+      "question_id": "6a9b1940-6c46-4ea9-9c73-e8ed45a3e3fc",
+      "label": "Performing for people",
+      "category_hint": "live sound",
+      "sort": 2,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "51bea3dc-5c87-4d94-b419-c64fb9f5cafd",
+      "code": "spend_sing",
+      "question_id": "6a9b1940-6c46-4ea9-9c73-e8ed45a3e3fc",
+      "label": "Singing along",
+      "category_hint": "voice",
+      "sort": 3,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "e4801bf1-886a-4adf-b5b9-df358e0373b4",
+      "code": "spend_play",
+      "question_id": "6a9b1940-6c46-4ea9-9c73-e8ed45a3e3fc",
+      "label": "Playing an instrument",
+      "category_hint": "piano",
+      "sort": 4,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "081b2ce6-cdda-45fd-ac6f-e4807028ac6b",
+      "code": "grabs_beat",
+      "question_id": "7895f05b-c022-4468-8b57-7c78e2628aa6",
+      "label": "The beat and the rhythm",
+      "category_hint": "production",
+      "sort": 1,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "b196168c-cbc3-4438-b6f5-6c9774da8105",
+      "code": "grabs_vocals",
+      "question_id": "7895f05b-c022-4468-8b57-7c78e2628aa6",
+      "label": "The vocals",
+      "category_hint": "voice",
+      "sort": 2,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "d95d9bf3-8766-4d45-8d53-44bd63736e05",
+      "code": "grabs_melody",
+      "question_id": "7895f05b-c022-4468-8b57-7c78e2628aa6",
+      "label": "The melody and instruments",
+      "category_hint": "piano",
+      "sort": 3,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "49a60ec8-502a-4c9b-8241-eb6bb08bf52a",
+      "code": "grabs_energy",
+      "question_id": "7895f05b-c022-4468-8b57-7c78e2628aa6",
+      "label": "The energy of the crowd",
+      "category_hint": "live sound",
+      "sort": 4,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "d8c9d640-fb49-4011-9d59-adba497126be",
+      "code": "exp_none",
+      "question_id": "7f5aaecb-a6ee-459d-92c9-665fd1c85d4c",
+      "label": "Total beginner",
+      "category_hint": null,
+      "sort": 1,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "baf42e24-5533-45fa-b664-5676553c4376",
+      "code": "exp_some",
+      "question_id": "7f5aaecb-a6ee-459d-92c9-665fd1c85d4c",
+      "label": "A little",
+      "category_hint": null,
+      "sort": 2,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "2929d8b5-f84d-4240-acbe-bcfa27fa654b",
+      "code": "exp_lots",
+      "question_id": "7f5aaecb-a6ee-459d-92c9-665fd1c85d4c",
+      "label": "Quite a bit",
+      "category_hint": null,
+      "sort": 3,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "deb9c6af-f717-40fe-8953-4ec5b94b0d1d",
+      "code": "interest_dj",
+      "question_id": "a30eb4f1-625a-459d-979e-5a216dfdfcbe",
+      "label": "DJing and mixing",
+      "category_hint": "dj",
+      "sort": 1,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "65c8efc5-24ca-4b65-ade9-c170fc76913d",
+      "code": "interest_prod",
+      "question_id": "a30eb4f1-625a-459d-979e-5a216dfdfcbe",
+      "label": "Beat-making and producing",
+      "category_hint": "production",
+      "sort": 2,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "f2354351-1071-4049-be95-d14f0fa5a11f",
+      "code": "interest_voice",
+      "question_id": "a30eb4f1-625a-459d-979e-5a216dfdfcbe",
+      "label": "Singing and vocals",
+      "category_hint": "voice",
+      "sort": 3,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "00e38525-c4df-4577-8b02-92b68b8d3b77",
+      "code": "interest_keys",
+      "question_id": "a30eb4f1-625a-459d-979e-5a216dfdfcbe",
+      "label": "Keys and piano",
+      "category_hint": "piano",
+      "sort": 4,
+      "created_at": "2026-10-12T12:31:24.221102+00:00"
+    },
+    {
+      "id": "7a2c43ab-074f-45cf-896c-16841883e409",
+      "code": "proud_track",
+      "question_id": "a5a06465-5c22-4da1-97e7-a1bfd5755605",
+      "label": "A track people dance to",
+      "category_hint": "dj",
+      "sort": 1,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "5c2f3cbd-3bdf-4b7f-8db9-1dd11803bad1",
+      "code": "proud_song",
+      "question_id": "a5a06465-5c22-4da1-97e7-a1bfd5755605",
+      "label": "A song I wrote and sang",
+      "category_hint": "voice",
+      "sort": 2,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "1cfdf9d9-e536-405d-bb5f-debecd9f59b5",
+      "code": "proud_show",
+      "question_id": "a5a06465-5c22-4da1-97e7-a1bfd5755605",
+      "label": "A great live performance",
+      "category_hint": "live sound",
+      "sort": 3,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "b29a6f73-b16f-4743-9292-064c90616753",
+      "code": "proud_play",
+      "question_id": "a5a06465-5c22-4da1-97e7-a1bfd5755605",
+      "label": "Playing a piece beautifully",
+      "category_hint": "piano",
+      "sort": 4,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "567c6f53-1cac-4d17-820a-84f06719e617",
+      "code": "genre_hiphop",
+      "question_id": "c8e7f0e3-9f3f-488b-834f-ae8e95dfff50",
+      "label": "Hip-hop and rap",
+      "category_hint": "production",
+      "sort": 1,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "57d86598-0d60-40b6-81fb-e90676ff5841",
+      "code": "genre_edm",
+      "question_id": "c8e7f0e3-9f3f-488b-834f-ae8e95dfff50",
+      "label": "Electronic and dance",
+      "category_hint": "dj",
+      "sort": 2,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "bd780742-8d2c-4994-bbf3-91d91fc17412",
+      "code": "genre_pop",
+      "question_id": "c8e7f0e3-9f3f-488b-834f-ae8e95dfff50",
+      "label": "Pop and R&B",
+      "category_hint": "voice",
+      "sort": 3,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    },
+    {
+      "id": "922459fe-de3d-4cda-b244-d9e331164864",
+      "code": "genre_live",
+      "question_id": "c8e7f0e3-9f3f-488b-834f-ae8e95dfff50",
+      "label": "Rock, jazz or live bands",
+      "category_hint": "live sound",
+      "sort": 4,
+      "created_at": "2026-10-12T12:55:28.50678+00:00"
+    }
+  ]
+}

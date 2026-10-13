@@ -1409,6 +1409,83 @@ record of an edit cannot be forged or rewritten by the editor. That last point i
 the whole reason it is a table with its own grants rather than a column on the
 note. Section H of the isolation check proves it.
 
+### The course-recommendation quiz (0059)
+
+Five `app` tables behind the student interest quiz whose result is a
+Claude-suggested course. `quiz_question` and `quiz_option` are the quiz itself —
+studio config, readable by any signed-in user. `quiz_attempt`, `quiz_answer` and
+`quiz_suggestion` are one student's run: the attempt, the answers given, and the
+**up to three ranked courses** the model picked (`quiz_suggestion.rank`, 1 = best
+fit; `unique (attempt_id, rank)`). The same model call also returns a few **interest
+tags** inferred from the answers (including the free text); the server stores them
+on `quiz_attempt.interests` (`text[]`), and the home "Things I'm Into" card reads
+the latest attempt's. The interests are the model's, not a category mapping of ours.
+
+**A question can offer options, a free-text box, or both.** `quiz_question.allow_text`
+turns on a free-text box; a question with option rows and `allow_text = false` is
+multiple-choice, one with no options and `allow_text = true` is free-text, and one
+with both is a choice plus an optional note. So `quiz_answer.option_id` is
+**nullable** and `answer_text` sits beside it, with a check that an answer carries
+at least one of the two. The recommender sends the chosen label and the typed text
+together to the model.
+
+**The suggestion is snapshotted as text, not a foreign key.** `quiz_suggestion`
+holds `course_title`, `course_category`, `teacher_name` and the model's `rationale`
+as plain columns. The catalogue the model chooses from is the **`app.course_catalogue`
+view** (0061), read **server-side with the service role** at request time. The chosen
+course is copied into `app` as text, so no FK is needed. A course renamed in WL later
+does not rewrite what a student was once recommended, which is correct.
+
+**The answer is snapshotted as text too (0062).** `quiz_answer` held only
+`question_id` and `option_id`, so the wording lived on the question rows and an
+in-place reword rewrote the meaning of every old answer. On 13 Oct 2026 three
+questions were reworded under 13 saved attempts, and the original wording survived
+only in a snapshot file. `quiz_answer` now carries `question_prompt` and
+`option_label` as text copied at save time, the same call `quiz_suggestion` makes
+for a course. The keys stay and stay `ON DELETE RESTRICT`: they say which row was
+answered, the columns say what it said. **Reading what a student was actually asked
+is now `quiz_answer.question_prompt` / `option_label`, never a join to
+`quiz_question`.** The existing answers were backfilled; for the three reworded
+questions the wording is the snapshot's, which is what was live just before the
+reword and not necessarily what the earliest attempts saw. From that point on the
+record is exact. The standing habit still applies: a question with answers is
+retired and replaced, not reworded.
+
+**The catalogue view (`app.course_catalogue`, 0061) unions two sources, grouped by
+base course.** A base course is the title before the first `|`, so the many
+duration/location variants in WL (`DJ For Everyone | 60 Minutes`,
+`| In-Home | 60 Minutes`, …) collapse to one `DJ For Everyone`. It returns one row
+per (base course, teacher):
+
+- `public.service` — the 123 real sold courses. `service` carries no teacher of its
+  own (`staff_service` is empty here), so a service's teachers are recovered through
+  its sessions: `service.k_service → public.session.k_service →
+  public.session_staff.k_period → public.person.k_staff`. That join is ~46k sessions,
+  too heavy to run per quiz submission, so it lives in SQL.
+- `app.cohort` — teachers via `class_session → class_session_teacher → teacher`, as
+  before.
+
+A base course with no resolvable teacher still appears, once, with `teacher_name`
+null (the base titles drive the result, teachers are left-joined on). The view is
+`security_invoker = on` like the other cross-schema views, so it runs as the service
+role that reads it. (The portal first read cohort data directly; 0061 replaced that
+so the far larger `service` catalogue is offered too.)
+
+**Writes are service-role only; the student id comes from the JWT, not the
+request.** The route that builds the catalogue and calls Claude also writes the
+attempt, answers and suggestion, using the student id it resolved from the caller's
+own session — the distinction STATUS.md draws for the uploads route: a
+caller-supplied id is the hole, a session-resolved one is not. So `authenticated`
+holds **SELECT only** and cannot forge any of it — the same posture as
+`teacher_note_revision`, one step wider.
+
+**Reads are RLS, student-owns-own.** `student_id` is denormalised onto
+`quiz_answer` and `quiz_suggestion` so each read policy is a plain column
+comparison against `app.current_student_id()` and joins nothing (the 42P17 rule).
+`organization_stamp` fills the two root tables; the children derive their
+organization from their parent. Proven in
+[`quiz_isolation.sql`](../supabase/checks/quiz_isolation.sql).
+
 **Policies are evaluated as the caller, including their subqueries.** This is why
 `0053`'s four helpers are `security definer` and not merely convenient: a policy
 on `app.student` that read `app.identity` inline would itself be filtered by the
