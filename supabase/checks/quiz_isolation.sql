@@ -44,11 +44,15 @@ insert into app.quiz_attempt (id, student_id) values
   ('54000000-0000-0000-0000-0000000000a1', '50000000-0000-0000-0000-0000000000a1'),
   ('54000000-0000-0000-0000-0000000000b1', '50000000-0000-0000-0000-0000000000b1');
 
-insert into app.quiz_answer (attempt_id, question_id, option_id, student_id) values
+-- question_prompt and option_label are required since 0062: an answer carries the
+-- wording the student saw, so these rows must too.
+insert into app.quiz_answer (attempt_id, question_id, option_id, student_id, question_prompt, option_label) values
   ('54000000-0000-0000-0000-0000000000a1', '52000000-0000-0000-0000-000000000001',
-   '53000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-0000000000a1'),
+   '53000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-0000000000a1',
+   '__qz test question', '__qz test option'),
   ('54000000-0000-0000-0000-0000000000b1', '52000000-0000-0000-0000-000000000001',
-   '53000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-0000000000b1');
+   '53000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-0000000000b1',
+   '__qz test question', '__qz test option');
 
 insert into app.quiz_suggestion (attempt_id, student_id, course_title, rationale, model) values
   ('54000000-0000-0000-0000-0000000000a1', '50000000-0000-0000-0000-0000000000a1',
@@ -156,6 +160,35 @@ begin
     raise notice 'PASS  E1  anon is refused';
   end;
   reset role;
+
+  -- ===========================================================================
+  -- F. the saved wording is required (0062) - tried, not assumed. An answer that
+  -- chose an option must carry its label, and every answer its question text, so
+  -- a response stays readable after the question is reworded.
+  -- ===========================================================================
+  begin
+    insert into app.quiz_answer (attempt_id, question_id, option_id, student_id, question_prompt)
+    values ('54000000-0000-0000-0000-0000000000a1', '52000000-0000-0000-0000-000000000001',
+            '53000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-0000000000a1',
+            '__qz test question');
+    failures := failures + 1;
+    fails := fails || 'FAIL F1 an answer chose an option but saved no option_label';
+    raise notice '%', fails[cardinality(fails)];
+  exception when check_violation then
+    raise notice 'PASS  F1  an answer that chose an option must save its wording';
+  end;
+
+  begin
+    insert into app.quiz_answer (attempt_id, question_id, option_id, student_id, option_label)
+    values ('54000000-0000-0000-0000-0000000000a1', '52000000-0000-0000-0000-000000000001',
+            '53000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-0000000000a1',
+            '__qz test option');
+    failures := failures + 1;
+    fails := fails || 'FAIL F2 an answer was saved with no question_prompt';
+    raise notice '%', fails[cardinality(fails)];
+  exception when not_null_violation then
+    raise notice 'PASS  F2  an answer must save the question text';
+  end;
 
   if failures = 0 then
     raise notice '---- ALL PASSED: a student reads only their own quiz data and writes none ----';

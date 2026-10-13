@@ -1431,14 +1431,45 @@ together to the model.
 
 **The suggestion is snapshotted as text, not a foreign key.** `quiz_suggestion`
 holds `course_title`, `course_category`, `teacher_name` and the model's `rationale`
-as plain columns. The catalogue the model chooses from is the portal's own course data —
-each `app.cohort` is a course and its teachers are whoever taught its sessions
-(`class_session` → `class_session_teacher` → `teacher`) — read **server-side with
-the service role** at request time. (The WL `service` × `staff_service` catalogue
-was the first plan, but `staff_service` is empty on this environment, so there are
-no teacher↔course links there; the portal-native cohort data has them.) The chosen
+as plain columns. The catalogue the model chooses from is the **`app.course_catalogue`
+view** (0061), read **server-side with the service role** at request time. The chosen
 course is copied into `app` as text, so no FK is needed. A course renamed in WL later
 does not rewrite what a student was once recommended, which is correct.
+
+**The answer is snapshotted as text too (0062).** `quiz_answer` held only
+`question_id` and `option_id`, so the wording lived on the question rows and an
+in-place reword rewrote the meaning of every old answer. On 13 Oct 2026 three
+questions were reworded under 13 saved attempts, and the original wording survived
+only in a snapshot file. `quiz_answer` now carries `question_prompt` and
+`option_label` as text copied at save time, the same call `quiz_suggestion` makes
+for a course. The keys stay and stay `ON DELETE RESTRICT`: they say which row was
+answered, the columns say what it said. **Reading what a student was actually asked
+is now `quiz_answer.question_prompt` / `option_label`, never a join to
+`quiz_question`.** The existing answers were backfilled; for the three reworded
+questions the wording is the snapshot's, which is what was live just before the
+reword and not necessarily what the earliest attempts saw. From that point on the
+record is exact. The standing habit still applies: a question with answers is
+retired and replaced, not reworded.
+
+**The catalogue view (`app.course_catalogue`, 0061) unions two sources, grouped by
+base course.** A base course is the title before the first `|`, so the many
+duration/location variants in WL (`DJ For Everyone | 60 Minutes`,
+`| In-Home | 60 Minutes`, …) collapse to one `DJ For Everyone`. It returns one row
+per (base course, teacher):
+
+- `public.service` — the 123 real sold courses. `service` carries no teacher of its
+  own (`staff_service` is empty here), so a service's teachers are recovered through
+  its sessions: `service.k_service → public.session.k_service →
+  public.session_staff.k_period → public.person.k_staff`. That join is ~46k sessions,
+  too heavy to run per quiz submission, so it lives in SQL.
+- `app.cohort` — teachers via `class_session → class_session_teacher → teacher`, as
+  before.
+
+A base course with no resolvable teacher still appears, once, with `teacher_name`
+null (the base titles drive the result, teachers are left-joined on). The view is
+`security_invoker = on` like the other cross-schema views, so it runs as the service
+role that reads it. (The portal first read cohort data directly; 0061 replaced that
+so the far larger `service` catalogue is offered too.)
 
 **Writes are service-role only; the student id comes from the JWT, not the
 request.** The route that builds the catalogue and calls Claude also writes the
