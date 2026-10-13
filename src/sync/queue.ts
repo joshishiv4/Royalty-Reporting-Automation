@@ -534,6 +534,84 @@ export async function runQueue(
   return { claimed: items.length, done, requeued, dead, deferred, reclaimed };
 }
 
+/**
+ * How long a 'done' row is kept before `pruneDoneItems` removes it.
+ *
+ * TWENTY DAYS, AND THE FLOOR IS TWENTY-FOUR HOURS. Anything inside
+ * DEFAULT_FRESH_DONE_WINDOW_MS is load-bearing: enqueue reads today's 'done'
+ * rows to decide whether a target has already been refreshed, so pruning into
+ * that window makes the dedupe blind and re-queues work the same day. Twenty
+ * days clears it twenty times over and still removes the overwhelming majority
+ * of the table. Past it a 'done' row has no reader at all - the dedupe cannot
+ * see it, and the claim and countEligible both filter on 'pending'.
+ *
+ * WHY ANY OF THIS. sync_queue was never pruned. It reached 1,506,074 'done' rows
+ * by 13 Oct 2026, at which point count(*) over the table no longer completed
+ * (cancelled at 10,141 ms) and attendance_sync failed inside enqueue_sync_items
+ * with a statement timeout, leaving 3,500 items unqueued. Two indexes (0050,
+ * 0060) each moved that bottleneck without shrinking the table.
+ */
+export const DEFAULT_RETENTION_MS = 20 * 24 * 60 * 60 * 1000;
+
+/** How many rows one prune statement removes. See 0063 on why this is batched. */
+export const DEFAULT_PRUNE_BATCH = 5000;
+
+export interface PruneOptions {
+  /** Rows completed before this are removed. Defaults to now - DEFAULT_RETENTION_MS. */
+  readonly before?: string;
+  readonly batch?: number;
+  /** Stops after this many statements, so one run cannot loop unbounded. */
+  readonly maxBatches?: number;
+  /** Count what WOULD go without removing it. */
+  readonly dryRun?: boolean;
+  readonly now?: () => number;
+}
+
+/**
+ * Removes 'done' rows past the retention window, a batch per statement.
+ *
+ * LOOPS RATHER THAN ONE DELETE, for the reason 0063 spells out: a single
+ * statement over a million rows hits the same timeout this exists to prevent,
+ * and holds locks on a table seventeen passes are using. Each call takes
+ * `batch` rows and returns how many it got; fewer than asked means the window
+ * is clear and the loop stops.
+ *
+ * `maxBatches` is a stop, not a target. The first run has a backlog that will
+ * not clear in one pass, and a loop with no bound is how a cleanup becomes an
+ * outage.
+ */
+export async function pruneDoneItems(
+  db: SupabaseClient,
+  opts: PruneOptions = {},
+): Promise<{ readonly removed: number; readonly batches: number; readonly done: boolean }> {
+  const now = opts.now ?? (() => Date.now());
+  const before = opts.before ?? new Date(now() - DEFAULT_RETENTION_MS).toISOString();
+  const batch = opts.batch ?? DEFAULT_PRUNE_BATCH;
+  const maxBatches = opts.maxBatches ?? 1000;
+
+  if (opts.dryRun === true) {
+    // The count is capped the same way countEligible's is: what matters is
+    // whether there is work to do, not an exact figure nobody acts on.
+    const rows = await db.select(
+      'sync_queue',
+      `state=eq.done&updated_at=lt.${before}&limit=${String(batch)}&select=id`,
+    );
+    return { removed: rows.length, batches: 0, done: rows.length < batch };
+  }
+
+  let removed = 0;
+  let batches = 0;
+  for (; batches < maxBatches;) {
+    const n = await db.rpc<number>('prune_sync_queue', { p_before: before, p_limit: batch });
+    batches += 1;
+    removed += n;
+    // Short batch means the window is clear. A zero would too, but stopping on
+    // the short one saves a statement that is guaranteed to find nothing.
+    if (n < batch) return { removed, batches, done: true };
+  }
+  return { removed, batches, done: false };
+}
+
 function targetKey(i: { work_type: string; target_key: string; k_business: string }): string {
   return `${i.work_type}|${i.target_key}|${i.k_business}`;
 }

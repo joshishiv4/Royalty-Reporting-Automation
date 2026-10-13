@@ -102,7 +102,7 @@ correctly does not start.
 | **How far back each visit sync reaches** — `is_past` + `dtu_start`/`dtu_end`, initial vs daily, decided by the clean-completion watermark | [`src/sync/visit-window.ts`](../src/sync/visit-window.ts) |
 | **What WL's visit status means** — `WlVisitSid` → the `attendance` outcome columns, in ONE place because two passes write them | [`src/sync/visit-outcome.ts`](../src/sync/visit-outcome.ts) |
 | Service catalogue + categories (appointment/book/service/{list,category} → service, service_category; marks is_resolved) | [`src/sync/services.ts`](../src/sync/services.ts) |
-| The durable sync_queue loop (claim, settle, requeue, dead-letter; claims and processes the batch as a bounded concurrent pool; `outcomeFromError` requeues a transient DB error instead of failing the pass) | [`src/sync/queue.ts`](../src/sync/queue.ts) |
+| The durable sync_queue loop (claim, settle, requeue, dead-letter; claims and processes the batch as a bounded concurrent pool; `outcomeFromError` requeues a transient DB error instead of failing the pass; `pruneDoneItems` enforces the 20-day retention window in batches) | [`src/sync/queue.ts`](../src/sync/queue.ts) |
 | One bounded sync pass per job, `runFullSyncPass` (sequential FK order, one token, one budget), and `runFullSyncPassParallel` (three dependency waves, seed-once-per-pass, one shared token — the local backfill shape) | [`src/sync/pass.ts`](../src/sync/pass.ts) |
 | Per-job lifecycle + clean-completion watermark, and the async-report cursor — handle, poll attempt, deadline, the FROZEN window (`last_key`) and the page offset (`page_number`) a part-read report resumes from (sync_job_state) | [`src/sync/job-state.ts`](../src/sync/job-state.ts) |
 | Transaction reports → pay_transaction / pay_transaction_item (mapped by field NAME; row identity is a hash of the stored values, because WL publishes no unique row key) | [`src/sync/transactions.ts`](../src/sync/transactions.ts) |
@@ -159,7 +159,7 @@ envelope inside" trap to guard against.
 
 | Question | File |
 |---|---|
-| CLI commands — `healthcheck`, `sync:wellness`, `sync:full-parallel`, `sync:historical`, `alert:test`, `alert:sweep`, `config:check`, `config:show` | [`src/cli/main.ts`](../src/cli/main.ts) |
+| CLI commands — `healthcheck`, `sync:wellness`, `sync:full-parallel`, `sync:historical`, `alert:test`, `alert:sweep`, `queue:prune`, `config:check`, `config:show` | [`src/cli/main.ts`](../src/cli/main.ts) |
 
 `sync:historical` and `alert:sweep` exist because a schedule that runs on a GitHub
 runner cannot go through an HTTP route without inheriting Vercel's 60-second cap.
@@ -207,7 +207,7 @@ therefore cannot go stale.
 
 | Reads | Window | Set by |
 |---|---|---|
-| Class schedule, daily | 7 days back, 30 forward | `SCHEDULE_LOOKBACK_DAYS` / `SCHEDULE_LOOKAHEAD_DAYS` in [`src/sync/pass.ts`](../src/sync/pass.ts) |
+| Class schedule, daily | 20 days back, 30 forward | `SCHEDULE_LOOKBACK_DAYS` / `SCHEDULE_LOOKAHEAD_DAYS` in [`src/sync/pass.ts`](../src/sync/pass.ts) |
 | Appointments, daily | 3 days back, or the full history until the first clean drain | `SYNC_DAILY_LOOKBACK_DAYS`, and the watermark rule in [`src/sync/visit-window.ts`](../src/sync/visit-window.ts) |
 | Transaction reports, daily | 3 days back, or 1980-01-01 until the first clean drain | `SYNC_DAILY_LOOKBACK_DAYS` and `SYNC_HISTORY_START`, applied by [`src/sync/tx-window.ts`](../src/sync/tx-window.ts) |
 | All three, monthly | the last N calendar months, N counting the current one | `SYNC_MONTHLY_LOOKBACK_MONTHS`, default 2 |
@@ -325,6 +325,7 @@ to re-run.
 | `0051` | `skipped` added to `sync_run_state_check`. `0035` made a run that finds its job's lease taken close as `skipped`, but the constraint (last rebuilt by `0033`) never allowed it, so every stand-down was rejected and left a row stuck on `running` until the sweep called it `abandoned`. Not one `skipped` row had ever been stored. `tests/sync-run-states.test.ts` now reads the constraint the migrations leave behind and fails if any state the code writes is missing |
 | `0052` | `pay_transaction_item.m_net_sale_portal` (`o_net_sale.m_amount`) and `pay_transaction.m_total_paid_portal` (`o_total_paid.m_amount`) — the amount the WL portal shows, beside the raw column. The raw columns give figures the portal never shows: item-view net sales $47,592.09 over on the full history (110 Account Payments rows), payment-view paid $11,648.40 under for 2026 (16 Account Credited rows, `m_total_paid` null). Both kept, because which one a royalty uses is undecided. **Not in `row_hash`**: rows were already stored, and hashing the new value would duplicate every one of them on the next read |
 | `0060` | `sync_queue_eligible_by_type_idx` — a partial index on `(work_type, next_attempt_at) WHERE state = 'pending'`, the shape `countEligible()` has queried unindexed since `0007`. `sync_queue_claimable_idx` is on `(next_attempt_at)` alone — no `work_type` — and `0050`'s index covers `state = 'done'`, so neither serves it. Measured 9 Oct 2026 against an **idle** database, every one returning no rows: `purchase_item_element` (399,140 queued) **2,638 ms**, `client_visits` 849 ms, `session_attendance` 697 ms. 2.6 s to find nothing is what reached the statement timeout under a live pass — `purchase_element_sync`, 11:19:08Z, `57014`, *after* its queue had drained at 11:09:57, costing a completed pass its run record. `k_business` is deliberately absent: `countEligible` does not filter on it, and an unused trailing column is width every insert pays for |
+| `0063` | `prune_sync_queue(p_before, p_limit)` — the retention window `sync_queue` never had. The table reached **1,506,074 `done` rows** by 13 Oct 2026, at which point `count(*)` over it no longer completed (cancelled at 10,141 ms) and `attendance_sync` failed inside `enqueue_sync_items` with a statement timeout, leaving 3,500 items unqueued. `0050` and `0060` each indexed one slow statement without shrinking the table; this deletes. **Batched** (`ctid in (select … limit n)`): one DELETE over 1.5M rows would hit the very timeout it exists to fix and hold locks on a table seventeen passes are working. **Only `done`** — `pending`/`in_progress` are outstanding work and `failed`/`dead` are the record of what was given up on. The cutoff is the caller's, with a hard floor of 24 h: `enqueue()`'s fresh-done dedupe reads `done` rows from the last day, so pruning inside that window re-queues the same work the same day. The service uses 20 days |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs, plus case tables for rules that live in SQL. They are not migrations and

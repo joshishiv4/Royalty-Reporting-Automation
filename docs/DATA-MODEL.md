@@ -1179,6 +1179,38 @@ drained, and reporting it would close the run `ok` and move the completion
 watermark past work nobody counted.
 
 
+**`done` rows are kept 20 days and then deleted (`0063`).** The table was never
+pruned and its size became the commonest cause of a failed pass: 532,415 rows on
+23 Sep 2026, 869,798 on 1 Oct, **1,506,074 `done`** on 13 Oct — by which point
+`count(*)` over it no longer completed (cancelled at 10,141 ms), counting the
+3,500 `pending` rows through a partial index took 1,055 ms, and `attendance_sync`
+failed inside `enqueue_sync_items` with a statement timeout, leaving 3,500 items
+unqueued. `0050` and `0060` each indexed one slow statement; neither shrank the
+table, and the bottleneck simply moved.
+
+**The window has a floor of 24 hours, and it is load-bearing.** `enqueue()`'s
+fresh-done dedupe reads `state = 'done' and updated_at >= now() - 24h`
+(`DEFAULT_FRESH_DONE_WINDOW_MS`) to decide whether a target was already refreshed
+today. Prune inside that window and the dedupe goes blind: it stops seeing
+today's completions and re-queues the same work the same day, trading a size
+problem for a correctness one. Twenty days clears the floor twenty times over
+and still removes the overwhelming majority of the table. Past it a `done` row
+has **no reader at all** — the dedupe cannot see it, and the claim and
+`countEligible` both filter on `pending`.
+
+**Only `done` is ever deleted.** `pending` and `in_progress` are outstanding work;
+`failed` and `dead` are the record of what was given up on and why, which is the
+first thing an operator reads at 2am.
+
+**Batched, never one statement.** A single DELETE over a million rows hits the
+same statement timeout the prune exists to prevent, and holds locks on a table
+seventeen passes are working. `prune_sync_queue` takes `p_limit` rows per call
+via `ctid in (select … limit n)` — a bare `DELETE … LIMIT` is not SQL, and
+ordering the subquery would make the planner sort a million rows to delete five
+thousand. `pruneDoneItems` loops until a short batch says the window is clear,
+bounded by `maxBatches` so one run cannot spin unbounded.
+
+
 **Absolute times, not durations.** `next_attempt_at` is a timestamp. A duration
 only means something relative to a process that is still alive; a timestamp is
 still correct after a crash, a redeploy, or a fortnight in the queue.

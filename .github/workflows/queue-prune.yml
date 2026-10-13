@@ -1,0 +1,63 @@
+name: queue-prune
+
+# THE RETENTION WINDOW ON sync_queue, ENFORCED.
+#
+# sync_queue was never pruned and its size became the commonest cause of a failed
+# pass. It reached 1,506,074 'done' rows by 13 Oct 2026, at which point count(*)
+# over the table no longer completed - cancelled at 10,141 ms - and
+# attendance_sync failed inside enqueue_sync_items with a statement timeout,
+# leaving 3,500 items unqueued. Two indexes (0050, 0060) each moved that
+# bottleneck without shrinking the table; this is what actually shrinks it.
+#
+# ---------------------------------------------------------------------------
+# WHY A SEPARATE SCHEDULE RATHER THAN A STEP IN THE SYNC
+#
+# This is maintenance, not sync work. Folded into a pass it would run eighteen
+# times a night for a job that needs doing once, and - worse - a prune that
+# failed would colour a sync run red, which is the "state: failed means two
+# different things" problem 0035 and the skipped state exist to avoid.
+#
+# 05:30, AND THE :30 IS THE POINT. `sync` runs hourly ON THE HOUR, so there is no
+# quiet slot at the top of one - an earlier draft said 05:00 "after the night's
+# syncs have drained", which was wrong: the next one starts at 05:00 too. On the
+# 1st of the month `sync-monthly` lands there as well, so 05:00 is three jobs at
+# once on the same table. Half past leaves the hourly pass a clear run at it: the
+# 18 passes settled in under six minutes on 13 Oct (01:14:42 - 01:20:39).
+#
+# That is spacing, not exclusion. A long pass CAN still overlap this, which is
+# why the prune is batched - 5,000 rows a statement, each one short enough to
+# finish - rather than one DELETE holding locks for minutes.
+#
+# NOT in the `sync-driver` concurrency group, deliberately. Sharing it would
+# serialise the prune behind the syncs, but GitHub keeps only one pending run per
+# group: a prune waiting on a slow pass is cancelled by the next hourly sync
+# queueing behind it, and a maintenance job that silently never runs is how
+# sync_queue reached 1.5M rows in the first place.
+#
+# Still an hour before the alert sweep, so the sweep reports on a settled system.
+# ---------------------------------------------------------------------------
+#
+# --max-batches bounds one run at 100 statements (500k rows at the default batch
+# of 5,000). That is a stop, not a target: the first runs meet a backlog that
+# will not clear in one night, and `done: false` in the output says so. A loop
+# with no bound is how a cleanup becomes an outage.
+
+on:
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: queue-prune
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    # The shared environment block, so the secrets are written once - see
+    # alerts.yml on why a copy here would be the failure sync-run.yml prevents.
+    uses: ./.github/workflows/sync-run.yml
+    secrets: inherit
+    with:
+      command: queue:prune
+      args: --apply --max-batches=100
+      timeout-minutes: 30
