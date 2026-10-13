@@ -17,9 +17,24 @@ name: queue-prune
 # failed would colour a sync run red, which is the "state: failed means two
 # different things" problem 0035 and the skipped state exist to avoid.
 #
-# 05:00, an hour before the alert sweep and after the night's syncs have drained.
-# A prune competing with a live pass for the same table is how a cleanup becomes
-# an incident.
+# 05:30, AND THE :30 IS THE POINT. `sync` runs hourly ON THE HOUR, so there is no
+# quiet slot at the top of one - an earlier draft said 05:00 "after the night's
+# syncs have drained", which was wrong: the next one starts at 05:00 too. On the
+# 1st of the month `sync-monthly` lands there as well, so 05:00 is three jobs at
+# once on the same table. Half past leaves the hourly pass a clear run at it: the
+# 18 passes settled in under six minutes on 13 Oct (01:14:42 - 01:20:39).
+#
+# That is spacing, not exclusion. A long pass CAN still overlap this, which is
+# why the prune is batched - 5,000 rows a statement, each one short enough to
+# finish - rather than one DELETE holding locks for minutes.
+#
+# NOT in the `sync-driver` concurrency group, deliberately. Sharing it would
+# serialise the prune behind the syncs, but GitHub keeps only one pending run per
+# group: a prune waiting on a slow pass is cancelled by the next hourly sync
+# queueing behind it, and a maintenance job that silently never runs is how
+# sync_queue reached 1.5M rows in the first place.
+#
+# Still an hour before the alert sweep, so the sweep reports on a settled system.
 # ---------------------------------------------------------------------------
 #
 # --max-batches bounds one run at 100 statements (500k rows at the default batch
@@ -29,7 +44,7 @@ name: queue-prune
 
 on:
   schedule:
-    - cron: '0 5 * * *'
+    - cron: '30 5 * * *'
   workflow_dispatch:
 
 concurrency:

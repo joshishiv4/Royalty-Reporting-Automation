@@ -63,8 +63,10 @@ statement, same cause.
 **`0063` is the actual fix.** `prune_sync_queue(p_before, p_limit)` deletes `done`
 rows past a cutoff, in batches; `pruneDoneItems` loops it; `queue:prune` runs it
 from the CLI, dry-run unless `--apply`; `.github/workflows/queue-prune.yml` runs
-it daily at 05:00, an hour before the alert sweep and after the night's syncs
-have drained. Retention is **20 days**. The floor is 24 hours - `enqueue()`'s
+it daily at 05:30 UTC. The :30 matters: `sync` runs hourly ON THE HOUR, so 05:00
+is not a quiet slot - and on the 1st `sync-monthly` lands there too. Half past
+leaves the hourly pass a clear run, and the prune is batched so an overlap costs
+a lock wait rather than an outage. Still an hour before the alert sweep. Retention is **20 days**. The floor is 24 hours - `enqueue()`'s
 dedupe reads the last day's `done` rows, and pruning into that window re-queues
 the same work the same day - and both the CLI and
 `tests/sync-queue-prune.test.ts` enforce it.

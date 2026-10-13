@@ -854,8 +854,9 @@ window and it re-queues the same work the same day. The command refuses anything
 at or under 1 day, but it cannot stop you editing the cron.
 
 **Run a large clear while the sync is idle.** Competing with a live pass for the
-same table is how a cleanup becomes an incident. The 05:00 schedule is chosen for
-that reason — after the night's syncs, before the 06:00 alert sweep.
+same table is how a cleanup becomes an incident. The schedule is 05:30 UTC for
+that reason: `sync` runs hourly on the hour, so the half-hour leaves it a clear
+run, and the sweep at 06:00 still sees a settled system.
 
 **If deleting rows does not make it fast again**, the problem is bloat rather than
 row count: the indexes stay bloated after a DELETE. `REINDEX TABLE

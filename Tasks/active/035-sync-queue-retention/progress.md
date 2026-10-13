@@ -6,7 +6,7 @@
 - [x] Migration: `prune_sync_queue(p_before, p_limit)`, batched — `0063`
 - [x] Tests: state predicate holds; the 24-hour fresh-done floor survives a prune
 - [x] CLI command, dry-run by default, loops until it returns 0 — `queue:prune`
-- [x] Scheduled daily workflow — `.github/workflows/queue-prune.yml`, 05:00
+- [x] Scheduled daily workflow — `.github/workflows/queue-prune.yml`, 05:30 UTC
 - [ ] **Apply `0063` to the database**
 - [ ] Clear the 1.5M-row backlog while the sync is idle
 - [ ] Re-measure and record: `count(*)`, `done`, `pending`, `session_attendance`
@@ -43,8 +43,9 @@ changes the acceptance measurement, not the prune itself.
 - Implemented: `0063` (`prune_sync_queue`, batched via `ctid in (select … limit n)`,
   `done` only), `pruneDoneItems` in `src/sync/queue.ts` (loops, bounded by
   `maxBatches`, dry-run supported), `queue:prune` in the CLI (dry run by default,
-  refuses `--days <= 1`), and a daily 05:00 workflow — an hour before the alert
-  sweep, after the night's syncs drain.
+  refuses `--days <= 1`), and a daily 05:30 UTC workflow. The :30 avoids the
+  hourly sync, which runs on the hour, and `sync-monthly` on the 1st; still an
+  hour before the alert sweep.
 - `tests/sync-queue-prune.test.ts`, 8 cases. Mutation-checked both guarantees:
   retention of 12 h turns 4 red; dropping the `state = 'done'` predicate turns the
   "never removes a row that is not done" case red.
