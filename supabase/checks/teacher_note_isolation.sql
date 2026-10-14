@@ -17,7 +17,8 @@
 -- PostgREST does per request, so the policies run the way the portal runs them.
 --
 -- THE TWO KINDS, AND WHO MAY TOUCH EACH:
---   private - tina's own, no student. tina reads it; nobody else does.
+--   private - tina's own; nobody else reads it. It may name a student (0063) as a
+--             label for tina, which changes nothing about who can read it.
 --   public  - about a student tina taught. tina AND that student read it.
 --   A teacher may only ADDRESS a public note to a student teaches_student() says
 --   they taught - enforced on write. A student's read matches on student_id only.
@@ -31,6 +32,16 @@
 --     drop policy teacher_note_student_select on app.teacher_note; -- C1 red
 --     drop policy teacher_note_author_update on app.teacher_note;  -- F1, F3 red
 --
+-- Section I (0063, a private note that names a student). Two ways to watch it go
+-- red, and the first is the one that matters:
+--
+--     recreate teacher_note_student_select WITHOUT `visibility = 'public'`
+--                                                          -- I7 and I8 red: the
+--                                                          -- student reads the
+--                                                          -- private note naming her
+--     re-run 0056 (it recreates the old public-only roster rule)
+--                                                          -- I3 and I4 red
+--
 -- Delete is a SOFT delete since 0058 (an UPDATE of deleted_at), so F3 rests on the
 -- UPDATE policy, not a delete policy; there is no delete policy to drop. F5 (a
 -- deleted note hidden from the student) goes red by removing the `deleted_at is
@@ -41,8 +52,10 @@
 -- go red is to widen the clause, e.g. replace the insert `with check` body with
 -- `(true)`.
 --
--- Restore by re-running 0056-0058 (safe to re-run). Requires 0053, 0055, 0056,
--- 0057, 0058. Run as postgres / the SQL editor. Read the NOTICEs; any FAIL is real.
+-- Restore by re-running 0056-0058 and then 0063 (each safe to re-run; 0063 last,
+-- because 0056 recreates the policies 0063 changes). Requires 0053, 0055, 0056,
+-- 0057, 0058, 0063. Run as postgres / the SQL editor. Read the NOTICEs; any FAIL
+-- is real.
 -- =============================================================================
 
 begin;
@@ -110,6 +123,7 @@ declare
   trevor_id   uuid := '0e0e0e0e-0000-0000-0000-0000000000b1';
   private_id  uuid;
   public_id   uuid;
+  tagged_id   uuid;
   n           int;
   v_vis       text;
   failures    int := 0;
@@ -413,6 +427,140 @@ begin
   else
     failures := failures + 1;
     fails := fails || format('FAIL H3 trevor sees %s revision(s) of tina''s note, expected 0', n);
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  reset role;
+
+  -- ===========================================================================
+  -- I. A private note may name a student (0063) - and that student still never
+  -- sees it. tina tags a private note with alice, whom she taught, and writes a
+  -- PUBLIC note to alice as the control: alice must see the control and NOT the
+  -- tagged note. This is the regression that matters - before 0063 the kind check
+  -- made a tagged private note impossible; now the student policy's
+  -- `visibility = 'public'` guard is the only thing keeping it from her.
+  -- ===========================================================================
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', tina_auth, 'email', '__tn_tina@test.invalid')::text, true);
+  set local role authenticated;
+
+  begin
+    insert into app.teacher_note (author_teacher_id, student_id, visibility, body)
+    values (tina_id, alice_id, 'private', '__tn private about alice')
+    returning id into tagged_id;
+    raise notice 'PASS  I1  tina tags a private note with a student she taught';
+  exception when others then
+    failures := failures + 1;
+    fails := fails || format('FAIL I1 tagging a private note raised %s', sqlerrm);
+    raise notice '%', fails[cardinality(fails)];
+  end;
+
+  begin
+    insert into app.teacher_note (author_teacher_id, student_id, visibility, body)
+    values (tina_id, alice_id, 'public', '__tn public control');
+  exception when others then
+    failures := failures + 1;
+    fails := fails || format('FAIL I2 the public control note raised %s', sqlerrm);
+    raise notice '%', fails[cardinality(fails)];
+  end;
+
+  -- The roster rule now follows the student, not the kind: a private note for a
+  -- student tina never taught is refused by the database.
+  begin
+    insert into app.teacher_note (author_teacher_id, student_id, visibility, body)
+    values (tina_id, carol_id, 'private', '__tn private about carol');
+    failures := failures + 1;
+    fails := fails || 'FAIL I3 tina tagged a private note with a student she never taught';
+    raise notice '%', fails[cardinality(fails)];
+  exception
+    when insufficient_privilege then
+      raise notice 'PASS  I3  a private note cannot name a student off the author''s roster';
+    when others then
+      failures := failures + 1;
+      fails := fails || format('FAIL I3 refused with the wrong error: %s', sqlerrm);
+      raise notice '%', fails[cardinality(fails)];
+  end;
+
+  -- ...and she cannot move an existing tagged note onto one either (UPDATE policy).
+  begin
+    update app.teacher_note set student_id = carol_id where id = tagged_id;
+    failures := failures + 1;
+    fails := fails || 'FAIL I4 tina re-tagged a private note onto a student off her roster';
+    raise notice '%', fails[cardinality(fails)];
+  exception
+    when insufficient_privilege then
+      raise notice 'PASS  I4  re-tagging onto a student off the roster is refused';
+    when others then
+      failures := failures + 1;
+      fails := fails || format('FAIL I4 refused with the wrong error: %s', sqlerrm);
+      raise notice '%', fails[cardinality(fails)];
+  end;
+
+  -- A PUBLIC note still needs a student: the relaxed kind check is not "anything goes".
+  begin
+    insert into app.teacher_note (author_teacher_id, student_id, visibility, body)
+    values (tina_id, null, 'public', '__tn public with nobody');
+    failures := failures + 1;
+    fails := fails || 'FAIL I5 a public note was saved with no student';
+    raise notice '%', fails[cardinality(fails)];
+  exception when check_violation then
+    raise notice 'PASS  I5  a public note still requires a student';
+  end;
+
+  -- She reads both of the notes she just wrote.
+  select count(*) into n from app.teacher_note
+   where body in ('__tn private about alice', '__tn public control');
+  if n = 2 then
+    raise notice 'PASS  I6  tina reads both the tagged private note and the public one';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL I6 tina sees %s of her 2 new notes', n);
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  reset role;
+
+  -- alice: the public control yes, the private note that names her NO.
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', alice_auth, 'email', '__tn_alice@test.invalid')::text, true);
+  set local role authenticated;
+
+  select count(*), coalesce(string_agg(body, ','), '(none)')
+    into n, v_vis
+    from app.teacher_note where body like '\_\_tn %';
+
+  if n = 1 and v_vis = '__tn public control' then
+    raise notice 'PASS  I7  alice sees the public note and NOT the private note that names her';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL I7 alice sees %s note(s) (%s), expected only the public control', n, v_vis);
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  -- By id, so the assertion cannot pass because the body filter missed.
+  select count(*) into n from app.teacher_note where id = tagged_id;
+  if n = 0 then
+    raise notice 'PASS  I8  the tagged private note is invisible to the student it names';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL I8 alice can read the private note that names her (%s row)', n);
+    raise notice '%', fails[cardinality(fails)];
+  end if;
+
+  reset role;
+
+  -- trevor, another teacher, reads neither.
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', trevor_auth, 'email', '__tn_trevor@test.invalid')::text, true);
+  set local role authenticated;
+
+  select count(*) into n from app.teacher_note
+   where body in ('__tn private about alice', '__tn public control');
+  if n = 0 then
+    raise notice 'PASS  I9  another teacher reads neither';
+  else
+    failures := failures + 1;
+    fails := fails || format('FAIL I9 trevor reads %s of tina''s new notes, expected 0', n);
     raise notice '%', fails[cardinality(fails)];
   end if;
 
