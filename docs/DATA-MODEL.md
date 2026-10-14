@@ -1357,37 +1357,48 @@ whoever holds that address and sign them in as the teacher.
 larger argument than a migration should settle on its way past." `0056` is that
 argument, made on its own.
 
-**Two kinds, carried by two columns that cannot contradict each other.** A
-`private` note is the teacher's own — personal, `student_id` NULL, read by its
-author alone. A `public` note is about one student the teacher taught — `student_id`
-set, read by its author **and** that one student. `visibility` says which, and
-`teacher_note_kind_check` binds the pair: `private ⇒ student_id null`,
-`public ⇒ student_id not null`. Neither application code nor a policy can mint a row
-that disagrees with its own kind, because the row itself is refused.
+**Two kinds, bound by one check.** A `private` note is the teacher's own — read by
+its author alone. A `public` note is about one student the teacher taught —
+`student_id` set, read by its author **and** that one student. `visibility` says
+which, and `teacher_note_kind_check` binds them: `public ⇒ student_id not null`, so
+a public note with nobody to read it is refused by the row itself. A private note
+may also name a student as a label for its author (`0063`, below); it never reaches
+that student. From `0056` until `0063` the check said the other half too,
+`private ⇒ student_id null`.
 
-The five policies, all `to authenticated` and none naming a table (the 42P17 rule
-from `0055`, so only the definer helpers appear):
+The policies, all `to authenticated` and none naming a table (the 42P17 rule from
+`0055`, so only the definer helpers appear):
 
 | Command | Rule |
 |---|---|
 | SELECT (author) | `author_teacher_id = current_teacher_id()` — a teacher sees all their own, both kinds |
-| SELECT (student) | `visibility = 'public' and student_id = current_student_id()` — a student sees only public notes addressed to them |
-| INSERT / UPDATE | author only, and for a public note `teaches_student(student_id)` as well |
-| DELETE | author only |
+| SELECT (student) | `visibility = 'public' and student_id = current_student_id() and deleted_at is null` — a student sees only public notes addressed to them |
+| INSERT / UPDATE | author only, and whenever a student is named `teaches_student(student_id)` as well (`0063`; before, for public notes only) |
+| DELETE | none since `0058` — a delete is an `UPDATE` of `deleted_at` |
 
-**The roster check is a write-time rule, on purpose.** A teacher may only *address*
-a public note to a student `teaches_student()` says they taught — enforced in the
-INSERT/UPDATE `with check`. The student's **read** matches on `student_id` alone and
-does not re-check it. The roster is attendance-derived and moves over time; a note
-once sent would otherwise blink out of a student's own view when an attendance row
-changes months later. So who you may write to is checked when you write; what a
-student reads is simply what was addressed to them.
+**The roster check is a write-time rule, on purpose.** A teacher may only *name* a
+student `teaches_student()` says they taught, on either kind of note — enforced in
+the INSERT/UPDATE `with check`. The student's **read** matches on `student_id` and
+does not re-check the roster. The roster is attendance-derived and moves over time;
+a note once sent would otherwise blink out of a student's own view when an
+attendance row changes months later. So who you may write to is checked when you
+write; what a student reads is simply what was addressed to them.
 
-`student_id = current_student_id()` is also why a private note can never reach a
-student by accident: `current_student_id()` is NULL for a teacher, the kind check
-keeps `student_id` NULL on every private row, and NULL compared with `=` is NULL,
-never true. There is no `is null` anywhere in the file — the single most important
-absence in it, for the reason `0055` states.
+**A private note may name a student — and the student's policy is now the only thing
+that keeps it from them (0063).** A teacher can tag a private note with a student so
+they remember who it is about. The tag is optional and changes nothing about who can
+read the note: only its author. Until `0063` this was guaranteed twice — the kind
+check kept `student_id` NULL on every private row, so a private note could not match
+`student_id = current_student_id()` even by accident. That second guarantee is gone
+on purpose, which leaves `visibility = 'public'` in the student's SELECT policy as
+the **sole** guard. `0063`'s trailing check asserts it is still there, and section I
+of the isolation check tries it: a private note tagged with a student is invisible to
+that student while a public note beside it is not. The roster rule moved with the
+tag for the same reason — a private note naming a student the author never taught is
+refused by the database, not only by the portal's picker. `current_student_id()` is
+still NULL for a teacher and NULL compared with `=` is never true; the `is null` in
+the write policies is on the plain `student_id` column, a note with no student, which
+is a legitimate row and not the stranger `0055`'s rule is about.
 
 `organization_stamp` and `set_updated_at` triggers as every owned table; no
 `synced_at`, because nothing syncs a note from anywhere. `GRANT`s to
