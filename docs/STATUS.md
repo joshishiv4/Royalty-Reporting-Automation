@@ -45,6 +45,16 @@ pass after that fills every note; nothing needs backfilling by hand.
 Not stored, because WL does not return it: who added a note and when (blocked,
 item 5 below).
 
+**Shown in the portal (`0065`, same day).** A teacher sees the WL note of each
+student they teach, read-only, in the Public notes view; a student sees their own
+as "From the studio". Both newest first, dated by `note_seen_at` — when the sync
+first saw the note, because WL gives no written date. Portal changes are in
+`spin-dj-pathways` (`GET /api/v1/notes`, `GET /api/v1/students/me/notes`, both tabs).
+**Apply `0064` then `0065` before deploying the portal** — the routes call the two
+functions `0065` creates and fail without them. `wl_client_note_portal_read.sql`
+has not been run yet. Every existing note becomes visible to the student it is
+about once this ships; the studio decided that knowingly.
+
 ### A student signs in, 9 Oct 2026 - end to end, against live
 
 `0054` is **applied**, custom SMTP and the `{{ .Token }}` template are
