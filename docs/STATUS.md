@@ -1,9 +1,10 @@
 # Status and plan
 
-Last updated **9 Oct 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (The 1 Oct update covered the transaction-report
-entries only. The portal work in `0039`–`0049` is still not reflected in the plan
-table below; `0053` is, because it starts M05.)
+Last updated **19 Oct 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (The 19 Oct update covers the client-note entry
+only; the 1 Oct one covered the transaction-report entries only. The portal work in
+`0039`–`0049` is still not reflected in the plan table below; `0053` is, because it
+starts M05.)
 
 ## The plan
 
@@ -26,6 +27,33 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### WL client notes sync, 19 Oct 2026 - code complete, `0064` not yet applied
+
+The note studio staff write on a WellnessLiving profile ("$15 VIP Discount
+Monthly") now syncs into `wl_client_note`, one row per client, from the Client
+List report the sync already reads — no extra API call. Stored as WL's HTML and
+as plain text; deleted when WL reports `has_note: false`; staff-only (RLS on, no
+policy), because `person` is readable by its own client. See DATA-MODEL, "The
+profile note".
+
+**Until `0064` is applied, the client-list pass fails** — it now writes a table
+that does not exist yet. Apply the migration before deploying this code. The first
+pass after that fills every note; nothing needs backfilling by hand.
+`supabase/checks/wl_client_note_isolation.sql` has not been run yet.
+
+Not stored, because WL does not return it: who added a note and when (blocked,
+item 5 below).
+
+**Shown in the portal (`0065`, same day).** A teacher sees the WL note of each
+student they teach, read-only, in the Public notes view; a student sees their own
+as "From the studio". Both newest first, dated by `note_seen_at` — when the sync
+first saw the note, because WL gives no written date. Portal changes are in
+`spin-dj-pathways` (`GET /api/v1/notes`, `GET /api/v1/students/me/notes`, both tabs).
+**Apply `0064` then `0065` before deploying the portal** — the routes call the two
+functions `0065` creates and fail without them. `wl_client_note_portal_read.sql`
+has not been run yet. Every existing note becomes visible to the student it is
+about once this ships; the studio decided that knowingly.
 
 ### A student signs in, 9 Oct 2026 - end to end, against live
 
@@ -826,6 +854,20 @@ confirmed carries `uid_recipient` per purchase item (see WL-API-NOTES). The
 within it: a parent-child purchase (recipient ≠ payer) has never been observed on
 dev — every sample is a self-purchase — so that path is mock-verified only
 (task 008).
+
+### 5. A client note's author and date — not returned by any endpoint (19 Oct 2026)
+
+The portal shows "Added by Cameron Escovedo on May 28, 2025" above a profile note.
+The Client List report carries the note text (`o_note.text_note_list`) and a
+flag, nothing else — all 38 of its columns read. `/v1/report/data`'s `s_note` is
+empty on every row. No other documented endpoint mentions notes (69 in the index).
+So `wl_client_note` has no author or created date, rather than a guessed one.
+
+Also unobserved: how WL joins **several** notes on one profile into the single
+`text_note_list` string. Every client checked has one.
+
+**Needs:** WL integrations to name an endpoint that returns profile notes with
+author and date, if one exists.
 
 ## A view is rewritten whole, and that has already cost us twice
 

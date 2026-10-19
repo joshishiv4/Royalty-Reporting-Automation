@@ -39,6 +39,8 @@ public/     the WellnessLiving mirror the sync writes, plus the control plane.
                      view: unresolved_service
   ghl         ghl_contact, ghl_custom_field
                      views: client_ghl, ghl_enrichment_missing
+  notes       wl_client_note   (RLS on, no policy; read only through
+                     app.my_students_wl_notes() and app.my_wl_note(), 0065)
   control     sync_queue, sync_job_state, sync_run, sync_conflict
                      views: sync_queue_progress, ghl_match_progress
   raw         raw_wl, raw_ghl, raw_link
@@ -516,6 +518,73 @@ linked with nothing stored, closable by re-parsing `raw_ghl` with no API call.
 **RLS on, no policy.** The tag set includes `disqualified lead`, `bad email` and
 `no phone number` — the studio's notes about a client, not the client's to read.
 Reporting runs on the service role.
+
+### The profile note is its own table, not a `person` column (0064)
+
+`wl_client_note` holds the note studio staff write on a WellnessLiving profile, one
+row per client, keyed by `uid` (FK to `person`, cascade). It is filled by the
+client-list pass from the same report page that writes `person`, so it costs no
+extra API call.
+
+**Why not a column on `person`.** `person_self_select` (`0053`) lets a signed-in
+client read their own `person` row — every column of it. The notes are the
+studio's: discounts, call-back details, "INFORMED OUR RATES ARE CURRENT AND
+FIRM". The same reason keeps `ghl_contact.tags` off `person`. So: **RLS on, no
+policy**, and `0064` refuses to run if a policy exists.
+`supabase/checks/wl_client_note_isolation.sql` proves a client who reads their own
+`person` row still reads no note.
+
+**Why not `app.teacher_note`.** That table is written by teachers in the portal,
+and a public note there is addressed to a student who reads it. WL's staff memo
+would sit one visibility flag away from the student.
+
+**HTML and text, both.** WL sends each note as a whole HTML document; 81 of 260
+live notes are rich (lists, `<br />`, `&nbsp;`, pasted Gmail). `note_html` is WL's
+string verbatim; `note_text` is that reduced to plain lines by `noteText` in
+`src/sync/clients.ts`. Derived, so a better reduction later is a recompute from
+`note_html`, not a re-fetch.
+
+**The one place the client sync deletes.** Everywhere else, merge never clobbers:
+WL's `""` is absence of evidence. `o_note.has_note: false` is not absence — it is
+WL stating there is no note — so a note removed in the portal is deleted here on the
+next pass. A flag that is neither true nor false leaves the row alone. Without the
+delete, a removed discount note would stay in this table forever.
+
+**No author, no date — not nullable, absent.** The portal shows who added a note and
+when; no endpoint returns either (STATUS, blocked item 5). A nullable column
+nothing can fill would look like missing data rather than unavailable data.
+
+**One row per client.** Several notes on one profile arrive as one
+`text_note_list` string; how WL joins them has not been observed.
+
+#### Shown in the portal — and the staff-only reasoning above, partly reversed (0065)
+
+**Decided 19 Oct 2026, by the studio:** a teacher sees the note of every student
+they teach, tagged with that student's name, in the Public notes view; a student
+sees **their own** note ("From the studio"). Nobody else sees any. The reasoning
+above assumed the notes were staff-only. The studio has decided a client may read
+their own note, knowing that the 260 already written include some plainly
+written for staff, and that every future note is now client-facing.
+
+**Still no policy on the table — two `SECURITY DEFINER` functions instead.**
+`app.my_students_wl_notes()` (teacher: `app.teaches_student`) and `app.my_wl_note()`
+(student: `= app.current_student_id()`). Both take no argument, return only
+`note_text` and the seen date — never `note_html`, `raw_wl_id` or `k_business` —
+and walk `uid → app.identity → app.student`. Why not policies: the join crosses
+`app.identity`, and a policy reading another policied table is the 42P17 recursion
+`0055` already hit; and a policy grants every column of the row. `0064`'s "no
+policy" check stays true, so the two functions are the only way in. Proven in
+`supabase/checks/wl_client_note_portal_read.sql`.
+
+**`note_seen_at` — the only honest "newest first".** WL gives no written date, but
+the portal sorts notes by date. `note_seen_at` is when this system first saw the
+note, or saw its HTML change, maintained by trigger: set on insert, reset when
+`note_html` changes, kept otherwise — so the nightly re-sync of an unchanged note
+does not float it to the top. (`updated_at` cannot serve: the upsert moves
+`synced_at` every pass, which fires the `updated_at` trigger.) For notes written from
+now on it is within a day of the truth; the notes that existed before the first
+sync all share that sync's time. The portal labels it "seen" / "as of", never
+"written".
 
 ## Money
 

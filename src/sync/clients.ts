@@ -58,6 +58,24 @@ const FIELD_TO_COLUMN: Readonly<Record<string, string>> = {
 const REQUIRED = 'uid';
 
 /**
+ * The two columns WL splits the profile note into (migration 0064).
+ *
+ * Not in FIELD_TO_COLUMN because they do not go to `person`: person is readable
+ * by the client it describes, and these are the studio's notes about them. They
+ * go to `wl_client_note`, which nobody but the service role reads.
+ *
+ * Measured live 19 Oct 2026: both present on the report, `has_note` a boolean,
+ * `text_note_list` a whole HTML document as one string - 260 of 524 activated
+ * clients have one. `/v1/report/data`'s `s_note` was "" on all 256 of its rows,
+ * including a client with a note, so it is not read.
+ */
+const NOTE_FLAG = 'o_note.has_note';
+const NOTE_BODY = 'o_note.text_note_list';
+
+/** Every field id this sync reads. A page missing any of them is refused. */
+const READ_FIELDS: readonly string[] = [...Object.keys(FIELD_TO_COLUMN), NOTE_FLAG, NOTE_BODY];
+
+/**
  * Refuses a page whose field list has stopped carrying something we map.
  *
  * WHY THIS HAS TO THROW. `mapClientRow` looks every value up by field id and
@@ -78,7 +96,10 @@ const REQUIRED = 'uid';
  *
  * Measured before adding it, so this is a no-op today rather than a new
  * blocker: all 11 mapped ids are present on 20 of 20 stored report payloads
- * (31 Aug 2026), out of 37 ids the report returns.
+ * (31 Aug 2026), out of 37 ids the report returns. The two note ids joined the
+ * list with 0064, measured present on the live report (19 Oct 2026, 38 ids).
+ * The note gets the same strictness for the same reason: a removed Notes column
+ * would otherwise freeze every stored note at its last value, silently.
  *
  * Deliberately strict. Phone is the PRIMARY GoHighLevel match key, so a
  * quietly-absent phone column degrades matching rather than breaking it, which
@@ -87,12 +108,12 @@ const REQUIRED = 'uid';
  */
 export function assertReportFields(fields: readonly string[]): void {
   const present = new Set(fields);
-  const missing = Object.keys(FIELD_TO_COLUMN).filter((id) => !present.has(id));
+  const missing = READ_FIELDS.filter((id) => !present.has(id));
   if (missing.length === 0) return;
   throw new Error(
     `WL client-list report is missing ${String(missing.length)} field id(s) this ` +
       `sync maps: ${missing.join(', ')}. The report is configured in the WL portal, ` +
-      `so a removed or renamed column stops that person column being written ` +
+      `so a removed or renamed column stops that column being written ` +
       `without any other error. Refusing the page rather than storing clients ` +
       `with silently absent fields.`,
   );
@@ -149,6 +170,112 @@ export function mapClientRows(
   return out;
 }
 
+/** A note WL says exists. `note_html` is null when WL sends a note with no text. */
+export interface ClientNote {
+  readonly uid: string;
+  readonly note_html: string | null;
+  readonly note_text: string | null;
+}
+
+/** What one page says about notes: who has one, and who explicitly has none. */
+export interface ClientNotes {
+  readonly keep: readonly ClientNote[];
+  /** uids WL reports `has_note: false` for. Their stored note is deleted. */
+  readonly clear: readonly string[];
+}
+
+/**
+ * Reads the note columns of every row.
+ *
+ * THE ONE PLACE THIS SYNC MAY DELETE. Everywhere else, merge never clobbers -
+ * WL's `""` is the absence of evidence. `has_note: false` is not absence: it is
+ * WL stating there is no note, so a note removed in the portal is removed here.
+ * Anything that is neither true nor false (null, missing) says nothing, and the
+ * stored note is left alone.
+ *
+ * Rows without a uid are dropped, and a repeated uid keeps its first row, both
+ * exactly as mapClientRows does - so a note is never written for a person that
+ * page did not write.
+ */
+export function mapClientNotes(
+  fields: readonly string[],
+  rows: ReadonlyArray<readonly unknown[]>,
+): ClientNotes {
+  const uidAt = fields.indexOf('uid');
+  const flagAt = fields.indexOf(NOTE_FLAG);
+  const bodyAt = fields.indexOf(NOTE_BODY);
+  const seen = new Set<string>();
+  const keep: ClientNote[] = [];
+  const clear: string[] = [];
+
+  for (const row of rows) {
+    const uid = readText(row[uidAt]);
+    if (uid === null || seen.has(uid)) continue;
+    seen.add(uid);
+
+    const flag = row[flagAt];
+    if (flag === true || flag === 1 || flag === '1') {
+      const body = row[bodyAt];
+      const html = typeof body === 'string' && body.trim().length > 0 ? body : null;
+      keep.push({ uid, note_html: html, note_text: html === null ? null : noteText(html) });
+    } else if (flag === false || flag === 0 || flag === '0') {
+      clear.push(uid);
+    }
+  }
+  return { keep, clear };
+}
+
+/** Named entities WL notes were seen to carry, plus the XML five. */
+const ENTITIES: Readonly<Record<string, string>> = {
+  nbsp: ' ',
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+};
+
+/**
+ * WL's note HTML reduced to readable plain lines.
+ *
+ * WL sends every note as a whole document (`<!DOCTYPE html><html><head>...`),
+ * and 81 of 260 live notes are rich - lists, `<br />`, `&nbsp;`, Gmail `<div>`s
+ * from a pasted email. Block ends become line breaks, list items become `- `
+ * lines, tags go, entities are decoded AFTER the tags are stripped (so a note
+ * that literally says `&lt;b&gt;` keeps the text `<b>`), and blank runs collapse.
+ *
+ * Deliberately small rather than a full HTML parser: the stored note_html is the
+ * record, this is a convenience copy recomputable from it.
+ */
+export function noteText(html: string): string | null {
+  const text = html
+    .replace(/<!DOCTYPE[^>]*>/gi, '')
+    .replace(/<head[\s\S]*?<\/head>/gi, '')
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '\n- ')
+    // Not </li>: the next <li> already starts a line, and both would leave a
+    // blank line between every item.
+    .replace(/<\/(p|div|ul|ol|h[1-6]|tr)>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, name: string) => {
+      if (name.startsWith('#')) {
+        const code = /^#x/i.test(name) ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+        return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+      }
+      return ENTITIES[name.toLowerCase()] ?? entity;
+    })
+    .split('\n')
+    .map((line) => line.replace(/[ \t\u00a0]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return text.length === 0 ? null : text;
+}
+
+/** PostgREST `in.(...)` lists go in the URL; keep each delete well short of a limit. */
+const NOTE_DELETE_BATCH = 200;
+
 export interface WriteClientListInput {
   readonly kBusiness: string;
   readonly runId: string;
@@ -165,7 +292,8 @@ export interface WriteClientListInput {
 }
 
 /**
- * Stores one page: the payload verbatim, then the people, then the link.
+ * Stores one page: the payload verbatim, then the people, then the link, then
+ * the notes - kept, replaced, or deleted where WL says there is none (0064).
  *
  * `field_group` is 'identity' rather than 'all': this report establishes who
  * somebody is, and nothing about their money or their bookings. A person row
@@ -175,7 +303,7 @@ export interface WriteClientListInput {
 export async function writeClientList(
   db: SupabaseClient,
   input: WriteClientListInput,
-): Promise<{ rawWlId: string; clients: readonly ClientRow[] }> {
+): Promise<{ rawWlId: string; clients: readonly ClientRow[]; notes: ClientNotes }> {
   const rawWlId = await storeRawWl(db, {
     kBusiness: input.kBusiness,
     sourceEndpoint: WL_PATHS.reportQuery,
@@ -210,7 +338,34 @@ export async function writeClientList(
     );
   }
 
-  return { rawWlId, clients };
+  // AFTER person, deliberately: wl_client_note.uid references person.uid, and
+  // the person rows this page carries are written just above.
+  const notes = mapClientNotes(input.fields, input.page.rows);
+  if (notes.keep.length > 0) {
+    await db.upsert(
+      'wl_client_note',
+      notes.keep.map((n) => ({
+        ...n,
+        k_business: input.kBusiness,
+        raw_wl_id: rawWlId,
+        synced_at: input.syncedAt,
+      })),
+      { onConflict: 'uid' },
+    );
+    await linkRows(
+      db,
+      rawWlId,
+      'wl_client_note',
+      notes.keep.map((n) => n.uid),
+      'note',
+    );
+  }
+  for (let i = 0; i < notes.clear.length; i += NOTE_DELETE_BATCH) {
+    const batch = notes.clear.slice(i, i + NOTE_DELETE_BATCH);
+    await db.delete('wl_client_note', `uid=in.(${batch.map((u) => `"${u}"`).join(',')})`);
+  }
+
+  return { rawWlId, clients, notes };
 }
 
 /**

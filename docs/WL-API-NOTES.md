@@ -906,6 +906,35 @@ other three are blank for all 25, so there was nothing to compare. The portal's
 that order. `o_note.text_note_list` matches too — the API carries slightly MORE
 text than the CSV export, which truncates.
 
+### The profile note: two flat columns, a whole HTML document, no author or date (probed live 19 Oct 2026)
+
+Probed for one client whose portal profile shows a single note ("$15 VIP
+Discount Monthly", "Added by <staff member> on May 28, 2025"). `o_note` is not
+an object in the row — `a_field` names two flat columns:
+
+| Field id | Value for that client |
+|---|---|
+| `o_note.has_note` | `true` |
+| `o_note.text_note_list` | `"<!DOCTYPE html>\n<html>\n<head>\n</head>\n<body>\n<p>$15 VIP Discount Monthly</p>\n</body>\n</html>"` |
+
+- **Always a full HTML document**, never plain text. 260 of 524 activated clients
+  have a note; 81 of those are rich — `<ul>`/`<li>`, `<br />`, `&nbsp;`, Gmail
+  `<div class="gmail_default">` from a pasted email.
+- **A string, despite the `_list` name**, on all 260. How several notes on one
+  profile are joined is not observed — every client checked has one.
+- **No author, no date.** None of the 38 columns carries either. `o_since_date.*`
+  is the client's join date, not the note's.
+- `a_dynamic` has no entry mentioning a note.
+
+**`/v1/report/data`'s `s_note` is not this.** The documented report-data endpoint
+(`id_report=33`, 256 rows) has an `s_note` key on every row — and it was `""` on
+all 256, including the same client. Its `__a_message` carries the string "Note
+with no text", which is why `wl_client_note.note_html` may be null.
+
+No other documented endpoint mentions notes: none of the 69 in the API index.
+
+Stored by `0064` in `wl_client_note`; see DATA-MODEL.
+
 ### Teachers
 
 `k_login_type` `1260510` is "Staff Client Profile" — **25 activated**, exactly

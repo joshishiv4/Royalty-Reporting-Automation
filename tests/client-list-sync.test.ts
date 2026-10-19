@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   assertReportFields,
   groupByShape,
+  mapClientNotes,
   mapClientRow,
   mapClientRows,
+  noteText,
   writeClientList,
 } from '../src/sync/clients.js';
 import type { SupabaseClient } from '../src/supabase/client.js';
@@ -54,6 +56,10 @@ const FIELDS = [
   'field-general-7.dl_date',
   'field-general-11',
   'text_client_type',
+  // The note columns (0064). The sync refuses a page without them, and a null
+  // flag says nothing - so these fixtures write and delete no note at all.
+  'o_note.has_note',
+  'o_note.text_note_list',
 ];
 
 const ROW: Array<string | boolean | null> = [
@@ -70,6 +76,8 @@ const ROW: Array<string | boolean | null> = [
   '1985-04-11',
   'MEM-4471',
   'Staff Client Profile',
+  null,
+  null,
 ];
 
 /** A WL client that answers `n` polls as queued, then completes. */
@@ -623,5 +631,193 @@ describe('a field list that stopped carrying what we map fails the run', () => {
     // from raw_wl without another WL call. But no person is touched.
     expect(calls.some((c) => c.table === 'raw_wl')).toBe(true);
     expect(calls.filter((c) => c.table === 'person')).toHaveLength(0);
+  });
+});
+
+describe('the profile note (0064)', () => {
+  const at = (id: string) => FIELDS.indexOf(id);
+
+  /** ROW with its note columns set. */
+  function withNote(flag: unknown, body: unknown, uid = '33793232'): unknown[] {
+    const row: unknown[] = [...ROW];
+    row[at('uid')] = uid;
+    row[at('o_note.has_note')] = flag;
+    row[at('o_note.text_note_list')] = body;
+    return row;
+  }
+
+  /** Exactly what WL returned for a client with one note, 19 Oct 2026. */
+  const LIVE_HTML =
+    '<!DOCTYPE html>\n<html>\n<head>\n</head>\n<body>\n<p>$15 VIP Discount Monthly</p>\n</body>\n</html>';
+
+  function db() {
+    const calls: Array<{ op: string; table: string; arg: unknown }> = [];
+    return {
+      calls,
+      db: {
+        rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
+        insert: vi.fn((table: string, rows: unknown[]) => {
+          calls.push({ op: 'insert', table, arg: rows });
+          return Promise.resolve([{ id: 'raw-1' }]);
+        }),
+        upsert: vi.fn((table: string, rows: unknown[]) => {
+          calls.push({ op: 'upsert', table, arg: rows });
+          return Promise.resolve(rows);
+        }),
+        delete: vi.fn((table: string, query: string) => {
+          calls.push({ op: 'delete', table, arg: query });
+          return Promise.resolve();
+        }),
+      } as unknown as SupabaseClient,
+    };
+  }
+
+  async function write(rows: unknown[][]) {
+    const h = db();
+    await writeClientList(h.db, {
+      kBusiness: K_BUSINESS,
+      runId: 'r1',
+      page: {
+        fields: FIELDS,
+        rows,
+        response: { body: {}, traceId: 't', kLog: null, httpStatus: 200, latencyMs: 1 },
+      },
+      fields: FIELDS,
+      syncedAt: 'now',
+      activatedUids: new Set(),
+    });
+    return h.calls;
+  }
+
+  describe('noteText', () => {
+    it('reduces the live document to the words the portal shows', () => {
+      expect(noteText(LIVE_HTML)).toBe('$15 VIP Discount Monthly');
+    });
+
+    // Shapes seen in the 81 rich live notes: <br />, lists, &nbsp;, Gmail divs.
+    it('keeps line structure and decodes entities after stripping tags', () => {
+      const html =
+        '<body><div class="gmail_default">Monday:&nbsp;</div><ul type="disc"><li>Admin: 11:00A</li>' +
+        '<li>Teaching</li></ul>FIRM.<br /><br /><br />CALL &amp; ASK &lt;b&gt; &#36;5 &#x41;</body>';
+      expect(noteText(html)).toBe(
+        'Monday:\n\n- Admin: 11:00A\n- Teaching\nFIRM.\n\nCALL & ASK <b> $5 A',
+      );
+    });
+
+    it('is null for a note that is only markup', () => {
+      expect(
+        noteText('<!DOCTYPE html><html><head><title>x</title></head><body> </body></html>'),
+      ).toBeNull();
+    });
+  });
+
+  describe('mapClientNotes', () => {
+    it('keeps a note WL says exists, as HTML and as text', () => {
+      expect(mapClientNotes(FIELDS, [withNote(true, LIVE_HTML)])).toEqual({
+        keep: [{ uid: '33793232', note_html: LIVE_HTML, note_text: '$15 VIP Discount Monthly' }],
+        clear: [],
+      });
+    });
+
+    // WL's catalogue carries "Note with no text": a note can exist and be empty.
+    it('keeps a note with no text as a row with null text', () => {
+      expect(mapClientNotes(FIELDS, [withNote(true, '')]).keep).toEqual([
+        { uid: '33793232', note_html: null, note_text: null },
+      ]);
+    });
+
+    // The one deletion in this sync: has_note false is a statement, not absence.
+    it('clears a client WL says has no note', () => {
+      expect(mapClientNotes(FIELDS, [withNote(false, '')])).toEqual({
+        keep: [],
+        clear: ['33793232'],
+      });
+    });
+
+    // Neither true nor false is the absence of evidence: leave the stored note.
+    it('neither keeps nor clears when the flag says nothing', () => {
+      expect(mapClientNotes(FIELDS, [withNote(null, LIVE_HTML)])).toEqual({ keep: [], clear: [] });
+    });
+
+    it('reads by name, so a reordered report still finds the note', () => {
+      const row = withNote(true, LIVE_HTML);
+      expect(mapClientNotes([...FIELDS].reverse(), [[...row].reverse()]).keep[0]?.note_text).toBe(
+        '$15 VIP Discount Monthly',
+      );
+    });
+
+    it('skips a row with no uid, and keeps the first of a repeated uid', () => {
+      const notes = mapClientNotes(FIELDS, [
+        withNote(true, '<p>first</p>'),
+        withNote(false, ''),
+        withNote(true, '<p>nobody</p>', ''),
+      ]);
+      expect(notes).toEqual({
+        keep: [{ uid: '33793232', note_html: '<p>first</p>', note_text: 'first' }],
+        clear: [],
+      });
+    });
+  });
+
+  describe('writeClientList', () => {
+    it('writes the note after the person it references, linked to the raw page', async () => {
+      const calls = await write([withNote(true, LIVE_HTML)]);
+      const person = calls.findIndex((c) => c.op === 'upsert' && c.table === 'person');
+      const note = calls.findIndex((c) => c.op === 'upsert' && c.table === 'wl_client_note');
+
+      expect(person).toBeGreaterThanOrEqual(0);
+      expect(note).toBeGreaterThan(person);
+      expect(calls[note]?.arg).toEqual([
+        {
+          uid: '33793232',
+          note_html: LIVE_HTML,
+          note_text: '$15 VIP Discount Monthly',
+          k_business: K_BUSINESS,
+          raw_wl_id: 'raw-1',
+          synced_at: 'now',
+        },
+      ]);
+      const link = calls.find(
+        (c) =>
+          c.table === 'raw_link' &&
+          (c.arg as Array<Record<string, unknown>>)[0]?.table_name === 'wl_client_note',
+      );
+      expect((link?.arg as Array<Record<string, unknown>>)[0]?.field_group).toBe('note');
+    });
+
+    // Never onto person: person is readable by its own client.
+    it('puts no note column on person', async () => {
+      const calls = await write([withNote(true, LIVE_HTML)]);
+      const person = calls.find((c) => c.op === 'upsert' && c.table === 'person');
+      expect(JSON.stringify(person?.arg)).not.toContain('VIP');
+    });
+
+    it('deletes the stored note of a client WL says has none', async () => {
+      const calls = await write([withNote(false, ''), withNote(true, LIVE_HTML, '45811600')]);
+      expect(calls.filter((c) => c.op === 'delete')).toEqual([
+        { op: 'delete', table: 'wl_client_note', arg: 'uid=in.("33793232")' },
+      ]);
+    });
+
+    it('deletes in batches short enough for a URL', async () => {
+      const rows = Array.from({ length: 450 }, (_, i) =>
+        withNote(false, '', String(10_000_000 + i)),
+      );
+      const deletes = (await write(rows)).filter((c) => c.op === 'delete');
+      expect(deletes.map((d) => String(d.arg).split(',').length)).toEqual([200, 200, 50]);
+    });
+
+    it('touches no note when the flag says nothing', async () => {
+      const calls = await write([withNote(null, LIVE_HTML)]);
+      expect(calls.filter((c) => c.table === 'wl_client_note')).toEqual([]);
+    });
+  });
+
+  describe('a report without the note columns is refused', () => {
+    for (const id of ['o_note.has_note', 'o_note.text_note_list']) {
+      it(`throws without ${id}`, () => {
+        expect(() => assertReportFields(FIELDS.filter((f) => f !== id))).toThrow(id);
+      });
+    }
   });
 });
