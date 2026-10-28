@@ -1,8 +1,9 @@
 # Status and plan
 
 Last updated **28 Oct 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (The 28 Oct update covers dropping the client
-note's date, `0066`, only. The 19 Oct update covers the client-note entry only; the
+than none, because it is believed. (The 28 Oct update covers the client note only:
+dropping its date, `0066`, copying it into `teacher_note`, `0067`, and one row per note,
+`0068`. The 19 Oct update covers the client-note entry only; the
 13 Oct one the retention entry, the 12 Oct one the orphaned run under it, the 8 Oct
 one the report pass; the 1 Oct one covered the transaction-report entries only. The
 portal work in `0039`–`0049` is still not reflected in the plan table below; `0053`
@@ -29,6 +30,38 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### Each WL note is its own row, 28 Oct 2026 - written, `0068` not yet applied
+
+WL joins all of a profile's notes into one string; the portal showed a client's two
+notes as one card. `0068` makes `wl_client_note` one row per note (keyed by a hash
+of the note, `note_key`), the sync splits the string and writes each page through
+`replace_wl_client_notes()`, and `teacher_note_link` becomes one link per note with
+WL's display `position`. See DATA-MODEL, "One row per note".
+
+**Order: apply `0068`, then deploy the sync code, then run a client-list pass.** The
+old sync upserts on `uid` alone, which `0068` removes - run against `0068` it fails.
+`0068` does not split existing rows; the first client-list pass after it does (164
+clients, 676 notes on dev). The portal change that sorts studio notes by the link's
+`position` needs `0068` - that column does not exist before it - so deploy it after.
+
+`0067` **is applied on dev** (found 28 Oct: the trigger is on the table, 339 links).
+
+### WL notes become teacher notes, 28 Oct 2026 - written, `0067` applied on dev
+
+Task 037. A WellnessLiving profile note is now a row of `app.teacher_note`, kept by
+a trigger on `wl_client_note`: a student's note is a public note to them with no
+author, a teacher's is their own private note, and `app.teacher_note_link` records
+which notes came from WL. The two `0065` functions are dropped. See DATA-MODEL,
+"Into `teacher_note`, by trigger".
+
+**Release order: the portal change first, then `0067`.** The portal's two note
+routes (`spin-dj-pathways`) read WL notes from `teacher_note` and no longer call
+`my_wl_note()` / `my_students_wl_notes()`; applied first, `0067` would leave the
+deployed portal calling functions that no longer exist. Before `0067` the new portal
+simply shows no WL notes.
+
+Not yet done: `wl_client_note_portal_read.sql` run against dev.
 
 ### WL client notes sync, 19 Oct 2026 - code complete, `0064` not yet applied
 
@@ -994,8 +1027,8 @@ flag, nothing else — all 38 of its columns read. `/v1/report/data`'s `s_note` 
 empty on every row. No other documented endpoint mentions notes (69 in the index).
 So `wl_client_note` has no author or created date, rather than a guessed one.
 
-Also unobserved: how WL joins **several** notes on one profile into the single
-`text_note_list` string. Every client checked has one.
+How WL joins **several** notes on one profile is now observed (28 Oct 2026): with
+`", "`, 164 of 339 clients have more than one, and `0068` stores each separately.
 
 **Needs:** WL integrations to name an endpoint that returns profile notes with
 author and date, if one exists.

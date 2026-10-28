@@ -534,9 +534,11 @@ policy**, and `0064` refuses to run if a policy exists.
 `supabase/checks/wl_client_note_isolation.sql` proves a client who reads their own
 `person` row still reads no note.
 
-**Why not `app.teacher_note`.** That table is written by teachers in the portal,
-and a public note there is addressed to a student who reads it. WL's staff memo
-would sit one visibility flag away from the student.
+**Why not `app.teacher_note`** — the reasoning of `0064`, reversed by `0067` below.
+That table is written by teachers in the portal, and a public note there is
+addressed to a student who reads it. WL's staff memo would sit one visibility flag
+away from the student. Once the studio decided students read their own note
+(`0065`), that objection was gone, and `0067` copies the notes into it.
 
 **HTML and text, both.** WL sends each note as a whole HTML document; 81 of 260
 live notes are rich (lists, `<br />`, `&nbsp;`, pasted Gmail). `note_html` is WL's
@@ -554,8 +556,30 @@ delete, a removed discount note would stay in this table forever.
 when; no endpoint returns either (STATUS, blocked item 5). A nullable column
 nothing can fill would look like missing data rather than unavailable data.
 
-**One row per client.** Several notes on one profile arrive as one
-`text_note_list` string; how WL joins them has not been observed.
+**One row per note, not per client (`0068`, 28 Oct 2026).** `0064` stored one row
+per client, assuming one note per profile. WL in fact joins all of a profile's
+notes into the one `text_note_list` string with `", "`, and the portal showed two
+notes as one card. Measured on dev: **164 of 339 clients have several — 676 notes
+in all.** Every HTML note is a whole document, so the sync splits after each
+`</html>` and the `", "` that follows (`splitNotes` in `src/sync/clients.ts`).
+Older plain-text notes always come after the HTML ones, and 29 such tails contain
+`", "` themselves; two notes or one note with a comma cannot be told apart, so a
+plain-text tail stays **one** note rather than being cut on a guess.
+
+A note's identity is **`note_key`, a hash of its HTML** (first 32 hex of sha256,
+`#n` for a repeat on one profile), unique with `uid`. A position was rejected: WL
+lists the newest note first, so one new note would shift every position and every
+note would look edited. `position` is kept for display order only (0 = WL's
+first). An edit in WL is a new key: the old row goes, the edited one arrives.
+
+The sync writes a page through `public.replace_wl_client_notes(uids, notes)`:
+each client the page speaks for keeps exactly its notes on the page, in one call.
+`has_note: false`, and WL's "Note with no text" (a true flag with an empty
+body), are a client with no notes in the call, so theirs are deleted. `0068`
+does **not** split existing rows itself — that needs `noteText`, and a second copy
+in SQL would drift — it gives each row the key the sync would, and the next
+client-list pass replaces the combined rows with their parts. Single notes keep
+the same key and do not churn.
 
 #### Shown in the portal — and the staff-only reasoning above, partly reversed (0065)
 
@@ -587,6 +611,74 @@ The teacher's list is ordered by student name, since there is no honest "newest"
 `created_at`/`updated_at` are not a substitute: the upsert moves `synced_at` every
 pass, which fires the `updated_at` trigger. **Re-running `0065` brings the date
 back** — re-run `0066` after it.
+
+#### Into `teacher_note`, by trigger — and the two functions dropped (0067)
+
+**Decided 28 Oct 2026, by the studio:** a WL note is a `teacher_note` row, not a
+side table the portal merges. One notes table, one read path. The two `0065`
+functions are dropped — kept, every note would show twice.
+
+| WL note belongs to | Becomes | Author |
+|---|---|---|
+| a **student** (`identity.student_id`) | a **public** note to that student | none — WL does not say |
+| a **teacher** (`identity.teacher_id`) | that teacher's **private** note, no student | that teacher |
+| anyone else, or several identities, or an empty note | nothing | — |
+
+Measured on dev, 28 Oct 2026 (before `0068` split the rows): 339 clients with a
+note = 334 students and 5 teachers, every one with exactly one identity — all 339
+got a link. An earlier count of "91 with no identity" was wrong: PostgREST returns
+at most 1,000 rows and `identity` has more, so the lookup was truncated. The
+teacher reads what staff wrote about them in WL; the studio accepted that.
+
+**One teacher note per WL note (`0068`).** The link is keyed `(uid, note_key)`, not
+`uid` alone, so a client's three WL notes are three `teacher_note` rows. It also
+carries `position`, WL's display order — the one thing besides provenance WL gives
+about a note, and what the portal sorts a client's notes by. `authenticated` may
+read `teacher_note_id` and `position`, never `uid` or `note_key`.
+
+**The WL key lives on a link, not on the note.** `app.teacher_note_link
+(teacher_note_id, uid)` and nothing else — the `cohort_link` / `session_link` /
+`attendance_link` pattern: **presence of a link is the provenance.** A `source`
+column or an `is_wl_note` boolean was considered and rejected: either would sit
+beside the link as a second answer, and the two could disagree. The link holds the
+WL **uid**, not `wl_client_note.id`: the uid is WL's stable key, while a
+`wl_client_note` row is deleted on `has_note: false` and re-created when the note
+returns. For the same reason there is no foreign key to `wl_client_note`.
+`authenticated` may read the link's `teacher_note_id` only — enough for the portal
+to tell which notes came from WL, never the uid.
+
+**Kept by one idempotent function.** `public.sync_wl_note_to_teacher_note(uid)`
+makes the note agree with `wl_client_note`: insert (note + link), update the body,
+soft-delete when the WL row goes or its text is empty, un-delete when it returns.
+An `AFTER` trigger on `wl_client_note` calls it per row; the migration's backfill
+calls it for every existing note, **after** creating the trigger, so nothing written
+between the two is lost. It writes only on a real change, so the nightly upsert of
+an unchanged note touches no `teacher_note`.
+
+**What changed on `teacher_note`, and why:**
+
+- `author_teacher_id` is **nullable** — WL gives no author. A null author is allowed
+  only on a linked note: a deferred constraint trigger checks it at commit (deferred,
+  because the note is inserted before its link). Through the API it was already
+  refused, since the insert policy needs `author = current_teacher_id()`.
+- A linked note is **read-only through the API**. A student's WL note fails the
+  author policy by having no author; a teacher's own WL note has one, so
+  `teacher_note_author_update` gained `not app.is_linked_note(id)`. Soft delete is an
+  update, so that closes delete as well. **Re-running `0063` or `0056` drops this
+  guard** — re-run `0067` after either.
+- `0057`'s revision trigger **skips linked notes**. It writes `author_teacher_id`, NOT
+  NULL on the revision, on every body change — so the first WL note staff edited
+  would have failed the sync. WL is a linked note's history, not us.
+- A teacher reads the linked notes of students they teach:
+  `teacher_note_wl_student_select` (`public`, live, linked, `teaches_student`). Like
+  every policy since `0055` it names no table; `app.is_linked_note()` is a definer
+  helper for exactly that reason.
+
+`created_at` of a WL note is when the trigger first copied it — not when it was
+written, which WL does not say; the portal shows WL notes with no date (`0066`). A
+person who *becomes* a student or teacher after their note was copied gets no note
+until the note text changes or `0067`'s backfill is re-run. Proven in
+`supabase/checks/wl_client_note_portal_read.sql`.
 
 ## Money
 
@@ -1499,7 +1591,8 @@ The policies, all `to authenticated` and none naming a table (the 42P17 rule fro
 |---|---|
 | SELECT (author) | `author_teacher_id = current_teacher_id()` — a teacher sees all their own, both kinds |
 | SELECT (student) | `visibility = 'public' and student_id = current_student_id() and deleted_at is null` — a student sees only public notes addressed to them |
-| INSERT / UPDATE | author only, and whenever a student is named `teaches_student(student_id)` as well (`0063`; before, for public notes only) |
+| SELECT (teacher, WL) | `visibility = 'public' and deleted_at is null and is_linked_note(id) and teaches_student(student_id)` — a teacher sees the WellnessLiving notes of students they teach (`0067`) |
+| INSERT / UPDATE | author only, and whenever a student is named `teaches_student(student_id)` as well (`0063`; before, for public notes only). UPDATE also requires `not is_linked_note(id)` — a WL note is read-only (`0067`) |
 | DELETE | none since `0058` — a delete is an `UPDATE` of `deleted_at` |
 
 **The roster check is a write-time rule, on purpose.** A teacher may only *name* a
@@ -1527,7 +1620,9 @@ the write policies is on the plain `student_id` column, a note with no student, 
 is a legitimate row and not the stranger `0055`'s rule is about.
 
 `organization_stamp` and `set_updated_at` triggers as every owned table; no
-`synced_at`, because nothing syncs a note from anywhere. `GRANT`s to
+`synced_at` — the only notes that come from elsewhere are WellnessLiving's, and
+they are written by trigger from `wl_client_note`, with a link row as their
+provenance (`0067`, under "The profile note"). `GRANT`s to
 `authenticated` for all four commands, because a policy without one is
 `permission denied` rather than a refusal (below). Proven by
 [`teacher_note_isolation.sql`](../supabase/checks/teacher_note_isolation.sql).

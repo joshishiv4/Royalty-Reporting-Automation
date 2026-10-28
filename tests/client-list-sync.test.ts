@@ -5,7 +5,9 @@ import {
   mapClientNotes,
   mapClientRow,
   mapClientRows,
+  noteKey,
   noteText,
+  splitNotes,
   writeClientList,
 } from '../src/sync/clients.js';
 import type { SupabaseClient } from '../src/supabase/client.js';
@@ -655,7 +657,10 @@ describe('the profile note (0064)', () => {
     return {
       calls,
       db: {
-        rpc: vi.fn((_fn: string, args: { items: unknown[] }) => Promise.resolve(args.items.length)),
+        rpc: vi.fn((fn: string, args: Record<string, unknown>) => {
+          calls.push({ op: 'rpc', table: fn, arg: args });
+          return Promise.resolve(0);
+        }),
         insert: vi.fn((table: string, rows: unknown[]) => {
           calls.push({ op: 'insert', table, arg: rows });
           return Promise.resolve([{ id: 'raw-1' }]);
@@ -711,32 +716,116 @@ describe('the profile note (0064)', () => {
     });
   });
 
+  /** Exactly what WL returned for uid 57075204, 28 Oct 2026: two notes, one string. */
+  const NEWER =
+    '<!DOCTYPE html>\n<html>\n<head>\n</head>\n<body>\n<p>1 lesson no expiration, (makeup not yet booked) 4/7 PG&nbsp;</p>\n</body>\n</html>';
+  const OLDER =
+    '<!DOCTYPE html>\n<html>\n<head>\n</head>\n<body>\n<p>Signed up in March 2026 25% discount</p>\n</body>\n</html>';
+
+  describe('splitNotes', () => {
+    it("splits WL's joined string at the end of each HTML note", () => {
+      expect(splitNotes(`${NEWER}, ${OLDER}`)).toEqual([NEWER, OLDER]);
+    });
+
+    // The comma inside the first note's text is not a boundary.
+    it('does not split on a comma inside a note', () => {
+      expect(splitNotes(NEWER)).toEqual([NEWER]);
+    });
+
+    // An older plain-text tail comes after the HTML notes, and may itself hold
+    // ", " - two notes or one, undecidable, so it stays one.
+    it('keeps a plain-text tail whole, commas and all', () => {
+      const tail = 'OWED A $10 CREDIT - CE, SDC VIRTUAL\n\n---\n\nRECONCILED WL BALANCE';
+      expect(splitNotes(`${LIVE_HTML}, ${tail}`)).toEqual([LIVE_HTML, tail]);
+    });
+
+    it('is empty for an empty body', () => {
+      expect(splitNotes('')).toEqual([]);
+      expect(splitNotes('  ')).toEqual([]);
+    });
+  });
+
+  describe('noteKey', () => {
+    it('is stable for the same text and different for different text', () => {
+      expect(noteKey(NEWER, 0)).toBe(noteKey(NEWER, 0));
+      expect(noteKey(NEWER, 0)).not.toBe(noteKey(OLDER, 0));
+      expect(noteKey(NEWER, 0)).toMatch(/^[0-9a-f]{32}$/);
+    });
+
+    // Migration 0068 computes the same key in SQL for the rows it carries over:
+    // substr(encode(sha256(convert_to(note_html, 'UTF8')), 'hex'), 1, 32).
+    it('matches the SQL key of 0068 for a known input', () => {
+      expect(noteKey('abc', 0)).toBe('ba7816bf8f01cfea414140de5dae2223');
+    });
+
+    it('marks a repeat of the same text', () => {
+      expect(noteKey(OLDER, 1)).toBe(`${noteKey(OLDER, 0)}#1`);
+    });
+  });
+
   describe('mapClientNotes', () => {
     it('keeps a note WL says exists, as HTML and as text', () => {
       expect(mapClientNotes(FIELDS, [withNote(true, LIVE_HTML)])).toEqual({
-        keep: [{ uid: '33793232', note_html: LIVE_HTML, note_text: '$15 VIP Discount Monthly' }],
-        clear: [],
+        keep: [
+          {
+            uid: '33793232',
+            note_key: noteKey(LIVE_HTML, 0),
+            position: 0,
+            note_html: LIVE_HTML,
+            note_text: '$15 VIP Discount Monthly',
+          },
+        ],
+        replace: ['33793232'],
       });
     });
 
-    // WL's catalogue carries "Note with no text": a note can exist and be empty.
-    it('keeps a note with no text as a row with null text', () => {
-      expect(mapClientNotes(FIELDS, [withNote(true, '')]).keep).toEqual([
-        { uid: '33793232', note_html: null, note_text: null },
+    it("makes one note of each part, in WL's order", () => {
+      const notes = mapClientNotes(FIELDS, [withNote(true, `${NEWER}, ${OLDER}`, '57075204')]);
+      expect(notes.replace).toEqual(['57075204']);
+      expect(notes.keep.map((n) => [n.position, n.note_text])).toEqual([
+        [0, '1 lesson no expiration, (makeup not yet booked) 4/7 PG'],
+        [1, 'Signed up in March 2026 25% discount'],
       ]);
+      expect(new Set(notes.keep.map((n) => n.note_key)).size).toBe(2);
+    });
+
+    // A new note on top shifts the old one's position but not its identity.
+    it("keeps a note's key when a newer note is added above it", () => {
+      const before = mapClientNotes(FIELDS, [withNote(true, OLDER)]).keep[0];
+      const after = mapClientNotes(FIELDS, [withNote(true, `${NEWER}, ${OLDER}`)]).keep[1];
+      expect(after?.note_key).toBe(before?.note_key);
+      expect(after?.position).toBe(1);
+    });
+
+    it('gives two identical notes on one profile different keys', () => {
+      const keys = mapClientNotes(FIELDS, [withNote(true, `${OLDER}, ${OLDER}`)]).keep.map(
+        (n) => n.note_key,
+      );
+      expect(keys).toEqual([noteKey(OLDER, 0), noteKey(OLDER, 1)]);
+    });
+
+    // WL's "Note with no text": nothing to keep, so the client's notes clear.
+    it('replaces with nothing when the note is empty', () => {
+      expect(mapClientNotes(FIELDS, [withNote(true, '')])).toEqual({
+        keep: [],
+        replace: ['33793232'],
+      });
     });
 
     // The one deletion in this sync: has_note false is a statement, not absence.
-    it('clears a client WL says has no note', () => {
+    it('replaces with nothing a client WL says has no note', () => {
       expect(mapClientNotes(FIELDS, [withNote(false, '')])).toEqual({
         keep: [],
-        clear: ['33793232'],
+        replace: ['33793232'],
       });
     });
 
-    // Neither true nor false is the absence of evidence: leave the stored note.
-    it('neither keeps nor clears when the flag says nothing', () => {
-      expect(mapClientNotes(FIELDS, [withNote(null, LIVE_HTML)])).toEqual({ keep: [], clear: [] });
+    // Neither true nor false is the absence of evidence: leave the stored notes.
+    it('neither keeps nor replaces when the flag says nothing', () => {
+      expect(mapClientNotes(FIELDS, [withNote(null, LIVE_HTML)])).toEqual({
+        keep: [],
+        replace: [],
+      });
     });
 
     it('reads by name, so a reordered report still finds the note', () => {
@@ -753,30 +842,43 @@ describe('the profile note (0064)', () => {
         withNote(true, '<p>nobody</p>', ''),
       ]);
       expect(notes).toEqual({
-        keep: [{ uid: '33793232', note_html: '<p>first</p>', note_text: 'first' }],
-        clear: [],
+        keep: [
+          {
+            uid: '33793232',
+            note_key: noteKey('<p>first</p>', 0),
+            position: 0,
+            note_html: '<p>first</p>',
+            note_text: 'first',
+          },
+        ],
+        replace: ['33793232'],
       });
     });
   });
 
   describe('writeClientList', () => {
-    it('writes the note after the person it references, linked to the raw page', async () => {
+    it('writes the notes after the person they reference, linked to the raw page', async () => {
       const calls = await write([withNote(true, LIVE_HTML)]);
       const person = calls.findIndex((c) => c.op === 'upsert' && c.table === 'person');
-      const note = calls.findIndex((c) => c.op === 'upsert' && c.table === 'wl_client_note');
+      const note = calls.findIndex((c) => c.op === 'rpc' && c.table === 'replace_wl_client_notes');
 
       expect(person).toBeGreaterThanOrEqual(0);
       expect(note).toBeGreaterThan(person);
-      expect(calls[note]?.arg).toEqual([
-        {
-          uid: '33793232',
-          note_html: LIVE_HTML,
-          note_text: '$15 VIP Discount Monthly',
-          k_business: K_BUSINESS,
-          raw_wl_id: 'raw-1',
-          synced_at: 'now',
-        },
-      ]);
+      expect(calls[note]?.arg).toEqual({
+        p_uids: ['33793232'],
+        p_notes: [
+          {
+            uid: '33793232',
+            note_key: noteKey(LIVE_HTML, 0),
+            position: 0,
+            note_html: LIVE_HTML,
+            note_text: '$15 VIP Discount Monthly',
+            k_business: K_BUSINESS,
+            raw_wl_id: 'raw-1',
+            synced_at: 'now',
+          },
+        ],
+      });
       const link = calls.find(
         (c) =>
           c.table === 'raw_link' &&
@@ -792,24 +894,31 @@ describe('the profile note (0064)', () => {
       expect(JSON.stringify(person?.arg)).not.toContain('VIP');
     });
 
-    it('deletes the stored note of a client WL says has none', async () => {
+    // has_note false: the client is replaced with no notes, so theirs are deleted.
+    it('replaces a client WL says has none with no notes, in the same single call', async () => {
       const calls = await write([withNote(false, ''), withNote(true, LIVE_HTML, '45811600')]);
-      expect(calls.filter((c) => c.op === 'delete')).toEqual([
-        { op: 'delete', table: 'wl_client_note', arg: 'uid=in.("33793232")' },
-      ]);
+      const rpcs = calls.filter((c) => c.op === 'rpc');
+      expect(rpcs).toHaveLength(1);
+      const arg = rpcs[0]?.arg as { p_uids: string[]; p_notes: Array<{ uid: string }> };
+      expect(arg.p_uids).toEqual(['33793232', '45811600']);
+      expect(arg.p_notes.map((n) => n.uid)).toEqual(['45811600']);
+      expect(calls.filter((c) => c.op === 'delete')).toEqual([]);
     });
 
-    it('deletes in batches short enough for a URL', async () => {
+    it('writes a whole page of notes in one call', async () => {
       const rows = Array.from({ length: 450 }, (_, i) =>
-        withNote(false, '', String(10_000_000 + i)),
+        withNote(i % 2 === 0, i % 2 === 0 ? `${NEWER}, ${OLDER}` : '', String(10_000_000 + i)),
       );
-      const deletes = (await write(rows)).filter((c) => c.op === 'delete');
-      expect(deletes.map((d) => String(d.arg).split(',').length)).toEqual([200, 200, 50]);
+      const rpcs = (await write(rows)).filter((c) => c.op === 'rpc');
+      expect(rpcs).toHaveLength(1);
+      const arg = rpcs[0]?.arg as { p_uids: string[]; p_notes: unknown[] };
+      expect(arg.p_uids).toHaveLength(450);
+      expect(arg.p_notes).toHaveLength(450);
     });
 
     it('touches no note when the flag says nothing', async () => {
       const calls = await write([withNote(null, LIVE_HTML)]);
-      expect(calls.filter((c) => c.table === 'wl_client_note')).toEqual([]);
+      expect(calls.filter((c) => c.op === 'rpc' || c.table === 'wl_client_note')).toEqual([]);
     });
   });
 

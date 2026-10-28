@@ -5,6 +5,7 @@ Sorted by status (done last), then priority, then ID.
 
 | ID  | Title | Status | Priority | Depends on | Path |
 |-----|-------|--------|----------|------------|------|
+| 037 | WellnessLiving profile notes into app.teacher_note, linked and kept in sync | active | medium | 033 | `active/037-wl-note-into-teacher-note/` |
 | 036 | Private notes — optionally tag a student, still visible only to the teacher | active | medium | 033 | `active/036-private-note-student-tag/` |
 | 035 | sync_queue retention — prune done rows on a 20-day window | active | high | — | `active/035-sync-queue-retention/` |
 | 034 | Course-recommendation quiz — interest questions → a Claude-suggested course | active | high | 033 | `active/034-course-recommendation-quiz/` |
