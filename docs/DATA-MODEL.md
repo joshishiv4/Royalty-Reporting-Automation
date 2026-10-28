@@ -569,22 +569,24 @@ written for staff, and that every future note is now client-facing.
 **Still no policy on the table — two `SECURITY DEFINER` functions instead.**
 `app.my_students_wl_notes()` (teacher: `app.teaches_student`) and `app.my_wl_note()`
 (student: `= app.current_student_id()`). Both take no argument, return only
-`note_text` and the seen date — never `note_html`, `raw_wl_id` or `k_business` —
+`note_text` (and the student, for a teacher) — never `note_html`, `raw_wl_id`,
+`k_business` or a date —
 and walk `uid → app.identity → app.student`. Why not policies: the join crosses
 `app.identity`, and a policy reading another policied table is the 42P17 recursion
 `0055` already hit; and a policy grants every column of the row. `0064`'s "no
 policy" check stays true, so the two functions are the only way in. Proven in
 `supabase/checks/wl_client_note_portal_read.sql`.
 
-**`note_seen_at` — the only honest "newest first".** WL gives no written date, but
-the portal sorts notes by date. `note_seen_at` is when this system first saw the
-note, or saw its HTML change, maintained by trigger: set on insert, reset when
-`note_html` changes, kept otherwise — so the nightly re-sync of an unchanged note
-does not float it to the top. (`updated_at` cannot serve: the upsert moves
-`synced_at` every pass, which fires the `updated_at` trigger.) For notes written from
-now on it is within a day of the truth; the notes that existed before the first
-sync all share that sync's time. The portal labels it "seen" / "as of", never
-"written".
+**No date — `note_seen_at` was tried and dropped (`0066`, 28 Oct 2026).** WL gives
+no written date. `0065` added `note_seen_at`: when this system first saw the note
+or saw its HTML change, kept by trigger. It was never when the note was written,
+and the 260 notes that existed before the first sync all shared one day. A date
+that reads like "the studio wrote this then" and is not is worse than none, so
+`0066` drops the column, its trigger and index, and the date from both functions.
+The teacher's list is ordered by student name, since there is no honest "newest".
+`created_at`/`updated_at` are not a substitute: the upsert moves `synced_at` every
+pass, which fires the `updated_at` trigger. **Re-running `0065` brings the date
+back** — re-run `0066` after it.
 
 ## Money
 

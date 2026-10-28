@@ -30,10 +30,11 @@
 --       for select to authenticated using (true);      -> S4 red
 --   * grant execute on function app.my_wl_note() to anon;
 --                                                      -> A1 red
---   * the wl_client_note_seen trigger dropped          -> D1 red
+--   * 0065 re-run after 0066 (the date comes back)     -> D1, D2 red
 --
--- Restore by re-running 0065 (and dropping any added policy). Requires 0040,
--- 0053, 0055, 0064 and 0065. Run as postgres / the SQL editor.
+-- Restore by re-running 0065 then 0066 (and dropping any added policy).
+-- Requires 0040, 0053, 0055, 0064, 0065 and 0066. Run as postgres / the SQL
+-- editor.
 -- =============================================================================
 
 begin;
@@ -82,7 +83,6 @@ declare
   bob_auth   uuid := 'bbbb1111-0000-0000-0000-0000000000c1';
   n          int;
   got        text;
-  seen       timestamptz;
   failures   int := 0;
   fails      text[] := '{}';
 
@@ -197,36 +197,28 @@ begin
   end if;
 
   -- ===========================================================================
-  -- D. note_seen_at moves on a changed note, and only then
+  -- D. no date (0066): WL gives none, so neither the table nor a door has one
   -- ===========================================================================
-  -- now() is fixed for the whole transaction, so "did it move" is tested against
-  -- a date planted in the past. The trigger keeps note_seen_at on every write, so
-  -- planting it needs the trigger off for one statement.
-  alter table public.wl_client_note disable trigger wl_client_note_seen;
-  update public.wl_client_note set note_seen_at = '2000-01-01' where uid = '__wcp_alice';
-  alter table public.wl_client_note enable trigger wl_client_note_seen;
-
-  -- The nightly re-sync of an unchanged note.
-  update public.wl_client_note set synced_at = now() + interval '1 day',
-         note_html = '<p>alice discount</p>'
-   where uid = '__wcp_alice';
-  select note_seen_at into seen from public.wl_client_note where uid = '__wcp_alice';
-  if seen = '2000-01-01'::timestamptz then
-    raise notice 'PASS  D1 an unchanged note keeps its seen date through a re-sync';
+  select count(*) into n from information_schema.columns
+   where table_schema = 'public' and table_name = 'wl_client_note'
+     and column_name = 'note_seen_at';
+  if n = 0 then
+    raise notice 'PASS  D1 wl_client_note has no note_seen_at';
   else
     failures := failures + 1;
-    fails := fails || format('FAIL D1 unchanged note''s seen date moved to %s', seen);
+    fails := fails || 'FAIL D1 wl_client_note.note_seen_at exists - was 0065 re-run after 0066?';
     raise notice '%', fails[cardinality(fails)];
   end if;
 
-  update public.wl_client_note set note_html = '<p>alice discount, raised</p>'
-   where uid = '__wcp_alice';
-  select note_seen_at into seen from public.wl_client_note where uid = '__wcp_alice';
-  if seen = now() then
-    raise notice 'PASS  D2 an edited note is seen again';
+  select count(*) into n from pg_proc p join pg_namespace s on s.oid = p.pronamespace
+   where s.nspname = 'app'
+     and p.proname in ('my_students_wl_notes', 'my_wl_note')
+     and 'note_seen_at' = any (coalesce(p.proargnames, '{}'));
+  if n = 0 then
+    raise notice 'PASS  D2 neither note function returns a date';
   else
     failures := failures + 1;
-    fails := fails || format('FAIL D2 edited note''s seen date is %s, expected now()', seen);
+    fails := fails || format('FAIL D2 %s note function(s) still return note_seen_at', n);
     raise notice '%', fails[cardinality(fails)];
   end if;
 

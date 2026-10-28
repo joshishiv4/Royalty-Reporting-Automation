@@ -1,8 +1,8 @@
 # Status and plan
 
-Last updated **19 Oct 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (The 19 Oct update covers the client-note entry
-only; the 1 Oct one covered the transaction-report entries only. The portal work in
+Last updated **28 Oct 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (The 28 Oct update covers dropping the client
+note's date, `0066`, only. The 19 Oct update covers the client-note entry only; the 1 Oct one covered the transaction-report entries only. The portal work in
 `0039`–`0049` is still not reflected in the plan table below; `0053` is, because it
 starts M05.)
 
@@ -47,8 +47,10 @@ item 5 below).
 
 **Shown in the portal (`0065`, same day).** A teacher sees the WL note of each
 student they teach, read-only, in the Public notes view; a student sees their own
-as "From the studio". Both newest first, dated by `note_seen_at` — when the sync
-first saw the note, because WL gives no written date. Portal changes are in
+as "From the studio". **No date is shown** (`0066`, 28 Oct 2026): WL gives no
+written date, and `0065`'s `note_seen_at` — when the sync first saw the note — read
+like one and was dropped. The teacher's list is ordered by student name. Apply
+`0066` with the portal change that stops reading `note_seen_at`. Portal changes are in
 `spin-dj-pathways` (`GET /api/v1/notes`, `GET /api/v1/students/me/notes`, both tabs).
 **Apply `0064` then `0065` before deploying the portal** — the routes call the two
 functions `0065` creates and fail without them. `wl_client_note_portal_read.sql`
