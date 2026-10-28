@@ -5,14 +5,18 @@ Sorted by status (done last), then priority, then ID.
 
 | ID  | Title | Status | Priority | Depends on | Path |
 |-----|-------|--------|----------|------------|------|
+| 036 | Private notes — optionally tag a student, still visible only to the teacher | active | medium | 033 | `active/036-private-note-student-tag/` |
 | 035 | sync_queue retention — prune done rows on a 20-day window | active | high | — | `active/035-sync-queue-retention/` |
+| 034 | Course-recommendation quiz — interest questions → a Claude-suggested course | active | high | 033 | `active/034-course-recommendation-quiz/` |
+| 033 | Teacher notes — private (personal) and public (to a student), the portal's first write path | active | high | 032 | `active/033-teacher-student-notes/` |
 | 025 | Identity hub — identity, student and teacher, maintained by trigger | active | high | — | `active/025-identity-hub/` |
+| 028 | Portal auth — email OTP sign-in linked to an identity | active | high | 025 | `active/028-portal-auth-identity-link/` |
 | 026 | organization, program and cohort — the context row source | backlog | high | 025 | `backlog/026-organization-program-cohort/` |
 | 031 | Session projection — cohort, class_session, attendance_record and their links | backlog | high | 025, 026 | `backlog/031-session-cohort-projection/` |
 | 027 | Hub reconciliation — prove the triggers are still working | backlog | high | 025 | `backlog/027-hub-reconciliation-check/` |
-| 028 | Portal auth — link a Supabase auth user to an identity | backlog | high | 025 | `backlog/028-portal-auth-identity-link/` |
 | 029 | Read endpoints and dashboard wiring — the four sections that have a source | backlog | high | 026, 028, 031 | `backlog/029-read-endpoints-dashboard-wiring/` |
 | 030 | Portal-to-WL identity match — one human, still one row | backlog | medium | 025, 028 | `backlog/030-portal-wl-identity-match/` |
+| 032 | Teacher sign-in — the same door, a read-only roster behind it | backlog | high | 028 | `backlog/032-teacher-portal-auth/` |
 | 008 | Live-verification checklist for behaviour only mocks can prove today | backlog | high | — | `backlog/008-live-verification-checklist/` |
 | 017 | P5.1 — request the client report and wait for it to finish | backlog | high | — | `backlog/017-client-report-request/` |
 | 018 | P5.2 — read the client report page by page | backlog | high | 017 | `backlog/018-client-report-paged-read/` |

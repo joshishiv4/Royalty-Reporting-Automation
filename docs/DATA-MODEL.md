@@ -39,6 +39,8 @@ public/     the WellnessLiving mirror the sync writes, plus the control plane.
                      view: unresolved_service
   ghl         ghl_contact, ghl_custom_field
                      views: client_ghl, ghl_enrichment_missing
+  notes       wl_client_note   (RLS on, no policy; read only through
+                     app.my_students_wl_notes() and app.my_wl_note(), 0065)
   control     sync_queue, sync_job_state, sync_run, sync_conflict
                      views: sync_queue_progress, ghl_match_progress
   raw         raw_wl, raw_ghl, raw_link
@@ -336,7 +338,16 @@ have never been exercised by a real request.
 A policy written now would be written against a shape no request has ever taken.
 So the tenancy tables are RLS-enabled with no policies, meaning service_role
 only, and the org-scoped policies belong in the migration that also wires portal
-login. What that migration needs:
+login.
+
+**That migration is `0053`, and all three bullets below are now done.** They are
+kept rather than deleted because the reasoning is the record — the list is why
+`0048` was right to write nothing, and it is also the specification `0053` was
+built against. `0053` adds a fourth thing this list did not anticipate: the
+`SELECT` grants, without which a policy answers `permission denied` rather than
+an empty set.
+
+What that migration needed:
 
 - **One auth anchor, not two.** `person.auth_user_id` and `identity.auth_user_id`
   both exist and both are empty. `identity` is the correct one — it is the only
@@ -507,6 +518,75 @@ linked with nothing stored, closable by re-parsing `raw_ghl` with no API call.
 **RLS on, no policy.** The tag set includes `disqualified lead`, `bad email` and
 `no phone number` — the studio's notes about a client, not the client's to read.
 Reporting runs on the service role.
+
+### The profile note is its own table, not a `person` column (0064)
+
+`wl_client_note` holds the note studio staff write on a WellnessLiving profile, one
+row per client, keyed by `uid` (FK to `person`, cascade). It is filled by the
+client-list pass from the same report page that writes `person`, so it costs no
+extra API call.
+
+**Why not a column on `person`.** `person_self_select` (`0053`) lets a signed-in
+client read their own `person` row — every column of it. The notes are the
+studio's: discounts, call-back details, "INFORMED OUR RATES ARE CURRENT AND
+FIRM". The same reason keeps `ghl_contact.tags` off `person`. So: **RLS on, no
+policy**, and `0064` refuses to run if a policy exists.
+`supabase/checks/wl_client_note_isolation.sql` proves a client who reads their own
+`person` row still reads no note.
+
+**Why not `app.teacher_note`.** That table is written by teachers in the portal,
+and a public note there is addressed to a student who reads it. WL's staff memo
+would sit one visibility flag away from the student.
+
+**HTML and text, both.** WL sends each note as a whole HTML document; 81 of 260
+live notes are rich (lists, `<br />`, `&nbsp;`, pasted Gmail). `note_html` is WL's
+string verbatim; `note_text` is that reduced to plain lines by `noteText` in
+`src/sync/clients.ts`. Derived, so a better reduction later is a recompute from
+`note_html`, not a re-fetch.
+
+**The one place the client sync deletes.** Everywhere else, merge never clobbers:
+WL's `""` is absence of evidence. `o_note.has_note: false` is not absence — it is
+WL stating there is no note — so a note removed in the portal is deleted here on the
+next pass. A flag that is neither true nor false leaves the row alone. Without the
+delete, a removed discount note would stay in this table forever.
+
+**No author, no date — not nullable, absent.** The portal shows who added a note and
+when; no endpoint returns either (STATUS, blocked item 5). A nullable column
+nothing can fill would look like missing data rather than unavailable data.
+
+**One row per client.** Several notes on one profile arrive as one
+`text_note_list` string; how WL joins them has not been observed.
+
+#### Shown in the portal — and the staff-only reasoning above, partly reversed (0065)
+
+**Decided 19 Oct 2026, by the studio:** a teacher sees the note of every student
+they teach, tagged with that student's name, in the Public notes view; a student
+sees **their own** note ("From the studio"). Nobody else sees any. The reasoning
+above assumed the notes were staff-only. The studio has decided a client may read
+their own note, knowing that the 260 already written include some plainly
+written for staff, and that every future note is now client-facing.
+
+**Still no policy on the table — two `SECURITY DEFINER` functions instead.**
+`app.my_students_wl_notes()` (teacher: `app.teaches_student`) and `app.my_wl_note()`
+(student: `= app.current_student_id()`). Both take no argument, return only
+`note_text` (and the student, for a teacher) — never `note_html`, `raw_wl_id`,
+`k_business` or a date —
+and walk `uid → app.identity → app.student`. Why not policies: the join crosses
+`app.identity`, and a policy reading another policied table is the 42P17 recursion
+`0055` already hit; and a policy grants every column of the row. `0064`'s "no
+policy" check stays true, so the two functions are the only way in. Proven in
+`supabase/checks/wl_client_note_portal_read.sql`.
+
+**No date — `note_seen_at` was tried and dropped (`0066`, 28 Oct 2026).** WL gives
+no written date. `0065` added `note_seen_at`: when this system first saw the note
+or saw its HTML change, kept by trigger. It was never when the note was written,
+and the 260 notes that existed before the first sync all shared one day. A date
+that reads like "the studio wrote this then" and is not is worse than none, so
+`0066` drops the column, its trigger and index, and the date from both functions.
+The teacher's list is ordered by student name, since there is no honest "newest".
+`created_at`/`updated_at` are not a substitute: the upsert moves `synced_at` every
+pass, which fires the `updated_at` trigger. **Re-running `0065` brings the date
+back** — re-run `0066` after it.
 
 ## Money
 
@@ -1343,9 +1423,226 @@ payload out takes its links and leaves the royalty row untouched.
 RLS is enabled on all 18 tables. `service_role` carries `BYPASSRLS`, which is how
 the sync writes at all.
 
-`0010` adds five SELECT policies for `authenticated` — `person`, `purchase`,
-`purchase_item`, `attendance`, `session` — all keyed off `person.auth_user_id`,
-which joins a Supabase auth user to a WL uid.
+`0010` added five SELECT policies for `authenticated` — `person`, `purchase`,
+`purchase_item`, `attendance`, `session`. **`0053` re-pointed all five through
+`identity`** and dropped `person.auth_user_id`: there is now one auth anchor, and
+it is the only one a portal-native human can have, because `person.uid` is
+WellnessLiving's and `NOT NULL`. A human WL has never heard of cannot have a
+`person` row to hang a login on.
+
+`0053` also wrote the portal's own policies — ten `app` tables, all SELECT, all
+hanging off `app.current_student_id()`. Everything else about the posture is
+unchanged: **the portal reads; nothing about it writes.**
+
+**`0054` moved the matching rule into a function, because two callers now need
+it.** `link_signed_in_identity()` resolved the address inline, and that was fine
+while verification was the only moment anyone asked. It is not: the OTP route has
+to ask the same question *before* sending a code, since Supabase Auth checks
+`auth.users` — which this flow never wrote to, so `shouldCreateUser: false`
+refused every student and the sign-in was unreachable from the first commit. The
+rule is now `app.identity_for_email(text)`, called by both. It returns **NULL on
+zero or many** instead of raising, because at the OTP step those are routine
+answers rather than errors, and it is granted to **`service_role` only** —
+`authenticated` holding it would be a membership probe for any address a
+signed-in student cares to try.
+
+**`0055` widened that function to either role, and gave teachers a roster.** The
+same two-callers argument covers it: `link_signed_in_identity()` needed no edit,
+which is what `0054` bought. The second half matters more. Every one of `0053`'s
+policies resolves "me" through `current_student_id()`, so a teacher who passed
+the widened admission test would have held a perfectly valid session and read
+**nothing** — the empty-dashboard outcome `/auth/verify` signs people out to
+avoid. So `app.current_teacher_id()` arrives as the exact mirror of
+`current_student_id()`, and six SELECT policies hang off it: own `teacher` row,
+the `class_session_teacher` rows naming you, those sessions, their cohorts, the
+attendance on them, and the students who attended.
+
+**A roster is reachability through attendance, not enrolment.** A student who
+enrolled and never came is on nobody's roster, because `attendance_record` is
+what the database can actually prove. **The teacher policies are added alongside
+the student ones, never replacing them** — two permissive policies are OR'd, so a
+student's reach is unchanged by construction, and `0055`'s trailing check asserts
+all six of `0053`'s survived. Still SELECT everywhere: **the portal reads.**
+
+**Every teacher is also a client in WellnessLiving, and that turned out to be
+harmless.** Measured 9 Oct 2026: all 47 teacher addresses also sit on an
+`app.student` row, and exactly 47 student rows have no `identity` — the same 47
+humans. `0040`'s trigger applied the `0039` rule (staff profile type wins) and
+left the duplicate student row orphaned, and an orphaned row is invisible to a
+join through `identity`, so a lookup across both roles still returns one answer.
+One teacher is the exception — his address is on two student rows, one of which
+has its own identity — and he is refused like a stranger. Left that way
+deliberately: a tie-break preferring the teacher row would mail a code to
+whoever holds that address and sign them in as the teacher.
+
+### Teacher notes, and the first write path (0056)
+
+`app.teacher_note` is the first table in this database a signed-in user may
+**write**. Everything before it — `0010`'s five, `0053`'s ten, `0055`'s six — is
+`for select`. `0055` named the line it stood on: "the first [write policy] is a
+larger argument than a migration should settle on its way past." `0056` is that
+argument, made on its own.
+
+**Two kinds, bound by one check.** A `private` note is the teacher's own — read by
+its author alone. A `public` note is about one student the teacher taught —
+`student_id` set, read by its author **and** that one student. `visibility` says
+which, and `teacher_note_kind_check` binds them: `public ⇒ student_id not null`, so
+a public note with nobody to read it is refused by the row itself. A private note
+may also name a student as a label for its author (`0063`, below); it never reaches
+that student. From `0056` until `0063` the check said the other half too,
+`private ⇒ student_id null`.
+
+The policies, all `to authenticated` and none naming a table (the 42P17 rule from
+`0055`, so only the definer helpers appear):
+
+| Command | Rule |
+|---|---|
+| SELECT (author) | `author_teacher_id = current_teacher_id()` — a teacher sees all their own, both kinds |
+| SELECT (student) | `visibility = 'public' and student_id = current_student_id() and deleted_at is null` — a student sees only public notes addressed to them |
+| INSERT / UPDATE | author only, and whenever a student is named `teaches_student(student_id)` as well (`0063`; before, for public notes only) |
+| DELETE | none since `0058` — a delete is an `UPDATE` of `deleted_at` |
+
+**The roster check is a write-time rule, on purpose.** A teacher may only *name* a
+student `teaches_student()` says they taught, on either kind of note — enforced in
+the INSERT/UPDATE `with check`. The student's **read** matches on `student_id` and
+does not re-check the roster. The roster is attendance-derived and moves over time;
+a note once sent would otherwise blink out of a student's own view when an
+attendance row changes months later. So who you may write to is checked when you
+write; what a student reads is simply what was addressed to them.
+
+**A private note may name a student — and the student's policy is now the only thing
+that keeps it from them (0063).** A teacher can tag a private note with a student so
+they remember who it is about. The tag is optional and changes nothing about who can
+read the note: only its author. Until `0063` this was guaranteed twice — the kind
+check kept `student_id` NULL on every private row, so a private note could not match
+`student_id = current_student_id()` even by accident. That second guarantee is gone
+on purpose, which leaves `visibility = 'public'` in the student's SELECT policy as
+the **sole** guard. `0063`'s trailing check asserts it is still there, and section I
+of the isolation check tries it: a private note tagged with a student is invisible to
+that student while a public note beside it is not. The roster rule moved with the
+tag for the same reason — a private note naming a student the author never taught is
+refused by the database, not only by the portal's picker. `current_student_id()` is
+still NULL for a teacher and NULL compared with `=` is never true; the `is null` in
+the write policies is on the plain `student_id` column, a note with no student, which
+is a legitimate row and not the stranger `0055`'s rule is about.
+
+`organization_stamp` and `set_updated_at` triggers as every owned table; no
+`synced_at`, because nothing syncs a note from anywhere. `GRANT`s to
+`authenticated` for all four commands, because a policy without one is
+`permission denied` rather than a refusal (below). Proven by
+[`teacher_note_isolation.sql`](../supabase/checks/teacher_note_isolation.sql).
+
+**Edit history is a child table, written by a trigger, read by the author (0057).**
+`app.teacher_note_revision` keeps each PREVIOUS body of a note: the current text
+stays on `teacher_note`, every earlier version is a row here, written by a
+`BEFORE UPDATE` trigger whenever the body changes. It carries **no
+`organization_id`** — a revision's organization is its note's, reached through
+`note_id`, exactly as a `*_link` row's is its owned row's. It is **read by the
+note's author only** (a student reading a public note still sees only its current
+text — history is an authoring aid, and widening it to the student is one more
+SELECT policy, deliberately not added), and **writable by nobody through the API**:
+`authenticated` holds `SELECT` only and the trigger is `SECURITY DEFINER`, so the
+record of an edit cannot be forged or rewritten by the editor. That last point is
+the whole reason it is a table with its own grants rather than a column on the
+note. Section H of the isolation check proves it.
+
+### The course-recommendation quiz (0059)
+
+Five `app` tables behind the student interest quiz whose result is a
+Claude-suggested course. `quiz_question` and `quiz_option` are the quiz itself —
+studio config, readable by any signed-in user. `quiz_attempt`, `quiz_answer` and
+`quiz_suggestion` are one student's run: the attempt, the answers given, and the
+**up to three ranked courses** the model picked (`quiz_suggestion.rank`, 1 = best
+fit; `unique (attempt_id, rank)`). The same model call also returns a few **interest
+tags** inferred from the answers (including the free text); the server stores them
+on `quiz_attempt.interests` (`text[]`), and the home "Things I'm Into" card reads
+the latest attempt's. The interests are the model's, not a category mapping of ours.
+
+**A question can offer options, a free-text box, or both.** `quiz_question.allow_text`
+turns on a free-text box; a question with option rows and `allow_text = false` is
+multiple-choice, one with no options and `allow_text = true` is free-text, and one
+with both is a choice plus an optional note. So `quiz_answer.option_id` is
+**nullable** and `answer_text` sits beside it, with a check that an answer carries
+at least one of the two. The recommender sends the chosen label and the typed text
+together to the model.
+
+**The suggestion is snapshotted as text, not a foreign key.** `quiz_suggestion`
+holds `course_title`, `course_category`, `teacher_name` and the model's `rationale`
+as plain columns. The catalogue the model chooses from is the **`app.course_catalogue`
+view** (0061), read **server-side with the service role** at request time. The chosen
+course is copied into `app` as text, so no FK is needed. A course renamed in WL later
+does not rewrite what a student was once recommended, which is correct.
+
+**The answer is snapshotted as text too (0062).** `quiz_answer` held only
+`question_id` and `option_id`, so the wording lived on the question rows and an
+in-place reword rewrote the meaning of every old answer. On 13 Oct 2026 three
+questions were reworded under 13 saved attempts, and the original wording survived
+only in a snapshot file. `quiz_answer` now carries `question_prompt` and
+`option_label` as text copied at save time, the same call `quiz_suggestion` makes
+for a course. The keys stay and stay `ON DELETE RESTRICT`: they say which row was
+answered, the columns say what it said. **Reading what a student was actually asked
+is now `quiz_answer.question_prompt` / `option_label`, never a join to
+`quiz_question`.** The existing answers were backfilled; for the three reworded
+questions the wording is the snapshot's, which is what was live just before the
+reword and not necessarily what the earliest attempts saw. From that point on the
+record is exact. The standing habit still applies: a question with answers is
+retired and replaced, not reworded.
+
+**The catalogue view (`app.course_catalogue`, 0061) unions two sources, grouped by
+base course.** A base course is the title before the first `|`, so the many
+duration/location variants in WL (`DJ For Everyone | 60 Minutes`,
+`| In-Home | 60 Minutes`, …) collapse to one `DJ For Everyone`. It returns one row
+per (base course, teacher):
+
+- `public.service` — the 123 real sold courses. `service` carries no teacher of its
+  own (`staff_service` is empty here), so a service's teachers are recovered through
+  its sessions: `service.k_service → public.session.k_service →
+  public.session_staff.k_period → public.person.k_staff`. That join is ~46k sessions,
+  too heavy to run per quiz submission, so it lives in SQL.
+- `app.cohort` — teachers via `class_session → class_session_teacher → teacher`, as
+  before.
+
+A base course with no resolvable teacher still appears, once, with `teacher_name`
+null (the base titles drive the result, teachers are left-joined on). The view is
+`security_invoker = on` like the other cross-schema views, so it runs as the service
+role that reads it. (The portal first read cohort data directly; 0061 replaced that
+so the far larger `service` catalogue is offered too.)
+
+**Writes are service-role only; the student id comes from the JWT, not the
+request.** The route that builds the catalogue and calls Claude also writes the
+attempt, answers and suggestion, using the student id it resolved from the caller's
+own session — the distinction STATUS.md draws for the uploads route: a
+caller-supplied id is the hole, a session-resolved one is not. So `authenticated`
+holds **SELECT only** and cannot forge any of it — the same posture as
+`teacher_note_revision`, one step wider.
+
+**Reads are RLS, student-owns-own.** `student_id` is denormalised onto
+`quiz_answer` and `quiz_suggestion` so each read policy is a plain column
+comparison against `app.current_student_id()` and joins nothing (the 42P17 rule).
+`organization_stamp` fills the two root tables; the children derive their
+organization from their parent. Proven in
+[`quiz_isolation.sql`](../supabase/checks/quiz_isolation.sql).
+
+**Policies are evaluated as the caller, including their subqueries.** This is why
+`0053`'s four helpers are `security definer` and not merely convenient: a policy
+on `app.student` that read `app.identity` inline would itself be filtered by the
+policy on `app.identity`, so the lookup meant to establish who you are returns
+nothing, and every table reads empty for everybody. It looks exactly like a data
+problem.
+
+**A policy without a `GRANT` is not a policy.** `0047` granted `USAGE` on schema
+`app` to `authenticated` and then granted table privileges to `service_role`
+only — in `public` the question never arises, because Supabase's own bootstrap
+sets default privileges there. The result is not an empty read but
+`permission denied for table student`, a 42501, which a reviewer reading the
+policies alone would never predict. `0053` adds the `SELECT` grants and revokes
+`anon` outright.
+
+**The three link tables get no policy, deliberately.** `cohort_link`,
+`session_link` and `attendance_link` exist to carry `k_class`, `k_period`,
+`dt_start_utc` and `uid` and nothing else. The standing rule is that the portal
+reads the hub and never learns WellnessLiving exists, so `service_role` only is
+the intended answer rather than an omission.
 
 **RLS enabled with no policies is not a working state.** With RLS on and nothing
 granted, `authenticated` sees zero rows including its own — a locked door with no
@@ -1354,8 +1651,14 @@ key. That was the state before `0010`.
 No policies on `lead`, `raw_*`, `sync_*` or `staff_pay_rate`. Those are operational
 tables and absence of a policy means absence of access.
 
-Proof, not assertion: [`supabase/checks/rls_isolation_test.sql`](../supabase/checks/rls_isolation_test.sql)
-inserts two people with different auth ids, fakes each one's JWT the way the API
-does, checks each sees only their own rows, and rolls back. Asserting on zero rows
-would prove nothing — a policy returning nothing passes "cannot see another user's
-data" for the wrong reason.
+Proof, not assertion, in two files because they are two different claims:
+[`rls_isolation_test.sql`](../supabase/checks/rls_isolation_test.sql) for the
+WellnessLiving mirror and
+[`portal_auth_isolation.sql`](../supabase/checks/portal_auth_isolation.sql) for the
+portal's own tables and the sign-in itself. Both insert two people with different
+auth ids, fake each one's JWT the way PostgREST does, check each sees only their
+own rows, and roll back. Asserting on zero rows would prove nothing — a policy
+returning nothing passes "cannot see another user's data" for the wrong reason.
+
+Both can fail, and `portal_auth_isolation.sql` names the exact policy to drop to
+watch it go red.

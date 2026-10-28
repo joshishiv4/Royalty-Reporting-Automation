@@ -41,6 +41,10 @@ const FIELDS = [
   'field-general-7.dl_date',
   'field-general-11',
   'text_client_type',
+  // Read by the client-list pass since 0064; a page without them is refused. A
+  // null flag leaves the note alone, so these fixtures write and delete no note.
+  'o_note.has_note',
+  'o_note.text_note_list',
 ];
 const ROW = [
   '33793232',
@@ -54,6 +58,8 @@ const ROW = [
   '1985-04-11',
   'MEM-4471',
   'Staff Client Profile',
+  null,
+  null,
 ];
 
 interface QueueRow {

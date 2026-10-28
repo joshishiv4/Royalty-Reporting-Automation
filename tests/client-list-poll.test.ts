@@ -31,6 +31,10 @@ const FIELDS = [
   'field-general-7.dl_date',
   'field-general-11',
   'text_client_type',
+  // The note columns (0064). The sync refuses a page without them, and a null
+  // flag says nothing - so these fixtures write and delete no note at all.
+  'o_note.has_note',
+  'o_note.text_note_list',
 ];
 const ROW = [
   '33793232',
@@ -44,6 +48,8 @@ const ROW = [
   '1985-04-11',
   'MEM-4471',
   'Staff Client Profile',
+  null,
+  null,
 ];
 
 /**

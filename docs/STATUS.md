@@ -1,9 +1,12 @@
 # Status and plan
 
-Last updated **13 Oct 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (The 13 Oct update covers the retention entry
-below, the 12 Oct one the orphaned run under it, the 8 Oct one the report pass. The portal work in
-`0039`–`0049` is not yet reflected in the plan table below.)
+Last updated **28 Oct 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (The 28 Oct update covers dropping the client
+note's date, `0066`, only. The 19 Oct update covers the client-note entry only; the
+13 Oct one the retention entry, the 12 Oct one the orphaned run under it, the 8 Oct
+one the report pass; the 1 Oct one covered the transaction-report entries only. The
+portal work in `0039`–`0049` is still not reflected in the plan table below; `0053`
+is, because it starts M05.)
 
 ## The plan
 
@@ -14,7 +17,7 @@ below, the 12 Oct one the orphaned run under it, the 8 Oct one the report pass. 
 | **M03** sync engine | The code that reads WL and writes to those tables | ✅ done — 17 passes, 6 scheduled jobs, live |
 | **M04a** GHL matching | Contact matching against GoHighLevel | ✅ done — `src/ghl/`, `ghl_match_sync` runs nightly |
 | **M04b** royalty calculation | The number this project exists to produce | ⬜ **not started — this is the next work**. Its missing input got closer on 17 Sep: WL's own transaction reports carry a revenue category (see below) |
-| **M05** portal | Student portal reading the same database | ⬜ not started |
+| **M05** portal | Student portal reading the same database | 🟦 **a student signs in, 9 Oct 2026** — `0053` wires the sign-in, `0054` made it reachable, and a real student has now completed one. Task 028; teacher sign-in is task 032 |
 
 **M03 is complete and running unattended.** Seventeen passes read WellnessLiving
 into eighteen tables, grouped into six named jobs on their own crons, with a lease
@@ -26,6 +29,35 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### WL client notes sync, 19 Oct 2026 - code complete, `0064` not yet applied
+
+The note studio staff write on a WellnessLiving profile ("$15 VIP Discount
+Monthly") now syncs into `wl_client_note`, one row per client, from the Client
+List report the sync already reads — no extra API call. Stored as WL's HTML and
+as plain text; deleted when WL reports `has_note: false`; staff-only (RLS on, no
+policy), because `person` is readable by its own client. See DATA-MODEL, "The
+profile note".
+
+**Until `0064` is applied, the client-list pass fails** — it now writes a table
+that does not exist yet. Apply the migration before deploying this code. The first
+pass after that fills every note; nothing needs backfilling by hand.
+`supabase/checks/wl_client_note_isolation.sql` has not been run yet.
+
+Not stored, because WL does not return it: who added a note and when (blocked,
+item 5 below).
+
+**Shown in the portal (`0065`, same day).** A teacher sees the WL note of each
+student they teach, read-only, in the Public notes view; a student sees their own
+as "From the studio". **No date is shown** (`0066`, 28 Oct 2026): WL gives no
+written date, and `0065`'s `note_seen_at` — when the sync first saw the note — read
+like one and was dropped. The teacher's list is ordered by student name. Apply
+`0066` with the portal change that stops reading `note_seen_at`. Portal changes are in
+`spin-dj-pathways` (`GET /api/v1/notes`, `GET /api/v1/students/me/notes`, both tabs).
+**Apply `0064` then `0065` before deploying the portal** — the routes call the two
+functions `0065` creates and fail without them. `wl_client_note_portal_read.sql`
+has not been run yet. Every existing note becomes visible to the student it is
+about once this ships; the studio decided that knowingly.
 
 ### `sync_queue` retention, 13 Oct 2026 - written at last, backlog still to clear
 
@@ -77,6 +109,151 @@ measurements above change. **And one open question that changes what "done" mean
 here:** if the slowness is bloat rather than row count, the indexes stay bloated
 after a DELETE and want `REINDEX` or `VACUUM FULL` to reclaim. `n_dead_tup` from
 a SQL console settles it; PostgREST will not answer it. Task 035 carries both.
+
+### A student signs in, 9 Oct 2026 - end to end, against live
+
+`0054` is **applied**, custom SMTP and the `{{ .Token }}` template are
+**configured**, and a student has completed the whole round trip: a code
+requested through the portal's own form, delivered to a real inbox, exchanged
+for a session, linked to exactly one `identity`, and a dashboard rendered from
+that student's own rows under Row Level Security.
+
+That closes the three things the 8 Oct entry below left open — the unapplied
+migration, the unconfigured sender, and the demo student id in the dashboard
+path, which `spin-dj-pathways` `e675a3a` replaced with `/students/me`.
+`DEMO_STUDENT_ID` no longer appears anywhere in that app.
+
+**What this does not yet cover: teachers.** All 47 of them have an email and an
+`identity` row, and not one can sign in — `app.identity_for_email()` joins
+`app.student` only, and every policy in `0053` resolves "me" through
+`app.current_student_id()`. Measured 9 Oct 2026 and scoped as **task 032**
+(read-only roster, no writes). The measurement's one sharp finding: every teacher
+address also sits on an orphaned duplicate student row, which is harmless, except
+for one teacher whose address resolves to two identities and who is therefore
+refused like a stranger. Task 032 records the case rather than tie-breaking it.
+
+### Portal sign-in, 8 Oct 2026 - the policies are applied, nothing has signed in yet
+
+`0053` is the migration DATA-MODEL.md has been pointing at since `0048`: one auth
+anchor on `identity`, `0010`'s five policies re-pointed through it, SELECT policies
+on the ten `app` tables the dashboard reads, and `link_signed_in_identity()`.
+**Applied 8 Oct 2026** in the Supabase SQL editor, like `0039`–`0049`. The
+migration's own trailing checks pass: all five helpers are `SECURITY DEFINER`
+with `search_path` pinned to `""`, which is what keeps a definer function from
+being an escalation route.
+
+**The isolation check passes, and finding that out found a bug that would have
+broken every sign-in.** `link_signed_in_identity()` used `min(i.id)` to pull the
+single matching identity, and PostgreSQL has no min/max *aggregate* for `uuid` —
+the type sorts, so it reads as though it should work. `check_function_bodies` only
+syntax-checks a plpgsql body, so `0053` created the function cleanly and it raised
+`42883` on the first call: every first sign-in, for everyone. `0053` was amended in
+place to use `(array_agg(i.id))[1]` and re-run, and the check then passed in full —
+A and B (a student reads her own rows), C (and not the other student's), D (signed
+out reads nothing), E (the first sign-in link, its idempotence, and its identical
+refusal for an ambiguous and an unknown address) and F (one auth user cannot hold
+two identities).
+
+The check needed three fixes of its own to be worth believing, and each is worth
+knowing:
+
+- D assumed `anon` reaches the table and is filtered to zero rows. `0053` revokes
+  anon outright and table privileges are checked *before* row security, so the
+  refusal is the pass and a count asserted the weaker guarantee.
+- Every `FAIL` line now travels in the closing exception, not only in a `NOTICE`.
+  The Supabase SQL editor does not surface notices, so the first full run said
+  five checks failed and named none of them.
+- The `like '__pa_%'` guard that proves the rollback took was unescaped. `_` is
+  LIKE's single-character wildcard, so it matched three real students' surnames
+  and reported a clean rollback as surviving test data — printing their names to
+  do it. Now `like '\_\_pa\_%'`, re-run, zero rows.
+
+**The suite is live, measured not asserted.** Dropping `student_self_select` and
+re-running turns exactly A1 and C1 red — the two assertions that read `app.student`
+directly — and nothing else. A2, A3 and B1–B6 stay green because they resolve
+through `app.current_student_id()`, a `SECURITY DEFINER` helper that does not run
+under the caller's policies, and the dependent policies match on that helper rather
+than reading `app.student` themselves. One notion of "me" is why removing one
+policy does not quietly take the rest with it. The policy was restored by re-running
+`0053`.
+
+`rls_isolation_test.sql` passes too, so the WellnessLiving mirror still isolates
+after `person.auth_user_id` was dropped — and because that test now links through
+the hub, it re-proves `0040`'s trigger fires. Its anon section expects zero rows
+rather than a refusal, which is right for `public`: Supabase's bootstrap grants
+anon there by default. That is the same gap `0053` had to close for `app`, where
+nothing granted anything and the policies would have been theatre.
+
+**The sign-in is closed, by decision of 8 Oct 2026.** A code goes only to an
+address already in the database, and signing in never creates an account. Supabase
+Auth issues the code rather than a hand-rolled OTP table — every rule here is
+`auth.uid()`, and a home-made OTP issues no JWT, so RLS could never engage and
+every route would keep the service-role key.
+
+**The closed door was closed against everyone, and `0054` is the key — found by
+running the form, 8 Oct 2026.** The first real attempt at a sign-in returned the
+cheerful 202 the design calls for and no email, and the cause was not the SMTP
+everyone expected:
+
+```
+POST /auth/v1/otp  ->  422 otp_disabled  "Signups not allowed for otp"
+auth.users ......... 0 rows
+```
+
+`shouldCreateUser: false` makes Supabase Auth look for an existing row in
+`auth.users`. The rule "a code goes only to an address already in the database"
+means `app.student`. **Nothing in the flow had ever written to `auth.users`**, so
+every student was refused before delivery was attempted — and because every
+refusal is deliberately identical, this looked exactly like the unconfigured
+sender. The sign-in had been unreachable since the first commit and the uniform
+202 is what hid it. A reminder that a design which refuses to explain itself to an
+attacker also refuses to explain itself to you.
+
+`0054` makes the portal provision the auth user itself, for an admitted address
+only: `app.identity_for_email(text)` carries the matching rule,
+`link_signed_in_identity()` now calls it instead of resolving inline, and
+`/auth/otp` calls it before creating anything. `shouldCreateUser: false` stays —
+the account is opened against a student row the studio already had, never on an
+address nobody vouched for. **Applied 9 Oct 2026** in the SQL editor, like
+`0039`–`0053`, and exercised the same day by a real sign-in.
+
+**Email does not identify a student, measured before the rule was written:**
+
+| | |
+|---|---|
+| `app.student` rows | 1,297 |
+| no email at all | **17** — cannot sign in by email, ever |
+| addresses on more than one row | **51**, covering 123 rows |
+| worst collision | **16 rows share one address** |
+| `identity.auth_user_id` populated | **0** |
+
+So the rule is **exactly one match or no code**, and zero, two and sixteen are
+reported identically — a form that answers differently is an oracle for who has an
+account. **1,112 of 1,250** student identities can sign in under it; the remaining
+138 need a human, and RUNBOOK §10 says what to do with each.
+
+**Two bugs found in the portal on the way here, both fixed** (`spin-dj-pathways`,
+commit `1055ff3`). Its Supabase client had no `db.schema`, so it read `public`
+while `0047` had moved the tables to `app` — **the dashboard route had returned
+nothing since `0047` landed**, invisibly, because the UI falls back to fixtures on
+a failed fetch. And it passed every attended session id into one `.in()` filter,
+which exceeds the URL limit past ~300 ids; `attendance_record` holds 45,987 rows
+across 904 students and **21 are already over that**.
+
+**The portal now has a real sign-in, and it is not yet connected to what it
+shows.** `spin-dj-pathways` gained `@supabase/ssr`, a cookie session, a guard in
+front of `/student`, the two-stage OTP screens in place of the role picker, and a
+sign-out that actually ends the session rather than navigating away from it. Next
+16 renamed `middleware.ts` to `proxy.ts`, which no Supabase guide reflects yet.
+Everything runs server-side through route handlers, so no anon key or auth code
+reaches the browser bundle.
+
+**The gap this entry recorded is closed.** The dashboard fetched
+`/api/v1/students/<DEMO_STUDENT_ID>/dashboard`, so a student who signed in
+successfully still saw the demo student's data — real sign-in, somebody else's
+rows. `/students/me` replaced the id in the path (`e675a3a`), and the SMTP
+blocker that kept any of it from being exercised is configured. See the 9 Oct
+entry above.
 
 ### A completed pass reported `failed` and orphaned its run, 9 Oct 2026 - fixed in code
 
@@ -808,6 +985,20 @@ confirmed carries `uid_recipient` per purchase item (see WL-API-NOTES). The
 within it: a parent-child purchase (recipient ≠ payer) has never been observed on
 dev — every sample is a self-purchase — so that path is mock-verified only
 (task 008).
+
+### 5. A client note's author and date — not returned by any endpoint (19 Oct 2026)
+
+The portal shows "Added by Cameron Escovedo on May 28, 2025" above a profile note.
+The Client List report carries the note text (`o_note.text_note_list`) and a
+flag, nothing else — all 38 of its columns read. `/v1/report/data`'s `s_note` is
+empty on every row. No other documented endpoint mentions notes (69 in the index).
+So `wl_client_note` has no author or created date, rather than a guessed one.
+
+Also unobserved: how WL joins **several** notes on one profile into the single
+`text_note_list` string. Every client checked has one.
+
+**Needs:** WL integrations to name an endpoint that returns profile notes with
+author and date, if one exists.
 
 ## A view is rewritten whole, and that has already cost us twice
 
