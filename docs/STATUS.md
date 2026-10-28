@@ -2,9 +2,11 @@
 
 Last updated **28 Oct 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed. (The 28 Oct update covers dropping the client
-note's date, `0066`, only. The 19 Oct update covers the client-note entry only; the 1 Oct one covered the transaction-report entries only. The portal work in
-`0039`–`0049` is still not reflected in the plan table below; `0053` is, because it
-starts M05.)
+note's date, `0066`, only. The 19 Oct update covers the client-note entry only; the
+13 Oct one the retention entry, the 12 Oct one the orphaned run under it, the 8 Oct
+one the report pass; the 1 Oct one covered the transaction-report entries only. The
+portal work in `0039`–`0049` is still not reflected in the plan table below; `0053`
+is, because it starts M05.)
 
 ## The plan
 
@@ -56,6 +58,57 @@ like one and was dropped. The teacher's list is ordered by student name. Apply
 functions `0065` creates and fail without them. `wl_client_note_portal_read.sql`
 has not been run yet. Every existing note becomes visible to the student it is
 about once this ships; the studio decided that knowingly.
+
+### `sync_queue` retention, 13 Oct 2026 - written at last, backlog still to clear
+
+`attendance_sync` failed at 01:15:53 UTC:
+
+```
+SupabaseError: 57014: canceling statement due to statement timeout
+  [table=enqueue_sync_items]
+```
+
+leaving **3,500 `session_attendance` items pending**. Nothing dead, and the
+failure reported itself properly - the timeout landed inside the error boundary,
+unlike the 9 Oct orphaned run.
+
+**The cause is the one this file has carried since 23 Sep: the table is never
+pruned.** Measured 13 Oct:
+
+| query | rows | time |
+|---|---|---|
+| `state = 'done'` | **1,506,074** | 3,222 ms |
+| `state = 'pending'` | 3,500 | 1,055 ms |
+| `work_type = 'session_attendance'` | 943,399 | 2,354 ms |
+| `count(*)` whole table | — | **cancelled, 10,141 ms** |
+
+A count of the table no longer completes. Counting 3,500 rows through a partial
+index takes a second. Growth: 532,415 (23 Sep) → 869,798 (1 Oct) → 1,506,074
+`done` (13 Oct), nearly tripled in three weeks.
+
+**Two indexes bought time; neither shrank the table.** `0050` fixed the fresh-done
+dedupe read (8.5-9.7 s → 0.28-1.1 s) and said so itself: *"It does not shrink the
+table, so the cleanup above is still open."* `0060` fixed the post-drain count.
+The failure has now moved to the INSERT in `enqueue_sync_items` - a third
+statement, same cause.
+
+**`0063` is the actual fix.** `prune_sync_queue(p_before, p_limit)` deletes `done`
+rows past a cutoff, in batches; `pruneDoneItems` loops it; `queue:prune` runs it
+from the CLI, dry-run unless `--apply`; `.github/workflows/queue-prune.yml` runs
+it daily at 05:30 UTC. The :30 matters: `sync` runs hourly ON THE HOUR, so 05:00
+is not a quiet slot - and on the 1st `sync-monthly` lands there too. Half past
+leaves the hourly pass a clear run, and the prune is batched so an overlap costs
+a lock wait rather than an outage. Still an hour before the alert sweep. Retention is **20 days**. The floor is 24 hours - `enqueue()`'s
+dedupe reads the last day's `done` rows, and pruning into that window re-queues
+the same work the same day - and both the CLI and
+`tests/sync-queue-prune.test.ts` enforce it.
+
+**Not done: the 1.5M-row backlog is still there.** `0063` must be applied and the
+prune run against the existing rows, when the sync is idle, before any of the
+measurements above change. **And one open question that changes what "done" means
+here:** if the slowness is bloat rather than row count, the indexes stay bloated
+after a DELETE and want `REINDEX` or `VACUUM FULL` to reclaim. `n_dead_tup` from
+a SQL console settles it; PostgREST will not answer it. Task 035 carries both.
 
 ### A student signs in, 9 Oct 2026 - end to end, against live
 
@@ -201,6 +254,82 @@ successfully still saw the demo student's data — real sign-in, somebody else's
 rows. `/students/me` replaced the id in the path (`e675a3a`), and the SMTP
 blocker that kept any of it from being exercised is configured. See the 9 Oct
 entry above.
+
+### A completed pass reported `failed` and orphaned its run, 9 Oct 2026 - fixed in code
+
+`purchase_element_sync` drained its whole queue and was logged as a failure:
+
+```
+{"msg":"pass failed","job":"purchase_element_sync","state":"failed",
+ "claimed":0,"done":0,"requeued":0,"dead":0,"itemsRemaining":-1,
+ "error":"57014: canceling statement due to statement timeout"}
+```
+
+**Every number in that line is a placeholder.** `claimed`/`done`/`dead` are the
+zeros `runFullSyncPassParallel`'s catch fills in, and `itemsRemaining: -1` is its
+"unknown" sentinel — the signature of an exception that escaped `runPass`
+entirely, not a measurement of a pass that did nothing. The work had in fact
+finished: `purchase_item_element` read 399,140 done, 0 pending, 0 failed, with
+its last change at 11:09:57, nine minutes before the timeout at 11:19:08Z.
+
+**The cause was the count, not the sync.** `countEligible()` runs after the drain
+to fill `items_remaining`, and sat outside the try/catch that records a pass
+failure. Its statement timed out, threw past `closeRun()` — the only thing that
+moves a run off `running` — and left the row open for `abandonStaleRuns()` to
+retire half an hour later. The same table it was counting had just been drained
+without trouble.
+
+**Why that query was slow** is `0060`: nothing indexed
+`state = 'pending' and work_type = ? and next_attempt_at <= ?`. On an idle
+database, returning no rows, it took 2,638 ms for `purchase_item_element`
+(399,140 queued) against 849 ms and 697 ms for the other large queues — slowest
+where it finds nothing, the same shape `0050` fixed for the dedupe read. Under a
+live pass that reaches the statement timeout.
+
+**Fixed both ends.** `0060` adds the partial index. `countEligibleOrUnknown()`
+reports a failed count as `UNKNOWN_REMAINING` (`-1`) and the pass closes
+`partial` — never `0`, which would read as drained and move the completion
+watermark on a count that never ran. `tests/sync-pass-count-failure.test.ts`
+drives a whole pass whose post-drain count throws: restoring the unguarded call,
+or making the sentinel `0`, each turns it red.
+
+**Same family as 5-7 Oct.** Four `57014` timeouts on `sync_queue` plus one
+`HTTP 502` hit `attendance_sync` and `purchase_element_sync` — the two largest
+queues — across those three days. Those runs recorded their failure properly;
+this one did not, because of where the timeout landed.
+
+### The transaction reports read nothing for six days, 2-8 Oct 2026 - fixed in code
+
+Found by reading `sync_run` and `sync_job_state` on 7 Oct, not by an alert.
+**No run failed.** Every run of `tx_item_sync` and `tx_payment_sync` since
+2 Oct 13:45 UTC ended `partial` in about 5 seconds with 0 rows, and
+`pay_transaction` was last written **1 Oct 12:46 UTC**.
+
+**Measured cause.** `runPass` ended the moment a batch claimed nothing. A report
+pass asks WL for a build and defers its item 5 s, so the next batch claims
+nothing and the pass closes. Each scheduled run did **one step**. Actions ran the
+sync every **4-8 hours** (5 runs in 25 hours on 7-8 Oct), so the 3-hour handle
+had always expired at the next run, and the step was "request" again. The 7 Oct 00:33 UTC
+run: item deferred to 00:33:27.99, pass closed at 00:33:25.6.
+`client_list_sync` escaped because its two requests take longer than 5 s, so its
+item was already due when the pass looked. It finished and still closed
+`partial`, because any deferral counted as unfinished work.
+
+This is the "one WL poll per scheduled run" entry below, which named the
+candidate fix. The 23 Sep fix (3-hour handle) assumed runs under 3 hours apart.
+
+**Fixed in code, 8 Oct.** A pass that deferred an item due within a minute
+sleeps until it is due and claims it again, inside its own budget, so one run
+requests, polls and reads. A deferral that finishes in the same run closes `ok`.
+`tests/sync-pass-deferred-wait.test.ts` drives a whole pass on a fake clock;
+removing the wait, restoring the old `partial` rule, or ignoring the budget each
+turns it red (mutation-checked). The schedule is unchanged: the fix makes the
+gap between runs irrelevant rather than trying to shorten it.
+
+**Not yet confirmed against live data.** Proof is `tx_payment_sync` and
+`tx_item_sync` closing `ok` with `last_clean_completion_at` moving, and
+`pay_transaction.synced_at` newer than 1 Oct. Scheduled runs only pick this up
+once it is merged to `main`.
 
 ### The transaction reports were missing 42% of the money, 1 Oct 2026 - fixed in code
 
@@ -437,7 +566,7 @@ was stopped at 12:29:46 UTC while it held `purchase_element_sync`. The next one,
 state. The row stayed `running` and nothing worked the 15,981 pending
 `purchase_item_element` items until a later run took the expired lease.
 
-**Open, not fixed - the report jobs get one WL poll per scheduled run.** When the
+**Fixed in code 8 Oct (entry at the top) - the report jobs get one WL poll per scheduled run.** When the
 build is not ready, the item is deferred 5-30 s, nothing is claimable, and the
 pass ends. On hourly Actions that is one poll an hour. Both builds requested at
 11:36 were still "not ready" at 12:30. A read-only poll at 12:40 found WL had
@@ -594,7 +723,7 @@ View)"**. Both were probed live against dev the same day and both work.
 | Rows, Accrual and cash, to 9 Sep 2026 | **34,255** | — |
 | Pages at `i_limit` 1000 | 11 | 11 |
 | Full-history build time | **90s** | ~60s |
-| A 7-day window | 62 rows, **6s** | — |
+| A 20-day window | 62 rows, **6s** | — |
 
 **What is built:** migration `0038` (`pay_transaction`, `pay_transaction_item`),
 `src/sync/transactions.ts`, `src/sync/tx-window.ts`, two passes

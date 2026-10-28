@@ -94,6 +94,8 @@ export interface SyncPassDeps {
   concurrency?: number;
   /** Claim lease length, kept above the step budget. */
   leaseMs?: number;
+  /** How the pass waits for a deferred item. Tests pass one that advances a fake clock. */
+  sleep?: (ms: number) => Promise<void>;
   /** Injected GoHighLevel client. Tests pass a fake; production builds one. */
   ghl?: Pick<GhlClient, 'searchContacts'>;
   /**
@@ -138,6 +140,27 @@ export interface SyncPassSummary {
 const DEFAULT_LIMIT = 50;
 const DEFAULT_QUEUE_CONCURRENCY = 8;
 const DEFAULT_LEASE_MS = 55_000;
+
+/**
+ * The longest a pass will sleep for one of its own deferred items before giving
+ * the rest to the next invocation.
+ *
+ * A pass used to end the moment nothing was claimable. For a report pass that is
+ * the moment after it asks WL for a build: the item is deferred 5 s, the next
+ * batch claims nothing, and the pass closes. So each scheduled run did ONE step
+ * - request, or one poll - and the next step waited for the next run. Actions
+ * ran the sync every 4-8 hours, not hourly (measured 1-8 Oct 2026), so the
+ * 3-hour handle had always expired by then and the step was "request" again.
+ * `tx_payment_sync` and `tx_item_sync` did that from 2 Oct to 8 Oct without
+ * reading a row, every run `partial`, nothing failed. `client_list_sync` only
+ * escaped it because its two report requests take longer than the 5 s defer,
+ * so its item happened to be claimable again when the pass looked.
+ *
+ * So a pass that deferred something now waits for it, inside its own budget.
+ * The poll backoff tops out at 30 s; one minute covers every rung with room,
+ * and anything deferred further than that is not a poll worth sleeping for.
+ */
+const MAX_DEFERRED_WAIT_MS = 60_000;
 
 /** What the passes share; only the job name, work type, seeding and handler differ. */
 interface PassContext {
@@ -2247,10 +2270,10 @@ const FULL_SYNC_WAVES: ReadonlyArray<
     { job: 'ghl_match_sync', run: runGhlMatchSyncPass },
     { job: 'service_sync', run: runServiceSyncPass },
     // The two transaction reports. In the wave for the same reason
-    // client_list_sync is: a report pass mostly DEFERS, so it costs one WL call
-    // per invocation and converges over runs. Keeping them out would mean the
-    // money reports advanced only on their own cron, which is slower to
-    // converge for no saving.
+    // client_list_sync is: a report pass spends most of its time sleeping
+    // between polls (MAX_DEFERRED_WAIT_MS), which costs the wave nothing because
+    // every pass in it runs concurrently. Keeping them out would mean the money
+    // reports advanced only on their own cron, for no saving.
     { job: 'tx_item_sync', run: runTransactionItemSyncPass },
     { job: 'tx_payment_sync', run: runTransactionPaymentSyncPass },
   ],
@@ -2348,6 +2371,7 @@ async function runPass(
   const limit = deps.limit ?? DEFAULT_LIMIT;
   const concurrency = deps.concurrency ?? DEFAULT_QUEUE_CONCURRENCY;
   const leaseMs = deps.leaseMs ?? DEFAULT_LEASE_MS;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const startedAt = now();
 
   const wl = deps.wl ?? new WlClient(config.wl, { env: config.env });
@@ -2403,6 +2427,10 @@ async function runPass(
 
   const totals = { claimed: 0, done: 0, requeued: 0, dead: 0 };
   let deferred = 0;
+  // Whether a deferred item is still pending when the loop ends. Unknown (null)
+  // unless the loop ended by looking: a pass stopped by its budget or a failure
+  // keeps the old, cautious reading that any deferral means unfinished work.
+  let deferredPending: boolean | null = null;
   let failure: string | null = null;
   try {
     await spec.seed(ctx);
@@ -2434,7 +2462,21 @@ async function runPass(
       // Between batches, not inside one: a batch is the smallest unit this loop
       // controls, and a beat per item would be a write per item for nothing.
       await beat(db, ctx.runId, iso());
-      if (s.claimed === 0) break; // nothing eligible: the queue is drained
+      if (s.claimed > 0) {
+        deferredPending = null;
+        continue;
+      }
+
+      // Nothing eligible. Drained - unless this pass deferred an item that comes
+      // due shortly, in which case wait for it. See MAX_DEFERRED_WAIT_MS.
+      if (deferred === 0) break;
+      const nextAt = await nextPendingAttemptAt(db, spec.workType);
+      deferredPending = nextAt !== null;
+      if (nextAt === null) break;
+      const waitMs = Math.max(0, nextAt - now());
+      if (waitMs > MAX_DEFERRED_WAIT_MS) break;
+      if (now() - startedAt + waitMs >= budgetMs) break;
+      await sleep(waitMs);
     }
   } catch (error) {
     // NAME *AND* REASON. This recorded only `error.name`, so every failure in
@@ -2458,9 +2500,22 @@ async function runPass(
   // A deferred item sits pending with a future next_attempt_at, so countEligible
   // does not see it - but it IS outstanding work (a report still building), so the
   // pass is 'partial', not a clean 'ok' that would move the completion watermark.
-  const itemsRemaining = await countEligible(db, iso(), spec.workType);
+  // A deferral that was waited for and then FINISHED in this pass is not
+  // outstanding: counting it made client_list_sync read 'partial' on runs that
+  // had written the whole client list.
+  //
+  // COUNTING IS NOT THE WORK, SO IT CANNOT FAIL THE PASS. This count used to sit
+  // outside the catch above, so a statement timeout here threw straight out of
+  // runPass: closeRun never ran, the run row read 'running' until the stale
+  // sweep found it half an hour later, and a pass that had drained all 399,140
+  // purchase elements reported 'failed'. Measured 9 Oct 2026 11:19:08Z on
+  // purchase_element_sync, whose queue was at 100% with the drain finished at
+  // 11:09:57. Unknown is UNKNOWN_REMAINING, never 0: a zero would read as a
+  // clean 'ok' and move the completion watermark on a count that never ran.
+  const itemsRemaining = await countEligibleOrUnknown(db, iso(), spec.workType);
+  const deferredOutstanding = deferred > 0 && deferredPending !== false;
   const state: SyncPassSummary['state'] =
-    failure !== null ? 'failed' : itemsRemaining > 0 || deferred > 0 ? 'partial' : 'ok';
+    failure !== null ? 'failed' : itemsRemaining !== 0 || deferredOutstanding ? 'partial' : 'ok';
 
   await closeRun(db, ctx.runId, iso(), {
     state,
@@ -2650,7 +2705,7 @@ export async function runFullSyncPassParallel(
               done: 0,
               requeued: 0,
               dead: 0,
-              itemsRemaining: -1,
+              itemsRemaining: UNKNOWN_REMAINING,
               error: error instanceof Error ? error.message : String(error),
             },
           }));
@@ -2672,6 +2727,48 @@ export async function runFullSyncPassParallel(
     durationMs: now() - startedAt,
     passes,
   };
+}
+
+/** When the earliest pending item of this work type next comes due, or null if none is pending. */
+async function nextPendingAttemptAt(db: SupabaseClient, workType: string): Promise<number | null> {
+  const rows = await db.select<{ next_attempt_at: string | null }>(
+    'sync_queue',
+    `state=eq.pending&work_type=eq.${workType}&order=next_attempt_at&limit=1&select=next_attempt_at`,
+  );
+  const at = Date.parse(rows[0]?.next_attempt_at ?? '');
+  return Number.isFinite(at) ? at : null;
+}
+
+/**
+ * What `items_remaining` says when the count itself could not be taken.
+ *
+ * NOT 0, AND NOT A THROW. Zero is the one value that means "drained", and
+ * reporting it on a count that failed would close the run 'ok' and move the
+ * completion watermark past work nobody has looked at. A throw is what used to
+ * happen, and it orphaned the run row. Negative is out of the range a real count
+ * can produce, so it cannot be mistaken for one, and the pass reads 'partial' -
+ * the cautious verdict the deferral logic already uses for "unknown".
+ */
+export const UNKNOWN_REMAINING = -1;
+
+/**
+ * countEligible, with its failure turned into UNKNOWN_REMAINING.
+ *
+ * The count runs after the work is done and only decides what the run row says
+ * about it. On 9 Oct 2026 a 57014 statement timeout here cost purchase_element_sync
+ * a completed pass: 399,140 items drained, reported 'failed', run row left
+ * 'running'. The work is not in doubt when this fails - only the number is.
+ */
+async function countEligibleOrUnknown(
+  db: SupabaseClient,
+  now: string,
+  workType: string,
+): Promise<number> {
+  try {
+    return await countEligible(db, now, workType);
+  } catch {
+    return UNKNOWN_REMAINING;
+  }
 }
 
 async function countEligible(db: SupabaseClient, now: string, workType: string): Promise<number> {

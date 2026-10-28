@@ -6,6 +6,7 @@ Sorted by status (done last), then priority, then ID.
 | ID  | Title | Status | Priority | Depends on | Path |
 |-----|-------|--------|----------|------------|------|
 | 036 | Private notes — optionally tag a student, still visible only to the teacher | active | medium | 033 | `active/036-private-note-student-tag/` |
+| 035 | sync_queue retention — prune done rows on a 20-day window | active | high | — | `active/035-sync-queue-retention/` |
 | 034 | Course-recommendation quiz — interest questions → a Claude-suggested course | active | high | 033 | `active/034-course-recommendation-quiz/` |
 | 033 | Teacher notes — private (personal) and public (to a student), the portal's first write path | active | high | 032 | `active/033-teacher-student-notes/` |
 | 025 | Identity hub — identity, student and teacher, maintained by trigger | active | high | — | `active/025-identity-hub/` |

@@ -439,10 +439,12 @@ resumes. The `concurrency` group still queues runs rather than overlapping them,
 because a second runner would spend its time discovering every job is locked.
 
 **`transactions` behaves differently from the other six, and that is expected.**
-It reads an asynchronous WellnessLiving report, so a single invocation normally
-ends `partial`: it requests a build, or polls one, or reads a few pages, and
-defers the rest. A run that reports `partial` night after night while
-`pay_transaction` grows is the pass working. What is NOT expected is
+It reads an asynchronous WellnessLiving report, and since 8 Oct 2026 a single
+run requests the build, waits for it (sleeping between polls, inside the pass
+budget) and reads it, so a normal run ends `ok`. `partial` now means the build
+outlasted the budget or a poll was deferred more than a minute. A run that
+reports `partial` with `pay_transaction.synced_at` not moving is NOT the pass
+working — before 8 Oct that pattern hid six days of nothing (STATUS.md). What is NOT expected is
 `sync_job_state.report_handle` staying set with `page_number` unchanged across
 several runs — that means the build is being restarted rather than read, and the
 first thing to check is whether `last_key` (the frozen window) is being rewritten
@@ -841,6 +843,61 @@ That makes no network calls and proves every key is present and well-formed. The
 
 A 401 or 403 in `last_http_status` across many items at once is a credential
 problem, not a data problem. Go to section 4.
+
+---
+
+### 8h. `57014: canceling statement due to statement timeout` — the queue is too big
+
+`sync_queue` keeps every `done` row until something deletes it, and past about a
+million rows ordinary statements start crossing the timeout. The symptom moves
+around — the fresh-done dedupe read (30 Sep, killed 16 of 18 passes), the
+post-drain count (9 Oct), `enqueue_sync_items` itself (13 Oct, `attendance_sync`,
+3,500 items left unqueued) — so treat the table size as the cause whichever
+statement is named.
+
+Check it first. If a plain count will not finish, that is your answer:
+
+```bash
+node scripts/queue-status.mjs
+```
+
+The daily `queue-prune` workflow holds the line at **20 days**. To run it by hand
+— dry run first, which is the default and prints what it would delete:
+
+```bash
+APP_ENV=prod npm start -- queue:prune
+```
+
+Then, to actually delete:
+
+```bash
+APP_ENV=prod npm start -- queue:prune --apply
+```
+
+`--days=N` overrides the window, `--batch=N` the rows per statement, and
+`--max-batches=N` bounds one run. `done: false` in the output means the backlog
+did not clear in this run — expected while it is still large; run it again.
+
+**Never take `--days` below 2.** `enqueue()`'s dedupe reads the last 24 hours of
+`done` rows to decide a target was already refreshed today; prune inside that
+window and it re-queues the same work the same day. The command refuses anything
+at or under 1 day, but it cannot stop you editing the cron.
+
+**Run a large clear while the sync is idle.** Competing with a live pass for the
+same table is how a cleanup becomes an incident. The schedule is 05:30 UTC for
+that reason: `sync` runs hourly on the hour, so the half-hour leaves it a clear
+run, and the sweep at 06:00 still sees a settled system.
+
+**If deleting rows does not make it fast again**, the problem is bloat rather than
+row count: the indexes stay bloated after a DELETE. `REINDEX TABLE
+public.sync_queue` — or `VACUUM (FULL, ANALYZE) public.sync_queue`, which takes
+an exclusive lock and must not run while the sync does. Confirm first from a SQL
+console:
+
+```sql
+select n_live_tup, n_dead_tup, last_autovacuum
+  from pg_stat_user_tables where relname = 'sync_queue';
+```
 
 ---
 

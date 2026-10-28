@@ -1236,6 +1236,61 @@ other dedupe read (pending and in-progress rows) also ordered by `id`. For
 **Every paged read of `sync_queue` should order by the columns of the index that
 serves it, never by `id`.**
 
+**The post-drain count needed its own index (`0060`), and must never fail a
+pass.** `countEligible()` closes every pass with `state = 'pending' and work_type
+= ? and next_attempt_at <= ?`. Nothing indexed that shape: `sync_queue_claimable_idx`
+(`0007`) leads on `next_attempt_at` with no `work_type`, and `0050`'s index is
+partial on `state = 'done'`. Measured 9 Oct 2026 on an **idle** database, all
+returning nothing: `purchase_item_element` (399,140 queued) **2,638 ms**,
+`client_visits` 849 ms, `session_attendance` 697 ms — slowest, again, exactly
+where it finds nothing. `0060` indexes `(work_type, next_attempt_at) where state
+= 'pending'`.
+
+The index is half of it. **This count decides only what the run row says, so its
+failure is reported, not raised.** It sits after the drain and outside the catch
+that records a pass failure, so a `57014` there threw straight out of `runPass`:
+`closeRun` never ran. On 9 Oct 2026 at 11:19:08Z `purchase_element_sync` had
+drained all 399,140 elements by 11:09:57, and the timeout nine minutes later left
+its run row reading `running` until the stale sweep retired it, while the
+orchestrator logged `failed` with `claimed`/`done`/`dead` all zero — placeholders
+from its catch, not measurements. A failed count now reads `UNKNOWN_REMAINING`
+(`-1`) and the pass closes `partial`. **Never `0`:** zero is the one value meaning
+drained, and reporting it would close the run `ok` and move the completion
+watermark past work nobody counted.
+
+
+**`done` rows are kept 20 days and then deleted (`0063`).** The table was never
+pruned and its size became the commonest cause of a failed pass: 532,415 rows on
+23 Sep 2026, 869,798 on 1 Oct, **1,506,074 `done`** on 13 Oct — by which point
+`count(*)` over it no longer completed (cancelled at 10,141 ms), counting the
+3,500 `pending` rows through a partial index took 1,055 ms, and `attendance_sync`
+failed inside `enqueue_sync_items` with a statement timeout, leaving 3,500 items
+unqueued. `0050` and `0060` each indexed one slow statement; neither shrank the
+table, and the bottleneck simply moved.
+
+**The window has a floor of 24 hours, and it is load-bearing.** `enqueue()`'s
+fresh-done dedupe reads `state = 'done' and updated_at >= now() - 24h`
+(`DEFAULT_FRESH_DONE_WINDOW_MS`) to decide whether a target was already refreshed
+today. Prune inside that window and the dedupe goes blind: it stops seeing
+today's completions and re-queues the same work the same day, trading a size
+problem for a correctness one. Twenty days clears the floor twenty times over
+and still removes the overwhelming majority of the table. Past it a `done` row
+has **no reader at all** — the dedupe cannot see it, and the claim and
+`countEligible` both filter on `pending`.
+
+**Only `done` is ever deleted.** `pending` and `in_progress` are outstanding work;
+`failed` and `dead` are the record of what was given up on and why, which is the
+first thing an operator reads at 2am.
+
+**Batched, never one statement.** A single DELETE over a million rows hits the
+same statement timeout the prune exists to prevent, and holds locks on a table
+seventeen passes are working. `prune_sync_queue` takes `p_limit` rows per call
+via `ctid in (select … limit n)` — a bare `DELETE … LIMIT` is not SQL, and
+ordering the subquery would make the planner sort a million rows to delete five
+thousand. `pruneDoneItems` loops until a short batch says the window is clear,
+bounded by `maxBatches` so one run cannot spin unbounded.
+
+
 **Absolute times, not durations.** `next_attempt_at` is a timestamp. A duration
 only means something relative to a process that is still alive; a timestamp is
 still correct after a crash, a redeploy, or a fortnight in the queue.

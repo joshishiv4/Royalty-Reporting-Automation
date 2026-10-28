@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 import { SWEEP_CRASH_WINDOW_MS, notifyDeadLetter } from '../notify/index.js';
+import {
+  DEFAULT_FRESH_DONE_WINDOW_MS,
+  DEFAULT_RETENTION_MS,
+  pruneDoneItems,
+} from '../sync/queue.js';
 import { SupabaseClient } from '../supabase/client.js';
 import { loadConfig } from '../config/index.js';
 import { ConfigValidationError } from '../config/schema.js';
@@ -29,6 +34,9 @@ Commands:
   sync:full-parallel Run every sync pass in dependency waves, in parallel within each
                      wave. Aimed at a local backfill: each pass seeds ONCE and drains
                      within its own budget (default 90 min per pass).
+  queue:prune        Delete sync_queue rows that are done and past the retention
+                     window (20 days). DRY RUN unless --apply is given.
+                       --apply  --days=N  --batch=N  --max-batches=N
   config:check       Resolve and validate config only. Makes no network calls.
   config:show        Print the resolved config with credentials fingerprinted.
   help               Show this message.
@@ -56,6 +64,7 @@ const COMMANDS: readonly string[] = [
   'sync:historical',
   'alert:test',
   'alert:sweep',
+  'queue:prune',
 ];
 
 /**
@@ -251,6 +260,60 @@ async function main(argv: readonly string[]): Promise<number> {
         ),
       );
       return summary.state === 'failed' ? 1 : 0;
+    }
+
+    case 'queue:prune': {
+      /**
+       * Enforces the retention window on sync_queue's 'done' rows.
+       *
+       * DRY RUN BY DEFAULT, like requeue.mjs and window.mjs. This deletes, and a
+       * command that deletes on the strength of a typo'd --days is not one you
+       * want on a runner. --apply is the opt-in.
+       *
+       * THE WINDOW HAS A FLOOR OF 24 HOURS and the command refuses to go under
+       * it. enqueue() reads today's 'done' rows to decide whether a target was
+       * already refreshed; prune into that window and the dedupe goes blind and
+       * re-queues the same work the same day. Checked here rather than left to
+       * the caller, because the caller is a cron line somebody edits at 2am.
+       *
+       * EXIT 0 WHEN THE BACKLOG IS NOT YET CLEAR. The first runs meet 1.5M rows
+       * and stop at maxBatches by design; 'done: false' is progress, not failure.
+       * The run that cannot reach the database fails via the throw.
+       */
+      const days = Number(readOption(argv, 'days') ?? String(DEFAULT_RETENTION_MS / 86_400_000));
+      if (!Number.isFinite(days) || days <= 1) {
+        console.error(
+          `--days must be greater than 1: anything inside the ${String(
+            DEFAULT_FRESH_DONE_WINDOW_MS / 3_600_000,
+          )}h fresh-done window blinds enqueue's dedupe.`,
+        );
+        return 1;
+      }
+      const batch = readOption(argv, 'batch');
+      const maxBatches = readOption(argv, 'max-batches');
+      const db = new SupabaseClient(config.supabase);
+      const result = await pruneDoneItems(db, {
+        before: new Date(Date.now() - days * 86_400_000).toISOString(),
+        ...(batch === null ? {} : { batch: Number(batch) }),
+        ...(maxBatches === null ? {} : { maxBatches: Number(maxBatches) }),
+        dryRun: !argv.includes('--apply'),
+      });
+      const applied = argv.includes('--apply');
+      logger.info('queue prune', { days, applied, ...result });
+      console.log(
+        JSON.stringify(
+          {
+            env: config.env,
+            days,
+            applied,
+            ...result,
+            ...(applied ? {} : { note: 'dry run - re-run with --apply to delete' }),
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
     }
 
     case 'alert:sweep': {
