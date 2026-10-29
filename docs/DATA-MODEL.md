@@ -1652,6 +1652,11 @@ fit; `unique (attempt_id, rank)`). The same model call also returns a few **inte
 tags** inferred from the answers (including the free text); the server stores them
 on `quiz_attempt.interests` (`text[]`), and the home "Things I'm Into" card reads
 the latest attempt's. The interests are the model's, not a category mapping of ours.
+A sixth table, **`interest_icon`** (`0069`), caches the icon the model assigned to
+each tag — one row per unique lowercased tag, globally. The quiz-attempt handler
+upserts `(tag, icon)` with `ignoreDuplicates`, so the first model to name a tag
+decides its icon and every later occurrence reuses it. The interests API reads this
+table instead of hardcoding a single icon.
 
 **A question can offer options, a free-text box, or both.** `quiz_question.allow_text`
 turns on a free-text box; a question with option rows and `allow_text = false` is
