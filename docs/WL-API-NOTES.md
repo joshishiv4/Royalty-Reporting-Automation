@@ -920,8 +920,16 @@ an object in the row — `a_field` names two flat columns:
 - **Always a full HTML document**, never plain text. 260 of 524 activated clients
   have a note; 81 of those are rich — `<ul>`/`<li>`, `<br />`, `&nbsp;`, Gmail
   `<div class="gmail_default">` from a pasted email.
-- **A string, despite the `_list` name**, on all 260. How several notes on one
-  profile are joined is not observed — every client checked has one.
+- **A string, despite the `_list` name**, on all 260 — and it IS a list. Several
+  notes on one profile are joined with `", "` into that one string (measured
+  28 Oct 2026: 164 of 339 clients have several, 676 notes; e.g. uid `57075204`'s
+  two notes, "Added by … on Apr 8, 2026" and "… on Mar 2, 2026" in the portal,
+  arrive as `<!DOCTYPE html>…</html>, <!DOCTYPE html>…</html>`). The newest note
+  comes first, the order the portal lists them. Each HTML note is a whole
+  document, so `</html>, ` is an unambiguous boundary. Older plain-text notes come
+  after all the HTML ones (never before, 0 cases), and 29 plain-text tails contain
+  `", "` — a join or a comma in the text, not decidable. The sync splits only at
+  `</html>, ` (`0068`).
 - **No author, no date.** None of the 38 columns carries either. `o_since_date.*`
   is the client's join date, not the note's.
 - `a_dynamic` has no entry mentioning a note.

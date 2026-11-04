@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { SupabaseClient } from '../supabase/client.js';
 import type { ReportPage } from '../wl/report.js';
 import { WL_PATHS } from '../wl/endpoint.js';
@@ -170,18 +171,55 @@ export function mapClientRows(
   return out;
 }
 
-/** A note WL says exists. `note_html` is null when WL sends a note with no text. */
+/** One of a client's WL notes. A client with three notes is three of these (0068). */
 export interface ClientNote {
   readonly uid: string;
-  readonly note_html: string | null;
+  /** Which note: a hash of its HTML, "#n" for a repeat - see noteKey. */
+  readonly note_key: string;
+  /** Display order: 0 is the note WL lists first (its newest). */
+  readonly position: number;
+  readonly note_html: string;
   readonly note_text: string | null;
 }
 
-/** What one page says about notes: who has one, and who explicitly has none. */
+/** What one page says about notes. */
 export interface ClientNotes {
+  /** Every note on the page. */
   readonly keep: readonly ClientNote[];
-  /** uids WL reports `has_note: false` for. Their stored note is deleted. */
-  readonly clear: readonly string[];
+  /**
+   * Every client the page makes a statement about (`has_note` true OR false).
+   * Each of them keeps exactly its notes in `keep` and loses the rest - so a
+   * `has_note: false` client, having none in `keep`, loses all of theirs.
+   */
+  readonly replace: readonly string[];
+}
+
+/**
+ * WL's one string of notes, as the notes it holds.
+ *
+ * WL joins a profile's notes with ", " (measured 28 Oct 2026: 164 of 339 clients
+ * have several). Every HTML note is a whole document, so a note ends at
+ * `</html>` and the next begins after the ", " that follows - the only split
+ * made. Older plain-text notes come after the HTML ones, and 29 such tails
+ * contain ", " themselves: two notes, or one note with a comma, cannot be told
+ * apart, so a plain-text tail stays one note rather than being cut on a guess.
+ */
+export function splitNotes(body: string): string[] {
+  return body.split(/(?<=<\/html>), /i).filter((piece) => piece.trim().length > 0);
+}
+
+/**
+ * Which of a client's notes this is: the first 32 hex of sha256 over its HTML as
+ * WL sent it, with "#n" on the nth repeat of the same text on one profile.
+ *
+ * A hash, not the position: WL lists the newest note first, so one new note
+ * would shift every position and every note would look edited. Migration 0068
+ * computes the same hash in SQL for the rows it carries over - change one, change
+ * both, or every note churns on the next pass.
+ */
+export function noteKey(html: string, occurrence: number): string {
+  const hash = createHash('sha256').update(html, 'utf8').digest('hex').slice(0, 32);
+  return occurrence === 0 ? hash : `${hash}#${String(occurrence)}`;
 }
 
 /**
@@ -191,7 +229,8 @@ export interface ClientNotes {
  * WL's `""` is the absence of evidence. `has_note: false` is not absence: it is
  * WL stating there is no note, so a note removed in the portal is removed here.
  * Anything that is neither true nor false (null, missing) says nothing, and the
- * stored note is left alone.
+ * stored notes are left alone. A `has_note: true` with an empty body (WL's "Note
+ * with no text") has nothing to keep, so it clears like false.
  *
  * Rows without a uid are dropped, and a repeated uid keeps its first row, both
  * exactly as mapClientRows does - so a note is never written for a person that
@@ -206,7 +245,7 @@ export function mapClientNotes(
   const bodyAt = fields.indexOf(NOTE_BODY);
   const seen = new Set<string>();
   const keep: ClientNote[] = [];
-  const clear: string[] = [];
+  const replace: string[] = [];
 
   for (const row of rows) {
     const uid = readText(row[uidAt]);
@@ -215,14 +254,26 @@ export function mapClientNotes(
 
     const flag = row[flagAt];
     if (flag === true || flag === 1 || flag === '1') {
+      replace.push(uid);
       const body = row[bodyAt];
-      const html = typeof body === 'string' && body.trim().length > 0 ? body : null;
-      keep.push({ uid, note_html: html, note_text: html === null ? null : noteText(html) });
+      if (typeof body !== 'string') continue;
+      const repeats = new Map<string, number>();
+      splitNotes(body).forEach((html, position) => {
+        const occurrence = repeats.get(html) ?? 0;
+        repeats.set(html, occurrence + 1);
+        keep.push({
+          uid,
+          note_key: noteKey(html, occurrence),
+          position,
+          note_html: html,
+          note_text: noteText(html),
+        });
+      });
     } else if (flag === false || flag === 0 || flag === '0') {
-      clear.push(uid);
+      replace.push(uid);
     }
   }
-  return { keep, clear };
+  return { keep, replace };
 }
 
 /** Named entities WL notes were seen to carry, plus the XML five. */
@@ -272,9 +323,6 @@ export function noteText(html: string): string | null {
     .trim();
   return text.length === 0 ? null : text;
 }
-
-/** PostgREST `in.(...)` lists go in the URL; keep each delete well short of a limit. */
-const NOTE_DELETE_BATCH = 200;
 
 export interface WriteClientListInput {
   readonly kBusiness: string;
@@ -339,30 +387,26 @@ export async function writeClientList(
   }
 
   // AFTER person, deliberately: wl_client_note.uid references person.uid, and
-  // the person rows this page carries are written just above.
+  // the person rows this page carries are written just above. One call for the
+  // page (0068): each client the page speaks for keeps exactly these notes.
   const notes = mapClientNotes(input.fields, input.page.rows);
-  if (notes.keep.length > 0) {
-    await db.upsert(
-      'wl_client_note',
-      notes.keep.map((n) => ({
+  if (notes.replace.length > 0) {
+    await db.rpc('replace_wl_client_notes', {
+      p_uids: notes.replace,
+      p_notes: notes.keep.map((n) => ({
         ...n,
         k_business: input.kBusiness,
         raw_wl_id: rawWlId,
         synced_at: input.syncedAt,
       })),
-      { onConflict: 'uid' },
-    );
+    });
     await linkRows(
       db,
       rawWlId,
       'wl_client_note',
-      notes.keep.map((n) => n.uid),
+      [...new Set(notes.keep.map((n) => n.uid))],
       'note',
     );
-  }
-  for (let i = 0; i < notes.clear.length; i += NOTE_DELETE_BATCH) {
-    const batch = notes.clear.slice(i, i + NOTE_DELETE_BATCH);
-    await db.delete('wl_client_note', `uid=in.(${batch.map((u) => `"${u}"`).join(',')})`);
   }
 
   return { rawWlId, clients, notes };
