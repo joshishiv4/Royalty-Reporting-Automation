@@ -5,8 +5,10 @@ import {
   runClientListSyncPass,
   runClientSessionSyncPass,
   runGhlMatchSyncPass,
+  runLessonSignoffSyncPass,
   runLocationSyncPass,
   runLoginTypeSyncPass,
+  runMemberGroupSyncPass,
   runProfileSyncPass,
   runPromotionSyncPass,
   runPurchaseElementSyncPass,
@@ -113,6 +115,16 @@ export const JOB_GROUPS: readonly JobGroup[] = [
     passes: [
       { job: 'client_session_sync', run: runClientSessionSyncPass },
       { job: 'attendance_sync', run: runAttendanceSyncPass },
+    ],
+  },
+  {
+    name: 'lesson-signoff',
+    expectedEveryHours: 24,
+    summary:
+      'Client groups (the FI), then one emailed Jotform sign-off link per attended SDC lesson.',
+    passes: [
+      { job: 'member_group_sync', run: runMemberGroupSyncPass },
+      { job: 'lesson_signoff_sync', run: runLessonSignoffSyncPass },
     ],
   },
   {

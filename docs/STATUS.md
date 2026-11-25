@@ -1,7 +1,8 @@
 # Status and plan
 
-Last updated **28 Oct 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (The 28 Oct update covers the client note only:
+Last updated **25 Nov 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (The 25 Nov update covers the lesson sign-off
+entry under "In progress" only. The 28 Oct update covers the client note only:
 dropping its date, `0066`, copying it into `teacher_note`, `0067`, and one row per note,
 `0068`. The 19 Oct update covers the client-note entry only; the
 13 Oct one the retention entry, the 12 Oct one the orphaned run under it, the 8 Oct
@@ -742,6 +743,36 @@ why it is shaped that way.
 | Health views and RLS | ✅ applied + proven on the live DB (21 Aug 2026) |
 
 ## In progress
+
+### Lesson sign-off, phase 1 — code complete, `0070` applied, no email sent yet (25 Nov 2026)
+
+Task 038 (`Tasks/backlog/038-jotform-lesson-signoff-automation/`). Every attended
+lesson of an "SDC Clients" student in a sign-off class (Music / DJ / Music
+Production For Everyone, from `SIGNOFF_START_DATE` = 24 Nov 2026) gets one
+`lesson_signoff` row and one email to `SIGNOFF_TO` — the admin, for now — with a
+prefilled Jotform link (Student, Date, Teacher Name, Course Code, FI, and the row's
+`id` in a hidden `lessonId` so two identical-looking lessons stay apart). Two new
+passes in the hourly wave and a new `lesson-signoff` job: `member_group_sync`
+(the FI is a WL client group) and `lesson_signoff_sync` (database only, no WL call).
+
+**Verified:** 32 new tests, each guarantee mutation-checked (never twice, the FI
+and class rules, the local start date, failed sends retried, the empty-group-list
+guard). The Jotform key and test form (`JOTFORM_FORM_ID`) were checked through the
+Jotform API, and a prefilled link filled all five fields in a browser; the hidden
+`lessonId` field took a prefilled value and showed nothing on the page.
+
+**Not done / blocked:**
+- `JOTFORM_FORM_HOST` must be set (`form.jotform.com`); without it the pass reports
+  `skipped` and sends nothing.
+- The test account is on Jotform's Free plan (100 submissions a month against ~500).
+- Whether the hidden `lessonId` is left off Jotform's submission PDF is unchecked —
+  needs one real submission.
+- A live dry run found 6 lessons from 24 Nov that would be emailed; none has been
+  sent — waiting on the user's go-ahead.
+- Phase 2 (detect signatures, reminders — needs `JOTFORM_API_KEY` wired) and phase 3
+  (Google Drive, month-end merge — needs Drive access) not started.
+- 28 SDC students have no FI group and 2 have two; their lessons are skipped until
+  the studio tags them or decides.
 
 ### The two transaction reports — code complete, waiting on one migration (17 Sep 2026)
 

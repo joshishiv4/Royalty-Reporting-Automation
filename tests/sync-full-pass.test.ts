@@ -9,6 +9,16 @@ const config = {
   wl: { kBusiness: '111111', clientId: '', clientSecret: '', host: '', authHost: '', region: 0 },
   sync: { historyStart: '1980-01-01', dailyLookbackDays: 2 },
   runtime: { maxConcurrency: 5, httpTimeoutMs: 30000 },
+  // Lesson sign-off left unconfigured: its pass reports 'skipped' and touches nothing.
+  smtp: { host: null },
+  signoff: {
+    to: null,
+    startDate: null,
+    classes: [],
+    eligibleGroup: 'SDC Clients',
+    formHost: null,
+    formId: null,
+  },
 } as unknown as AppConfig;
 
 /** A WL client whose every call returns a valid but empty body. */
@@ -71,6 +81,8 @@ describe('runFullSyncPass', () => {
       'attendance_sync',
       'ghl_match_sync',
       'service_sync',
+      'member_group_sync',
+      'lesson_signoff_sync',
     ]);
     expect(summary.passes.every((p) => p.ran)).toBe(true);
     expect(summary.state).toBe('ok');
@@ -189,6 +201,8 @@ describe('runFullSyncPassParallel', () => {
         'staff_sync',
         'tx_item_sync',
         'tx_payment_sync',
+        'member_group_sync',
+        'lesson_signoff_sync',
       ].sort(),
     );
     expect(summary.passes.every((p) => p.ran)).toBe(true);
@@ -270,7 +284,7 @@ describe('runFullSyncPassParallel', () => {
     const summary = await runFullSyncPassParallel(config, { wl, db, now: () => 0 });
 
     // Every pass either ok or failed - none should be missing from the list.
-    expect(summary.passes).toHaveLength(18);
+    expect(summary.passes).toHaveLength(20);
     expect(summary.state).toBe('failed');
     const staff = summary.passes.find((p) => p.job === 'staff_sync');
     expect(staff?.summary?.state).toBe('failed');

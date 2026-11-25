@@ -53,6 +53,13 @@ const bareHost = filledIn
   .refine((v) => !/\s/.test(v), { message: 'must not contain whitespace' })
   .refine((v) => /^[a-z0-9.-]+$/i.test(v), { message: 'is not a valid hostname' });
 
+/** An optional setting where an empty value means unset (see SMTP_HOST). */
+const optionalText = z
+  .string()
+  .trim()
+  .optional()
+  .transform((v) => (v === undefined || v.length === 0 ? undefined : v));
+
 /** WL region ids are small positive integers; they arrive as strings. */
 const positiveIntFromString = filledIn
   .refine((v) => /^\d+$/.test(v), { message: 'must be a whole number' })
@@ -241,6 +248,56 @@ export const runtimeOptionsSchema = z.object({
    * install still notifies the person who owns the load without touching env.
    */
   SMTP_TO: z.string().trim().default('shiv.joshi@aliansoftware.net'),
+
+  // --- Lesson sign-off (task 038) ------------------------------------------
+  // All optional: until SIGNOFF_TO, SIGNOFF_START_DATE, JOTFORM_FORM_HOST and
+  // JOTFORM_FORM_ID are all set (and SMTP is on), lesson_signoff_sync creates
+  // nothing and says which are missing. Empty is unset, as for SMTP_HOST above.
+  /** Where every sign-off link is emailed. One address for now: the admin. */
+  SIGNOFF_TO: optionalText.refine((v) => v === undefined || /^[^\s@]+@[^\s@]+$/.test(v), {
+    message: 'SIGNOFF_TO must be an email address',
+  }),
+  /**
+   * `YYYY-MM-DD`, local lesson date. Lessons before it never get a sign-off.
+   * Without it the first run would email every attended SDC lesson on record.
+   */
+  SIGNOFF_START_DATE: optionalText.refine((v) => v === undefined || /^\d{4}-\d{2}-\d{2}$/.test(v), {
+    message: 'SIGNOFF_START_DATE must be YYYY-MM-DD',
+  }),
+  /**
+   * Comma-separated class names. A lesson qualifies when the first part of its
+   * WL title (before the first " | ") is one of these, ignoring case - so
+   * "Music For Everyone | In-Home | 45 Minutes" and the Live Performance
+   * Instruction variants match "Music For Everyone". Agreed with the studio
+   * 25 Nov 2026; Media, Podcasting, A Joyful Noise and DJ Private are excluded.
+   *
+   * EMPTY MEANS THE DEFAULT, not "no classes". The GitHub workflow passes an
+   * unset secret as "" - read literally, that would switch sign-offs off
+   * without a word.
+   */
+  SIGNOFF_CLASSES: optionalText.transform((v) =>
+    (v ?? 'Music For Everyone,DJ For Everyone,Music Production For Everyone')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
+  ),
+  /**
+   * The WL client group whose members need sign-offs. Every OTHER group they are
+   * in is their FI. Empty means the default - a `.min(1)` here would turn an unset
+   * GitHub secret into a config error that stops the whole sync.
+   */
+  SIGNOFF_GROUP: optionalText.transform((v) => v ?? 'SDC Clients'),
+  /**
+   * The host the Jotform form is served from - `form.jotform.com` normally, a
+   * different one on Jotform's HIPAA or EU servers. Configuration, like every host.
+   */
+  JOTFORM_FORM_HOST: optionalText.refine((v) => v === undefined || /^[a-z0-9.-]+$/i.test(v), {
+    message: 'JOTFORM_FORM_HOST must be a bare host, e.g. form.jotform.com',
+  }),
+  /** The master lesson form's id - the number in its URL. */
+  JOTFORM_FORM_ID: optionalText.refine((v) => v === undefined || /^\d+$/.test(v), {
+    message: 'JOTFORM_FORM_ID must be the numeric form id',
+  }),
 });
 
 export const appEnvSchema = z.enum(APP_ENVS);
@@ -275,6 +332,20 @@ export interface SmtpConfig {
   readonly password: string;
   readonly from: string;
   readonly to: string;
+}
+
+/**
+ * Lesson sign-off settings (task 038). Null fields are unset; the pass checks
+ * them together and reports which are missing rather than half-running.
+ */
+export interface SignoffConfig {
+  readonly to: string | null;
+  /** `YYYY-MM-DD`, compared against the lesson's local start date. */
+  readonly startDate: string | null;
+  readonly classes: readonly string[];
+  readonly eligibleGroup: string;
+  readonly formHost: string | null;
+  readonly formId: string | null;
 }
 
 export interface SyncConfig {
@@ -328,6 +399,7 @@ export interface AppConfig {
   readonly runtime: RuntimeConfig;
   readonly sync: SyncConfig;
   readonly smtp: SmtpConfig;
+  readonly signoff: SignoffConfig;
 }
 
 /** Thrown when resolved values are present but invalid. Never echoes a value. */

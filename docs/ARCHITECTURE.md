@@ -84,7 +84,7 @@ correctly does not start.
 | Writing WL responses to Supabase (raw_wl → typed rows → raw_link) | [`src/sync/writer.ts`](../src/sync/writer.ts) |
 | Writing GHL responses to Supabase (raw_ghl), and the recorder that makes every search store itself | [`src/sync/ghl-writer.ts`](../src/sync/ghl-writer.ts) |
 | Reading how far the sync has got, from the queue rather than from a run summary | [`src/sync/progress.ts`](../src/sync/progress.ts) |
-| The seven scheduled jobs — which passes each one runs, and in what order | [`src/sync/jobs.ts`](../src/sync/jobs.ts) |
+| The eight scheduled jobs (`lesson-signoff` added for task 038) — which passes each one runs, and in what order | [`src/sync/jobs.ts`](../src/sync/jobs.ts) |
 | Jobs that should have run and did not — the alert nothing else can produce | [`src/notify/overdue.ts`](../src/notify/overdue.ts) |
 | Writing purchases (list → purchase + purchase_item, stub FKs) | [`src/sync/purchases.ts`](../src/sync/purchases.ts) |
 | Enriching purchases with money (receipt → totals, payments, credit) | [`src/sync/receipts.ts`](../src/sync/receipts.ts) |
@@ -95,6 +95,8 @@ correctly does not start.
 | Promotions (classes/promotion → promotion, per-location) | [`src/sync/promotions.ts`](../src/sync/promotions.ts) |
 | Shop categories (shop/category → shop_category, business-wide) | [`src/sync/shop-categories.ts`](../src/sync/shop-categories.ts) |
 | Login types (login/type → login_type; `is_teacher_type` defines the `teacher` view) | [`src/sync/login-types.ts`](../src/sync/login-types.ts) |
+| Client groups (member/group/list?is_return_members=1 → member_group + member_group_member, replaced each run; a group is a student's FI) | [`src/sync/member-groups.ts`](../src/sync/member-groups.ts) |
+| Lesson sign-off, task 038 phase 1 (attended SDC lesson in a sign-off class → one `lesson_signoff` row → one email to `SIGNOFF_TO` with a prefilled Jotform link; Course Code / Date / FI formatting, the class and FI rules, the never-twice guarantee) | [`src/sync/lesson-signoff.ts`](../src/sync/lesson-signoff.ts) |
 | Linking a person to their GoHighLevel contact (phone first, email second, names never) | [`src/ghl/matcher.ts`](../src/ghl/matcher.ts) |
 | The class schedule (schedule/class/list → session + session_staff, keyed on class **and** date) | [`src/sync/sessions.ts`](../src/sync/sessions.ts) |
 | Who booked and who turned up (login/attendance/list → attendance, per occurrence) | [`src/sync/attendance.ts`](../src/sync/attendance.ts) |
@@ -342,6 +344,7 @@ to re-run.
 | `0067` | **WL profile notes become `teacher_note` rows** (task 037, decided 28 Oct 2026). A student's note → a public note to them with no author; a teacher's → that teacher's private note; anyone else → nothing. Provenance is **`app.teacher_note_link (teacher_note_id, uid)`**, the `*_link` pattern — no `source` column or boolean on the note, which would be a second answer that could disagree; the uid rather than `wl_client_note.id`, because that row is deleted and re-created as a note goes and returns. `authenticated` reads the link's note id only. One idempotent `public.sync_wl_note_to_teacher_note(uid)` does insert / update / soft-delete / restore, called by an `AFTER` trigger on `wl_client_note` and by the backfill, which runs after the trigger exists. On `teacher_note`: `author_teacher_id` nullable, but only on a linked note (deferred constraint trigger); `teacher_note_author_update` adds `not app.is_linked_note(id)` so a WL note is read-only (**re-running `0063`/`0056` removes this — re-run `0067`**); `0057`'s revision trigger skips linked notes, which would otherwise fail the sync on the first edited WL note (revision author is NOT NULL); new `teacher_note_wl_student_select` lets a teacher read their students' WL notes, naming no table. Drops `0065`'s two functions. **Release the portal change first**: it stops calling them. Trailing checks: linked count matches, no authorless unlinked note, both guards present, no inline table read, student policy unchanged, link uid unreadable, sync function not callable, functions gone, both triggers present. **Keyed per note by `0068`** |
 | `0068` | **One `wl_client_note` row per WL note.** WL joins a profile's notes into one string with `", "` (164 of 339 clients have several, 676 notes on dev, 28 Oct 2026); the portal showed them as one card. Drops `unique (uid)`, adds `note_key` (first 32 hex of sha256 over the note's HTML, `#n` for a repeat — a hash, not a position, so a new note on top does not make every other note look edited) and `position` (display order), unique `(uid, note_key)`. `teacher_note_link` becomes `(uid, note_key)` plus `position`, readable by `authenticated` as note id + position only. `sync_wl_note_to_teacher_note(uid, note_key)` replaces `0067`'s per-client version; the trigger passes both. New `replace_wl_client_notes(uids, notes)` (service role only) is how the sync writes a page: each client keeps exactly its notes on the page. **Does not split existing rows** — that needs the sync's `noteText`; it gives each the key the sync would, so single notes keep theirs and the next client-list pass splits the combined ones. **Apply before deploying the sync code**: the old code upserts on `uid` alone. Re-running `0067` restores the single-key function — re-run `0068` after it. Trailing checks: keys and uniques, every WL note with an identity has a live link, link key unreadable and position readable, functions not callable through the API, old function gone, trigger present |
 | `0069` | **`interest_icon` — LLM-assigned icon cache for interest tags.** The "Things I'm Into" home card needs an icon per tag, but tags are free text inferred by the quiz recommender, so icons cannot be hardcoded. The quiz-attempt handler asks the model to pick an icon from the registry and upserts the `(tag, icon)` pair here; the interests API reads it back. One row per unique lowercased tag — the same tag always shows the same icon across students and sessions. UUID PK, unique on `tag`, RLS enabled with no policy (service role only). No author or date beyond `created_at` |
+| `0070` | **Lesson sign-off (task 038).** `member_group` + `member_group_member`: WL client groups and who is in them, from `/v1/member/group/list?is_return_members=1` — for this studio a group is a student's Fiscal Intermediary (28 groups; "SDC Clients" 216 members, 186 in exactly one other group, 19 Nov 2026). Membership is replaced each run (`synced_at` older than the run is deleted) because WL keeps current membership only; **no FK from `member_group_member.uid` to `person`** — members the client list has not stored yet exist. `lesson_signoff`: one row per attended visit, **unique on `k_visit`** so the hourly sync never creates or emails a lesson twice; the form fields are snapshotted as sent and `fi_*` is the FI on the day. Status `pending/sent/skipped/signed`, `skip_reason` `no-fi/multiple-fi/missing-detail`, a check that a skip always has a reason. **No URL and no recipient stored** — both embed configuration. RLS on, no policy, on all three |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
 proofs, plus case tables for rules that live in SQL. They are not migrations and
@@ -435,6 +438,28 @@ say — is a different report. See [`src/sync/tx-window.ts`](../src/sync/tx-wind
 report returns an empty list instead, which is why this had to be found twice).
 Readiness is `id_report_status = 3` **and** `dtu_complete` set — never "we got
 rows".
+
+### The lesson sign-off pass reads the database, not WellnessLiving
+
+`lesson_signoff_sync` (task 038) is the one pass that makes **no WL call**. It runs in
+the same hourly wave as everything else, so it sees the attendance, sessions and
+client groups the *previous* run stored:
+
+```
+seed     member_group "SDC Clients" → its members
+         attendance id_visit = 3, local date ≥ SIGNOFF_START_DATE
+         session title's first " | " part ∈ SIGNOFF_CLASSES
+         minus lesson_signoff rows already sent/signed      → one queue item per k_visit
+handler  snapshot student, date, teacher, course code, FI   → upsert lesson_signoff
+         no FI / two FIs / blank detail → status skipped (re-checked next run)
+         otherwise email SIGNOFF_TO the prefilled Jotform link → status sent
+           (link carries lesson_signoff.id as the hidden lessonId)
+         email failed → row stays pending, item requeued in 15 min
+```
+
+A lesson attended this hour is emailed next hour. Until every `SIGNOFF_*` /
+`JOTFORM_FORM_*` setting and `SMTP_HOST` is set, the pass returns `skipped` without
+opening a run and names what is missing.
 
 ## What a sync run costs
 

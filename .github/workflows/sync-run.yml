@@ -72,6 +72,14 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           SMTP_TO: ${{ secrets.SMTP_TO }}
+          # Lesson sign-off (task 038). Unset secrets arrive as "", which the
+          # config treats as unset: the pass reports 'skipped', the sync runs on.
+          SIGNOFF_TO: ${{ secrets.SIGNOFF_TO }}
+          SIGNOFF_START_DATE: ${{ secrets.SIGNOFF_START_DATE }}
+          SIGNOFF_CLASSES: ${{ secrets.SIGNOFF_CLASSES }}
+          SIGNOFF_GROUP: ${{ secrets.SIGNOFF_GROUP }}
+          JOTFORM_FORM_HOST: ${{ secrets.JOTFORM_FORM_HOST }}
+          JOTFORM_FORM_ID: ${{ secrets.JOTFORM_FORM_ID }}
           # Optional tuning. A secret that is not set arrives as an empty string
           # rather than as absent, which Zod would read as a bad value instead of
           # falling back - so each is defaulted here to the schema's own default.

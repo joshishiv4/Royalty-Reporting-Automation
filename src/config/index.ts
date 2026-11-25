@@ -77,6 +77,12 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
     SMTP_PASSWORD: processEnv.SMTP_PASSWORD,
     SMTP_FROM: processEnv.SMTP_FROM,
     SMTP_TO: processEnv.SMTP_TO,
+    SIGNOFF_TO: processEnv.SIGNOFF_TO,
+    SIGNOFF_START_DATE: processEnv.SIGNOFF_START_DATE,
+    SIGNOFF_CLASSES: processEnv.SIGNOFF_CLASSES,
+    SIGNOFF_GROUP: processEnv.SIGNOFF_GROUP,
+    JOTFORM_FORM_HOST: processEnv.JOTFORM_FORM_HOST,
+    JOTFORM_FORM_ID: processEnv.JOTFORM_FORM_ID,
   });
   if (!runtime.success) {
     throw new ConfigValidationError(formatIssues(runtime.error));
@@ -126,6 +132,14 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
       password: runtime.data.SMTP_PASSWORD ?? '',
       from: runtime.data.SMTP_FROM ?? '',
       to: runtime.data.SMTP_TO,
+    }),
+    signoff: Object.freeze({
+      to: runtime.data.SIGNOFF_TO ?? null,
+      startDate: runtime.data.SIGNOFF_START_DATE ?? null,
+      classes: Object.freeze([...runtime.data.SIGNOFF_CLASSES]),
+      eligibleGroup: runtime.data.SIGNOFF_GROUP,
+      formHost: runtime.data.JOTFORM_FORM_HOST ?? null,
+      formId: runtime.data.JOTFORM_FORM_ID ?? null,
     }),
   });
 }

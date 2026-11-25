@@ -60,6 +60,10 @@ export const WL_PATHS = {
   // teacher (login_type.is_teacher_type - migration 0014).
   loginType: '/v1/login/type',
   user: '/v1/user',
+  // Business-wide: every client group, and with is_return_members=1 its member
+  // uids. NOT in WL's v1 docs (it is the SDK's GroupList ListModel) but live since
+  // 19 Nov 2026. A group is how this studio records a student's FI (task 038).
+  memberGroupList: '/v1/member/group/list',
   profilePurchaseList: '/v1/profile/purchase/list',
   // Per purchase ITEM: carries uid_recipient / uid_payer, which neither the
   // purchase list (per-payer by construction) nor the receipt (buyer only,

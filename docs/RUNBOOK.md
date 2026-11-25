@@ -86,6 +86,40 @@ from every log line and are the ones the rotation procedures below apply to.
 
 ---
 
+### Lesson sign-off (task 038, optional)
+
+Read straight from the process environment, like SMTP. `lesson_signoff_sync` does nothing
+until **all** of `SIGNOFF_TO`, `SIGNOFF_START_DATE`, `JOTFORM_FORM_HOST`, `JOTFORM_FORM_ID` and
+`SMTP_HOST` are set; until then its summary is `skipped` and names the missing ones. It sends
+through the SMTP settings above.
+
+| Variable             | Kind       | Rotatable | Owner / source |
+| -------------------- | ---------- | --------- | -------------- |
+| `SIGNOFF_TO`         | coordinate | no        | the one address every sign-off link is emailed to (the studio admin, for now) |
+| `SIGNOFF_START_DATE` | coordinate | no        | `YYYY-MM-DD`, local lesson date; earlier lessons never get a sign-off. 2026-11-24 at go-live |
+| `SIGNOFF_CLASSES`    | coordinate | no        | comma list; default `Music For Everyone,DJ For Everyone,Music Production For Everyone` (agreed 25 Nov 2026) |
+| `SIGNOFF_GROUP`      | coordinate | no        | the WL client group that needs sign-offs; default `SDC Clients` |
+| `JOTFORM_FORM_HOST`  | coordinate | no        | `form.jotform.com`; a HIPAA or EU Jotform account serves forms from a different host |
+| `JOTFORM_FORM_ID`    | coordinate | no        | the number in the master form's URL |
+| `JOTFORM_API_KEY`    | credential | yes       | Jotform → Settings → API, **Full Access**. Not read by phase 1; phase 2 (signature detection) needs it |
+
+**The master form's field unique names are code, not config**: `student`, `date`,
+`teacherName`, `courseCode`, `fi`, and a **hidden** `lessonId` (`JOTFORM_FIELDS` in
+[`src/sync/lesson-signoff.ts`](../src/sync/lesson-signoff.ts), read from the test form through
+the Jotform API on 25 Nov 2026). When `JOTFORM_FORM_ID` moves to the studio's real form, that
+form must use the same unique names — Jotform ignores an unknown prefill parameter silently,
+so a mismatch shows up only as an empty field on the parent's screen. For `lessonId` it shows
+up nowhere: the field is hidden, so a missing one is invisible until phase 2 cannot match a
+signature. Check it on the real form (Field Properties → Advanced → Hidden, unique name
+`lessonId`) before switching. The test form is on
+Jotform's **Free plan (100 submissions a month)**; the studio's volume is about 500.
+
+**For the hourly run, these are GitHub repository secrets**, passed by
+[`sync-run.yml`](../.github/workflows/sync-run.yml) like the SMTP ones. A secret that is not
+created arrives as an empty string, which the config reads as unset: the pass reports
+`skipped` and the rest of the sync runs on. `SIGNOFF_CLASSES` and `SIGNOFF_GROUP` fall back
+to their defaults when empty.
+
 ## 2. Where they live
 
 | Environment       | Storage                                     | How the app reads it                   |

@@ -1294,6 +1294,73 @@ Kept as plain `text`, deliberately without a foreign key — the same reasoning 
 `/category` list does not return, and a hard FK would fail the whole row for a
 missing lookup, which is the failure this design exists to avoid.
 
+## Lesson sign-off (task 038, 0070)
+
+The studio collects a parent signature for every attended lesson of a
+self-direction (SDC) student, on a Jotform "Student Lesson Confirmation Form"
+(Student, Date, Teacher Name, Course Code, FI, Signature). Phase 1 creates the
+request and emails the admin a prefilled link; signature detection and the Drive
+files are later phases.
+
+### The FI is a client group, so groups are mirrored
+
+WellnessLiving has **no Fiscal Intermediary field**. Checked 19 Nov 2026: none of
+the seven custom client fields is one ("Broker Information" is the self-direction
+broker, free text, on ~20 of 308 clients), the client type "SDC Client" says who
+is self-directed but not funded by whom, and no FI appears among 23,694 purchase
+payers. What the studio actually uses is **client groups**: "SDC Clients" plus one
+group per FI (ISS, AIM, EEDA, …, and "Self Pay").
+
+So `member_group` / `member_group_member` mirror them, **replaced on every run**:
+WL keeps current membership only, and a merge would leave a student's old FI on
+new forms. Measured: of 216 SDC members, 186 have exactly one other group, 28 have
+none, 2 have two. The FI is "the one group that is not SDC Clients", and **Self
+Pay counts** — the studio's merged files are named `… - SELF PAY` too. Zero or two
+is a skip with a reason, never a guess.
+
+`member_group_member.uid` has **no FK to `person`**. Group membership names uids
+the client list has not stored (seen 20 Nov 2026), and stubbing people to satisfy
+a constraint on a mirror table protects nothing.
+
+### `lesson_signoff` — one row per attended visit
+
+**Unique on `k_visit`.** The hourly sync re-reads the same attendance every run;
+the visit key is what makes "one form per lesson" a database fact instead of a
+hope. A `sent` or `signed` row is never touched again, and the status flips to
+`sent` with `status=eq.pending` in the filter so it can never overwrite a later
+state.
+
+**The form fields are snapshotted**, as they were sent. `fi_*` in particular is
+the FI on the day: WL keeps no history, and a student who changes FI mid-month
+must keep the old one on the lessons already sent.
+
+**Skipped is not final.** A `skipped` row (`no-fi`, `multiple-fi`,
+`missing-detail`) is offered again every run, so when staff tag the FI in WL the
+lesson goes out without anyone touching this database. A `pending` row is a send
+that failed; it is retried too.
+
+**`id` is the form's hidden `lessonId`.** The form has no time on it, so two
+lessons on one day with the same student, teacher, class and FI produce identical
+visible forms — measured: one SDC student had two 120-minute lessons with one
+teacher on 30 Oct 2026, at 5:30 and 7:30 PM. Each link carries its row's `id` in a
+hidden field, so each submission names exactly one row. It is the `id` UUID and
+not `k_visit` because the link travels in email and its query can be edited: a
+sequential WL key is a digit away from another student's lesson, a random UUID is
+not, and it does not expose WL keys. The upsert never sends `id`, so a pending row
+retried next hour keeps the UUID it was created with; if the write returns no `id`
+the email is not sent.
+
+**What is deliberately not stored:** the prefilled URL and the recipient. Both are
+configuration (the form host, `SIGNOFF_TO`), and a host never belongs in a stored
+record. The link is rebuilt from config when needed.
+
+**Course Code** is the WL class title upper-cased with each `" | "` as `" - "` —
+`MUSIC FOR EVERYONE - LIVE PERFORMANCE INSTRUCTION - 60 MINUTES`, exactly the
+studio's signed sample. **Which classes** is the part before the first `" | "`,
+matched against `SIGNOFF_CLASSES` (Music, DJ and Music Production For Everyone,
+agreed 25 Nov 2026 — 1,685 of 1,809 SDC lessons since 1 Aug; Live Performance
+Instruction and In-Home are variants of those and match).
+
 ## Control plane
 
 ```

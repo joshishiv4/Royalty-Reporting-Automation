@@ -41,6 +41,13 @@ import { type TransactionReport, writeTransactionPage } from './transactions.js'
 import { writeClientList } from './clients.js';
 import { writeLocationList } from './locations.js';
 import { writeLoginTypeList } from './login-types.js';
+import { writeMemberGroupList } from './member-groups.js';
+import {
+  lessonSignoffCandidates,
+  missingSignoffSettings,
+  processLessonSignoff,
+} from './lesson-signoff.js';
+import { createSmtpClient, type SmtpClient } from '../notify/smtp.js';
 import { writeMembership } from './memberships.js';
 import { writePromotionList } from './promotions.js';
 import { writePurchaseList } from './purchases.js';
@@ -104,6 +111,8 @@ export interface SyncPassDeps {
    * a different answer after someone has added contacts to GoHighLevel.
    */
   retryUnresolved?: boolean;
+  /** Injected mailer for lesson_signoff_sync. Tests pass a fake; production builds one. */
+  smtp?: SmtpClient;
 }
 
 export interface SyncPassSummary {
@@ -962,6 +971,112 @@ export function runLoginTypeSyncPass(
           if (outcome !== null) return outcome;
           throw error;
         }
+      },
+  });
+}
+
+/**
+ * Runs the client-group sync: every WL client group and its members, in one call.
+ *
+ * For this studio a group is a student's Fiscal Intermediary, and "SDC Clients"
+ * marks who needs a lesson sign-off - lesson_signoff_sync reads both from the
+ * tables this fills (see member-groups.ts, migration 0070).
+ */
+export function runMemberGroupSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'member_group_sync',
+    workType: 'member_group_list',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      await enqueue(
+        db,
+        [{ work_type: 'member_group_list', target_key: 'all', k_business: kBusiness }],
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId, nowIso }) =>
+      async (item) => {
+        try {
+          const response = await wl.request(WL_PATHS.memberGroupList, {
+            query: { is_return_members: 1 },
+            priorAttempt: item.attempt_count,
+          });
+          await writeMemberGroupList(db, { kBusiness, response, runId, syncedAt: nowIso() });
+          return { kind: 'done' };
+        } catch (error) {
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
+          throw error;
+        }
+      },
+  });
+}
+
+/** How long a failed sign-off email waits before the next try. */
+const SIGNOFF_SEND_RETRY_MS = 15 * 60_000;
+
+/**
+ * Runs the lesson sign-off pass (task 038, phase 1): every attended SDC lesson in
+ * a sign-off class gets one lesson_signoff row and one email to SIGNOFF_TO with a
+ * prefilled Jotform link. Reads only this database and sends mail - no WL call.
+ *
+ * NOT CONFIGURED IS 'skipped', SAID OUT LOUD. Until SIGNOFF_TO, SIGNOFF_START_DATE,
+ * JOTFORM_FORM_HOST, JOTFORM_FORM_ID and SMTP_HOST are all set, the pass opens no
+ * run, creates nothing, and names what is missing in its summary - a half-set
+ * config must not email the admin links to a form that does not exist.
+ *
+ * It sits in the same flat wave as attendance_sync, so a lesson attended this hour
+ * is usually picked up next hour: the queue and the k_visit key make that safe.
+ */
+export function runLessonSignoffSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  const missing = missingSignoffSettings(config);
+  if (missing.length > 0) {
+    return Promise.resolve({
+      runId: 'none',
+      state: 'skipped',
+      claimed: 0,
+      done: 0,
+      requeued: 0,
+      dead: 0,
+      itemsRemaining: 0,
+      error: `lesson sign-off is not configured: ${missing.join(', ')} unset`,
+    });
+  }
+  const smtp = deps.smtp ?? createSmtpClient(config.smtp);
+  return runPass(config, deps, {
+    jobName: 'lesson_signoff_sync',
+    workType: 'lesson_signoff',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      const visits = await lessonSignoffCandidates(db, kBusiness, config.signoff);
+      await enqueue(
+        db,
+        visits.map((k) => ({ work_type: 'lesson_signoff', target_key: k, k_business: kBusiness })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ db, kBusiness, runId, nowIso }) =>
+      async (item) => {
+        const result = await processLessonSignoff(
+          db,
+          smtp,
+          config.signoff,
+          kBusiness,
+          item.target_key,
+          nowIso(),
+        );
+        if (result.kind !== 'send-failed') return { kind: 'done' };
+        return {
+          kind: 'requeue',
+          requeueAfterMs: SIGNOFF_SEND_RETRY_MS,
+          failure: internalFailure(runId, `sign-off email not sent: ${result.detail}`),
+        };
       },
   });
 }
@@ -2197,6 +2312,10 @@ const FULL_SYNC_ORDER: ReadonlyArray<{
   // purchase-derived stub and marks resolved services, so it must run after the
   // purchase pass that creates those stubs.
   { job: 'service_sync', run: runServiceSyncPass },
+  // lesson sign-off (task 038): groups first, then the sign-offs, which read the
+  // attendance, session and person rows every pass above has written.
+  { job: 'member_group_sync', run: runMemberGroupSyncPass },
+  { job: 'lesson_signoff_sync', run: runLessonSignoffSyncPass },
 ];
 
 /**
@@ -2276,6 +2395,11 @@ const FULL_SYNC_WAVES: ReadonlyArray<
     // reports advanced only on their own cron, for no saving.
     { job: 'tx_item_sync', run: runTransactionItemSyncPass },
     { job: 'tx_payment_sync', run: runTransactionPaymentSyncPass },
+    // Lesson sign-off (task 038). In the same flat wave, so it reads the
+    // attendance and groups the PREVIOUS run stored - a lesson attended this
+    // hour is emailed next hour, the same converge-over-runs trade as above.
+    { job: 'member_group_sync', run: runMemberGroupSyncPass },
+    { job: 'lesson_signoff_sync', run: runLessonSignoffSyncPass },
   ],
 ];
 
