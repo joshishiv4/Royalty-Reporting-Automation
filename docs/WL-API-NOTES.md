@@ -427,7 +427,7 @@ present on 55 of 55:**
 | `dt_register` | *"The date the client checked in for the visit, in UTC"* — a real check-in **time**, which this project stores nowhere |
 | `is_attend` / `is_visit` | attended |
 | `is_truancy` / `is_penalty` / `is_pending` | booleans mirroring TRUANCY 5, PENALTY 4, PENDING 7 |
-| `dt_book`, `k_visit`, `uid_book` | already read |
+| `dt_book`, `k_visit`, `uid_book` | already read — **but see below: for appointments `dt_book` and `uid_book` are absent** |
 | `url-cancel`, `url-cancel-admin` | note the **hyphens** — not the usual `_` convention |
 
 Observed `id_visit` distribution: **1 BOOK 45 (81.8%), 3 ATTEND 8 (14.5%),
@@ -688,6 +688,110 @@ the `/v1/service*` family. The real catalogue lives under `/v1/appointment/book/
 | `is_require` | inconsistently typed: `true`, `"1"`, `"0"` in the same response |
 | `m_*` | money, always a quoted string |
 | Client-type counts | 13 types on this business; 47 clients are "Staff Client Profile" while only 20 are staff |
+
+### Client groups, visit status, relationships and webhooks (task 038, Nov 2026)
+
+Found while building the lesson sign-off. Each line is a live probe or a written
+answer from WL Support, not a reading of the spec.
+
+**`GET /v1/member/group/list?is_return_members=1` works — and is not in the v1
+docs.** It is the SDK's `Wl\Member\Group\GroupList\ListModel` (2024 OpenAPI spec)
+reached under `/v1`; the SDK-scheme path `/Wl/Member/Group/GroupList/List.json`
+404s on this host. One call returns all 28 groups: `k_member_group`, `text_title`,
+`text_icon`, colours, `id_member_group_shape` and, with `is_return_members=1`,
+`a_uid` (member uids). **`a_member_group` is an ARRAY** here, not a keyed object.
+Per client, `/v1/user` returns `a_member_group` as keys only. The client-list
+report (`cid 689`) also filters on `o_member_group: ["<key>"]` (verified: 216 rows
+for SDC Clients, 3 for EEDA). This studio records a student's **Fiscal
+Intermediary as a group** — see DATA-MODEL "Lesson sign-off".
+
+**`GET /v1/visit/status?k_visit=…` works.** One visit: `id_visit`, `dtl_date`
+(local), `dt_date` (UTC), `text_title`, `text_staff`, `i_duration`, `uid`,
+`k_service`, `k_staff`, `k_location`. In the v1 index; this project does not call
+it yet — it is the obvious follow-up call for a webhook event.
+
+**There is NO client-relationships API.** WL Support (George), Nov 2026: the
+profile's "Relationships" section (parent/child, guardian) is UI-only; no endpoint
+returns it and no credential level unlocks it; a feature request is logged with no
+timeline. Probed before asking, all **404**: `/v1/family/relation` (and `/list`,
+`/relation`, `s`), `/v1/profile/relation`, `/v1/profile/family`,
+`/v1/login/relation`, `/v1/relation`, `/v1/family`. The SDK model
+`Wl\Family\Relation\RelationModel` exists in the 2024 spec but is not exposed —
+**and its POST/DELETE create and delete relationships, so never probe those.**
+`/v1/user` and `/v1/member/info` carry no relationship either.
+
+**WL's suggested workaround — "the parent appears as the booking party" — does
+not hold for appointments.** For 12 attended SDC appointments (20 Nov 2026),
+`/v1/login/attendance/list` records carried **no `uid_book` or `dt_book` at all**
+(the table above was sampled from class sessions in August), and
+`/v1/schedule/page/element` has no booker either. 4,412 of 4,423 sessions here are
+appointments, and staff book most of them in the back office. `attendance.uid_book`
+is null on every SDC row.
+
+**Webhooks exist, and the `Schedule` group covers attendance** (WL Support, Nov
+2026). Topics: Business, Location, Staff, Client, Purchase, Service, Asset,
+Schedule; `Schedule` fires on a client visit status change, check-in included.
+Activated by WL's team on request (business id, event groups, HTTPS URL); they
+then send a Webhook Key to verify requests. Answer 2xx within 5 s; failures are
+retried with backoff and lost after the retry window; payloads carry ids only.
+Unconfirmed: whether appointments are covered, and whether statuses the system
+sets automatically fire at all — so a poll stays as the backstop. Not used yet:
+phase 1 of the sign-off reads the hourly sync instead.
+
+**A sync gap, found and not yet explained.** For uid `34064623`, October 2026:
+WL's Attendance History shows 12 attended appointments, this database held 11.
+The missing visit (`k_visit 793205237`, 17 Oct 13:00 local, "Live Performance
+Instruction | 15 Minutes") has no `session` row and no `attendance` row.
+`/v1/schedule/page/list?uid=…&is_past=1` does list it. Root cause not investigated.
+
+## Jotform (task 038, measured 25 Nov 2026)
+
+Not WellnessLiving, but the sign-off flow depends on it the same way, so its
+behaviour is recorded here.
+
+- **Success is the body.** `{ responseCode, message, content }`; `responseCode` is
+  the verdict. The key goes in the `APIKEY` header (Jotform also accepts it as a
+  query parameter — never used, it would put the key in every logged URL).
+- **`GET /form/{id}/questions`** on the test form: every visible field is
+  `control_textbox` (read-only), the signature is `control_signature` (required),
+  and `lessonId` is a `control_textbox` with `hidden: Yes`.
+- **`GET /form/{id}/submissions`**: `content` is an array, newest first with
+  `orderby=created_at`. Each submission's `answers` is keyed by question id, each
+  with `name` (the unique name), `type` and `answer` — a string for a text box; for a
+  signature, a link to the image on Jotform's host under
+  `/uploads/<account>/<form id>/<submission id>/…`. **Confirmed on the first real
+  submission, 25 Nov 2026**: every field above as documented, the hidden `lessonId`
+  returned as a plain text answer. Top-level keys: `id, form_id, ip, created_at,
+  status, new, flag, notes, updated_at, answers`.
+- **A hidden field is printed on the submission PDF.** The test submission's PDF
+  (Inbox → Download PDF, 25 Nov 2026) showed a "Lesson ID" row with the UUID between FI
+  and Signature. "Hidden" applies to the form page only.
+- **The "Signed PDF Document" files are not in the API.** After the user set up a PDF
+  document template without the Lesson ID row, the Inbox shows two attachments per
+  submission ("Signed PDF Document" and "... with Audit Trail"), and that PDF has no
+  Lesson ID (checked 25 Nov 2026). `GET /form/{id}/submissions` returns neither — the
+  answers are exactly the form's fields, nothing more. Phase 3 needs another route to
+  that PDF, or builds its own.
+- **The public API has no PDF endpoint at all.** Checked against
+  api.jotform.com/docs on 25 Nov 2026: `/user`, `/label`, `/form`, `/submission`,
+  `/report`, `/folder`, `/system` — none returns a submission or signed PDF. The one
+  file listing, `GET /form/{id}/files`, returned **0** files for a form with two signed
+  submissions (not even the signature images). The routes to Jotform's own PDF are
+  its integrations (Google Drive: "Send submission PDFs and uploaded files") or the
+  notification email attachment.
+- **The Google Drive integration names each PDF by submission id**, `<submission id>.pdf`,
+  all in one folder when "subfolder per submission" is off (seen 25 Nov 2026). Phase 3
+  relies on that name. Its folder settings — also in the Workflow builder's Google Drive
+  "Send Files" step, checked with the user 25 Nov 2026 — are a typed folder name (no
+  folder picker, no field values), an optional subfolder per submission, and a PDF
+  document picker; there is no file-name setting, and Jotform's answers say the PDF takes
+  the subfolder's name. It cannot build a month/FI tree, and it uploads every submission.
+- **`created_at` carries no offset, and it is US Eastern** — not the account's
+  timezone. Measured 25 Nov 2026: a form submitted about 15:28 India time came back
+  `2026-11-25 04:58:46` (EST, UTC-5) on an account set to Asia/Kolkata. Stored
+  verbatim, never parsed as an instant.
+- **Daily API limit by plan** — the Free test account showed `limit-left: 994` of
+  1,000. Polling hourly is 24 calls a day.
 
 ## GoHighLevel
 

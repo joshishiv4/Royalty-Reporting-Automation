@@ -17,6 +17,10 @@ export function credentialValues(config: AppConfig): string[] {
     config.wl?.clientSecret,
     config.supabase?.serviceRoleKey,
     config.ghl?.apiToken,
+    config.signoff?.apiKey ?? undefined,
+    config.signoff?.drive?.clientId ?? undefined,
+    config.signoff?.drive?.clientSecret ?? undefined,
+    config.signoff?.drive?.refreshToken ?? undefined,
   ].filter((v): v is string => typeof v === 'string' && v.length > 0);
 }
 
@@ -73,6 +77,9 @@ export function describeConfig(config: AppConfig): Record<string, string> {
     // fingerprinted like any other credential - never printed.
     smtpHost: config.smtp.host === null ? 'missing' : 'set',
     smtpPassword: fingerprint(config.smtp.password),
+    jotformApiKey: fingerprint(config.signoff.apiKey ?? ''),
+    googleClientSecret: fingerprint(config.signoff.drive.clientSecret ?? ''),
+    googleRefreshToken: fingerprint(config.signoff.drive.refreshToken ?? ''),
   };
 }
 
@@ -113,6 +120,10 @@ function scrub(message: string, config: AppConfig): string {
     ['[WL_API_HOST]', config.wl?.host ?? ''],
     ['[WL_AUTH_HOST]', config.wl?.authHost ?? ''],
     ['[GHL_API_HOST]', config.ghl?.host ?? ''],
+    ['[JOTFORM_API_HOST]', config.signoff?.apiHost ?? ''],
+    ['[JOTFORM_FORM_HOST]', config.signoff?.formHost ?? ''],
+    ['[GOOGLE_OAUTH_HOST]', config.signoff?.drive?.oauthHost ?? ''],
+    ['[GOOGLE_DRIVE_API_HOST]', config.signoff?.drive?.apiHost ?? ''],
   ] as const) {
     if (host.length > 0) out = out.split(host).join(label);
   }
