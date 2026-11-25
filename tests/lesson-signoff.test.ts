@@ -25,6 +25,9 @@ const SIGNOFF: SignoffConfig = {
   eligibleGroup: 'SDC Clients',
   formHost: 'form.example.test',
   formId: '42',
+  apiHost: 'api.example.test',
+  apiKey: 'test-jotform-key',
+  timeZone: 'America/New_York',
 };
 
 describe('the form fields, in the studio sample format', () => {
@@ -139,6 +142,9 @@ describe('missingSignoffSettings', () => {
       eligibleGroup: 'SDC Clients',
       formHost: null,
       formId: null,
+      apiHost: null,
+      apiKey: null,
+      timeZone: 'America/New_York',
     };
     expect(missingSignoffSettings({ signoff: none, smtp: { host: null } as never })).toEqual([
       'SIGNOFF_TO',

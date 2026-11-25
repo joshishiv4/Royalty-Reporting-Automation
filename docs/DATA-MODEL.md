@@ -1361,6 +1361,40 @@ matched against `SIGNOFF_CLASSES` (Music, DJ and Music Production For Everyone,
 agreed 25 Nov 2026 — 1,685 of 1,809 SDC lessons since 1 Aug; Live Performance
 Instruction and In-Home are variants of those and match).
 
+### Phase 2: signatures and reminders (0071)
+
+**Every submission is stored, matched or not** (`jotform_submission`). A submission
+that names no lesson, or whose visible fields differ from what was sent, has no
+`lesson_signoff` row to land on — and it is exactly the one the admin needs to see;
+the month-end list reports them. `outcome` is null until checked.
+
+**Matched by the hidden `lessonId`, then re-checked.** `lessonId` is
+`lesson_signoff.id`, so a submission names one row even when two lessons' forms look
+identical. The visible fields are compared anyway, because the link is a URL and
+its query can be edited; a difference is `mismatch` and the lesson stays unsigned.
+The lesson flips to `signed` only from `pending`/`sent`, so of two submissions for
+one lesson exactly one wins and the other is `duplicate`.
+
+**What is deliberately not stored:** the signature image's URL. Jotform answers a
+signature with a link on its own host, and a host never belongs in a stored
+record; `has_signature` is all matching needs. Phase 3 reads the image by
+submission id. `lesson_id_received` is `text`, not `uuid`, so a test submission or
+an edited link is still recorded (as `unknown-lesson`) instead of rejected.
+
+**`signed_at` is when the sync saw it**, to the hour. Jotform's `created_at` is in
+US Eastern with no offset (measured on the first real submission, 25 Nov 2026 —
+although the account is set to Asia/Kolkata); it is kept
+verbatim as `jotform_created_at`, never parsed as an instant.
+
+**`reminder_count` counts steps, not emails.** The schedule is +3 days, +7 days and
+09:00 three days before the lesson's month end, in studio time
+(`SIGNOFF_TIMEZONE`); a step under two days after the previous one is dropped.
+If several fall due together (the sync was down), one reminder goes out and all
+are counted — a stopped sync never catches up with a burst.
+
+**`lesson_signoff_report`** is one row per month whose unsigned list went out,
+written only after the email succeeded, so a failed send is retried next hour.
+
 ## Control plane
 
 ```

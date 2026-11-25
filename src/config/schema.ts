@@ -298,7 +298,36 @@ export const runtimeOptionsSchema = z.object({
   JOTFORM_FORM_ID: optionalText.refine((v) => v === undefined || /^\d+$/.test(v), {
     message: 'JOTFORM_FORM_ID must be the numeric form id',
   }),
+  /**
+   * Jotform's REST API host - `api.jotform.com`, or `eu-api.` / `hipaa-api.` for
+   * accounts on those servers. Phase 2 (signature detection) reads submissions here.
+   */
+  JOTFORM_API_HOST: optionalText.refine((v) => v === undefined || /^[a-z0-9.-]+$/i.test(v), {
+    message: 'JOTFORM_API_HOST must be a bare host, e.g. api.jotform.com',
+  }),
+  /** Jotform → Settings → API. A credential: redacted from every log line. */
+  JOTFORM_API_KEY: optionalText,
+  /**
+   * The studio's IANA timezone. "3 days before month end" and the month-end list
+   * are the STUDIO's month end, not the runner's (UTC) one. Default America/New_York:
+   * measured 25 Nov 2026, lessons store 17:30 local against 22:30 UTC (UTC-5).
+   * Empty means the default, like SIGNOFF_GROUP.
+   */
+  SIGNOFF_TIMEZONE: optionalText
+    .transform((v) => v ?? 'America/New_York')
+    .refine(isTimeZone, {
+      message: 'SIGNOFF_TIMEZONE must be an IANA timezone, e.g. America/New_York',
+    }),
 });
+
+function isTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export const appEnvSchema = z.enum(APP_ENVS);
 
@@ -346,6 +375,12 @@ export interface SignoffConfig {
   readonly eligibleGroup: string;
   readonly formHost: string | null;
   readonly formId: string | null;
+  /** Jotform REST API host (phase 2). */
+  readonly apiHost: string | null;
+  /** Jotform API key (phase 2). A credential. */
+  readonly apiKey: string | null;
+  /** The studio's IANA timezone, for month-end reminders. */
+  readonly timeZone: string;
 }
 
 export interface SyncConfig {

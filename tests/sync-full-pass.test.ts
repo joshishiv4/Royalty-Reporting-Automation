@@ -18,6 +18,9 @@ const config = {
     eligibleGroup: 'SDC Clients',
     formHost: null,
     formId: null,
+    apiHost: null,
+    apiKey: null,
+    timeZone: 'America/New_York',
   },
 } as unknown as AppConfig;
 
@@ -83,6 +86,8 @@ describe('runFullSyncPass', () => {
       'service_sync',
       'member_group_sync',
       'lesson_signoff_sync',
+      'lesson_signoff_check',
+      'lesson_signoff_remind',
     ]);
     expect(summary.passes.every((p) => p.ran)).toBe(true);
     expect(summary.state).toBe('ok');
@@ -203,6 +208,8 @@ describe('runFullSyncPassParallel', () => {
         'tx_payment_sync',
         'member_group_sync',
         'lesson_signoff_sync',
+        'lesson_signoff_check',
+        'lesson_signoff_remind',
       ].sort(),
     );
     expect(summary.passes.every((p) => p.ran)).toBe(true);
@@ -284,7 +291,7 @@ describe('runFullSyncPassParallel', () => {
     const summary = await runFullSyncPassParallel(config, { wl, db, now: () => 0 });
 
     // Every pass either ok or failed - none should be missing from the list.
-    expect(summary.passes).toHaveLength(20);
+    expect(summary.passes).toHaveLength(22);
     expect(summary.state).toBe('failed');
     const staff = summary.passes.find((p) => p.job === 'staff_sync');
     expect(staff?.summary?.state).toBe('failed');

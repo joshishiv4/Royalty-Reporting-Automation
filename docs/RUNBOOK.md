@@ -101,7 +101,9 @@ through the SMTP settings above.
 | `SIGNOFF_GROUP`      | coordinate | no        | the WL client group that needs sign-offs; default `SDC Clients` |
 | `JOTFORM_FORM_HOST`  | coordinate | no        | `form.jotform.com`; a HIPAA or EU Jotform account serves forms from a different host |
 | `JOTFORM_FORM_ID`    | coordinate | no        | the number in the master form's URL |
-| `JOTFORM_API_KEY`    | credential | yes       | Jotform → Settings → API, **Full Access**. Not read by phase 1; phase 2 (signature detection) needs it |
+| `JOTFORM_API_KEY`    | credential | yes       | Jotform → Settings → API. Phase 2 reads submissions with it (read-only use; a Read Access key is enough). Redacted from logs. Without it, signature detection and reminders report `skipped` |
+| `JOTFORM_API_HOST`   | coordinate | no        | `api.jotform.com`; `eu-api.jotform.com` / `hipaa-api.jotform.com` for accounts on those servers |
+| `SIGNOFF_TIMEZONE`   | coordinate | no        | the studio's IANA timezone for month-end reminders; default `America/New_York` (empty means the default) |
 
 **The master form's field unique names are code, not config**: `student`, `date`,
 `teacherName`, `courseCode`, `fi`, and a **hidden** `lessonId` (`JOTFORM_FIELDS` in
@@ -111,14 +113,20 @@ form must use the same unique names — Jotform ignores an unknown prefill param
 so a mismatch shows up only as an empty field on the parent's screen. For `lessonId` it shows
 up nowhere: the field is hidden, so a missing one is invisible until phase 2 cannot match a
 signature. Check it on the real form (Field Properties → Advanced → Hidden, unique name
-`lessonId`) before switching. The test form is on
+`lessonId`) before switching. **Hidden on the form is not hidden on the PDF**: Jotform's
+default submission PDF prints a "Lesson ID" row. Once per form, create the PDF layout
+(Settings → Documents → Add a New Document → Start with Default → Next) and delete the
+Lesson ID row from the document only — the field must stay on the form. Done on the test
+form 25 Nov 2026; the real form needs it too. The test form is on
 Jotform's **Free plan (100 submissions a month)**; the studio's volume is about 500.
 
 **For the hourly run, these are GitHub repository secrets**, passed by
 [`sync-run.yml`](../.github/workflows/sync-run.yml) like the SMTP ones. A secret that is not
 created arrives as an empty string, which the config reads as unset: the pass reports
-`skipped` and the rest of the sync runs on. `SIGNOFF_CLASSES` and `SIGNOFF_GROUP` fall back
-to their defaults when empty.
+`skipped` and the rest of the sync runs on. `SIGNOFF_CLASSES`, `SIGNOFF_GROUP` and `SIGNOFF_TIMEZONE` fall back
+to their defaults when empty. **Reminders need detection:** `lesson_signoff_remind` stays
+`skipped` until `JOTFORM_API_HOST` and `JOTFORM_API_KEY` are set, so it can never remind
+for a lesson that is already signed.
 
 ## 2. Where they live
 
@@ -331,6 +339,21 @@ provider and the account it sends from are **not recorded here yet**; fill them 
 §10a tells an operator to check "the sending provider's log" and does not say whose.
 
 ---
+
+### 4g. `JOTFORM_API_KEY`
+
+Read by `lesson_signoff_check` only, to list the sign-off form's submissions (task 038,
+phase 2). It is in `credentialValues()`, so it is scrubbed from every log line.
+
+1. Jotform → Settings → **API** → Create New Key. Read Access is enough — the client
+   only lists submissions.
+2. Set it in the GitHub repository secret `JOTFORM_API_KEY` and any local `.env`.
+3. Verify: the next hourly run's `lesson_signoff_check` is `ok`, not `failed` with
+   `Jotform error 401`.
+4. Delete the old key on the same page.
+
+A key reads **every form and submission on the Jotform account**, signatures and
+student names included. Treat an exposed one as §5 describes.
 
 ## 5. If a credential leaks
 

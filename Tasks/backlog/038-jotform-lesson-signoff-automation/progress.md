@@ -187,6 +187,31 @@ needed: identical visible forms for two same-day lessons (an SDC student, 30 Oct
 2026, 5:30 and 7:30 PM, same teacher, class and FI). Phase 2 matches submissions
 on it. Unchecked: whether the hidden field is left off Jotform's PDF.
 
+## Phase 2 built — 25 Nov 2026 (branch `features/HRRAFEBAV-162`)
+
+ERP: finishes **HRRAFEBAV-164** (reminders) and the signature-capture half of
+**HRRAFEBAV-165** (Drive upload is phase 3).
+
+Decided with the user: reminders are **per-lesson emails** (not a digest) to
+`SIGNOFF_TO`, at **+3 d, +7 d, 3 days before month end**, plus the unsigned list
+the day before month end. Detection is **polled hourly**, not a Jotform webhook.
+
+Built: migration `0071` (`jotform_submission`, `lesson_signoff_report`, reminder
+columns); `src/jotform/client.ts`; `src/sync/lesson-signoff-check.ts`;
+`src/sync/lesson-signoff-remind.ts`; passes `lesson_signoff_check` +
+`lesson_signoff_remind`; config `JOTFORM_API_HOST`, `JOTFORM_API_KEY`,
+`SIGNOFF_TIMEZONE`. 45 tests, 12 mutations caught.
+
+**Before it runs:** apply `0071`; set `JOTFORM_API_HOST` in `.env` and as GitHub
+secrets with `JOTFORM_API_KEY`; submit one test form (prefilled link with a fake
+`lessonId`) and confirm the real answer shape and whether the hidden field shows
+on Jotform's PDF.
+
+**Test submission, 25 Nov 2026:** answer shape confirmed (parsed and judged `signed`).
+`created_at` is US Eastern, not the account timezone. **The hidden Lesson ID is printed
+on Jotform's PDF** - remove it from the PDF template, or have phase 3 build the PDF.
+The test submission (fake lessonId) should be deleted in Jotform before the check runs.
+
 ## Log
 
 - **2026-11-19** — Assessment of the manual process; FI search (custom fields,

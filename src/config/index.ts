@@ -83,6 +83,9 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
     SIGNOFF_GROUP: processEnv.SIGNOFF_GROUP,
     JOTFORM_FORM_HOST: processEnv.JOTFORM_FORM_HOST,
     JOTFORM_FORM_ID: processEnv.JOTFORM_FORM_ID,
+    JOTFORM_API_HOST: processEnv.JOTFORM_API_HOST,
+    JOTFORM_API_KEY: processEnv.JOTFORM_API_KEY,
+    SIGNOFF_TIMEZONE: processEnv.SIGNOFF_TIMEZONE,
   });
   if (!runtime.success) {
     throw new ConfigValidationError(formatIssues(runtime.error));
@@ -140,6 +143,9 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
       eligibleGroup: runtime.data.SIGNOFF_GROUP,
       formHost: runtime.data.JOTFORM_FORM_HOST ?? null,
       formId: runtime.data.JOTFORM_FORM_ID ?? null,
+      apiHost: runtime.data.JOTFORM_API_HOST ?? null,
+      apiKey: runtime.data.JOTFORM_API_KEY ?? null,
+      timeZone: runtime.data.SIGNOFF_TIMEZONE,
     }),
   });
 }

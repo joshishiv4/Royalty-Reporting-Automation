@@ -2,7 +2,7 @@
 
 Last updated **25 Nov 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed. (The 25 Nov update covers the lesson sign-off
-entry under "In progress" only. The 28 Oct update covers the client note only:
+entries under "In progress" only. The 28 Oct update covers the client note only:
 dropping its date, `0066`, copying it into `teacher_note`, `0067`, and one row per note,
 `0068`. The 19 Oct update covers the client-note entry only; the
 13 Oct one the retention entry, the 12 Oct one the orphaned run under it, the 8 Oct
@@ -769,8 +769,33 @@ Jotform API, and a prefilled link filled all five fields in a browser; the hidde
   needs one real submission.
 - A live dry run found 6 lessons from 24 Nov that would be emailed; none has been
   sent — waiting on the user's go-ahead.
-- Phase 2 (detect signatures, reminders — needs `JOTFORM_API_KEY` wired) and phase 3
-  (Google Drive, month-end merge — needs Drive access) not started.
+- Phase 3 (Google Drive, month-end merge — needs Drive access) not started.
+
+### Lesson sign-off, phase 2 — code complete, `0071` not yet applied (25 Nov 2026)
+
+Two more passes in the hourly wave, in the `lesson-signoff` job:
+`lesson_signoff_check` reads new Jotform submissions (one GET an hour) and matches
+each to its lesson by the hidden `lessonId`, re-checking the visible fields;
+`lesson_signoff_remind` re-sends the same link at +3 days, +7 days and 3 days before
+month end (studio time, `SIGNOFF_TIMEZONE`), and sends the month's unsigned list
+the day before month end. Still all to `SIGNOFF_TO`.
+
+**Verified:** 45 new tests; 12 mutations each turned the suite red (accepting an
+edited field, signing without the status guard, storing the signature URL, the
+two-day gap, overdue steps as one, waiting for an unchecked submission, recording
+a failed month list, studio timezone, the missed-month catch-up, the key in the
+URL, the body's `responseCode`, stopping at a known page).
+
+**Not done / blocked:**
+- `0071` must be applied before deploying.
+- `JOTFORM_API_HOST` (`api.jotform.com`) and `JOTFORM_API_KEY` must be set, locally
+  and as GitHub secrets; until then both passes report `skipped`.
+- Answer shape confirmed on one real test submission (25 Nov): parsed as designed and
+  judged `signed` against the values its link carried.
+- **The hidden `lessonId` DOES appear on Jotform's submission PDF** ("Lesson ID" row,
+  checked 25 Nov 2026). Hidden on the form is not hidden on the PDF. It must be removed
+  from the PDF template before parents' PDFs are filed, or phase 3 must build its own PDF.
+- Not run against live data.
 - 28 SDC students have no FI group and 2 have two; their lessons are skipped until
   the studio tags them or decides.
 

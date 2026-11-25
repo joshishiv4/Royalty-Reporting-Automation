@@ -744,6 +744,35 @@ The missing visit (`k_visit 793205237`, 17 Oct 13:00 local, "Live Performance
 Instruction | 15 Minutes") has no `session` row and no `attendance` row.
 `/v1/schedule/page/list?uid=…&is_past=1` does list it. Root cause not investigated.
 
+## Jotform (task 038, measured 25 Nov 2026)
+
+Not WellnessLiving, but the sign-off flow depends on it the same way, so its
+behaviour is recorded here.
+
+- **Success is the body.** `{ responseCode, message, content }`; `responseCode` is
+  the verdict. The key goes in the `APIKEY` header (Jotform also accepts it as a
+  query parameter — never used, it would put the key in every logged URL).
+- **`GET /form/{id}/questions`** on the test form: every visible field is
+  `control_textbox` (read-only), the signature is `control_signature` (required),
+  and `lessonId` is a `control_textbox` with `hidden: Yes`.
+- **`GET /form/{id}/submissions`**: `content` is an array, newest first with
+  `orderby=created_at`. Each submission's `answers` is keyed by question id, each
+  with `name` (the unique name), `type` and `answer` — a string for a text box; for a
+  signature, a link to the image on Jotform's host under
+  `/uploads/<account>/<form id>/<submission id>/…`. **Confirmed on the first real
+  submission, 25 Nov 2026**: every field above as documented, the hidden `lessonId`
+  returned as a plain text answer. Top-level keys: `id, form_id, ip, created_at,
+  status, new, flag, notes, updated_at, answers`.
+- **A hidden field is printed on the submission PDF.** The test submission's PDF
+  (Inbox → Download PDF, 25 Nov 2026) showed a "Lesson ID" row with the UUID between FI
+  and Signature. "Hidden" applies to the form page only.
+- **`created_at` carries no offset, and it is US Eastern** — not the account's
+  timezone. Measured 25 Nov 2026: a form submitted about 15:28 India time came back
+  `2026-11-25 04:58:46` (EST, UTC-5) on an account set to Asia/Kolkata. Stored
+  verbatim, never parsed as an instant.
+- **Daily API limit by plan** — the Free test account showed `limit-left: 994` of
+  1,000. Polling hourly is 24 calls a day.
+
 ## GoHighLevel
 
 ### Auth — no OAuth needed
