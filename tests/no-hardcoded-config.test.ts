@@ -34,6 +34,10 @@ const RULES: readonly Rule[] = [
     pattern: /leadconnectorhq\.(com|io|net)\b/i,
   },
   {
+    name: 'a Google API hostname (must come from GOOGLE_OAUTH_HOST / GOOGLE_DRIVE_API_HOST)',
+    pattern: /googleapis\.com\b/i,
+  },
+  {
     name: 'a literal supabase.co project URL (must come from SUPABASE_URL)',
     pattern: /[a-z0-9-]+\.supabase\.(co|in)\b/i,
   },

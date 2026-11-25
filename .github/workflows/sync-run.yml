@@ -72,6 +72,25 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           SMTP_TO: ${{ secrets.SMTP_TO }}
+          # Lesson sign-off (task 038). Unset secrets arrive as "", which the
+          # config treats as unset: the pass reports 'skipped', the sync runs on.
+          SIGNOFF_TO: ${{ secrets.SIGNOFF_TO }}
+          SIGNOFF_START_DATE: ${{ secrets.SIGNOFF_START_DATE }}
+          SIGNOFF_CLASSES: ${{ secrets.SIGNOFF_CLASSES }}
+          SIGNOFF_GROUP: ${{ secrets.SIGNOFF_GROUP }}
+          JOTFORM_FORM_HOST: ${{ secrets.JOTFORM_FORM_HOST }}
+          JOTFORM_FORM_ID: ${{ secrets.JOTFORM_FORM_ID }}
+          JOTFORM_API_HOST: ${{ secrets.JOTFORM_API_HOST }}
+          JOTFORM_API_KEY: ${{ secrets.JOTFORM_API_KEY }}
+          SIGNOFF_TIMEZONE: ${{ secrets.SIGNOFF_TIMEZONE }}
+          # Phase 3: Google Drive filing (RUNBOOK.md). Same rule: unset is 'skipped'.
+          GOOGLE_OAUTH_HOST: ${{ secrets.GOOGLE_OAUTH_HOST }}
+          GOOGLE_DRIVE_API_HOST: ${{ secrets.GOOGLE_DRIVE_API_HOST }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_INBOX_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_INBOX_FOLDER_ID }}
+          GOOGLE_DRIVE_ROOT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}
           # Optional tuning. A secret that is not set arrives as an empty string
           # rather than as absent, which Zod would read as a bad value instead of
           # falling back - so each is defaulted here to the schema's own default.

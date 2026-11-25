@@ -5,8 +5,13 @@ import {
   runClientListSyncPass,
   runClientSessionSyncPass,
   runGhlMatchSyncPass,
+  runLessonSignoffCheckPass,
+  runLessonSignoffFilePass,
+  runLessonSignoffRemindPass,
+  runLessonSignoffSyncPass,
   runLocationSyncPass,
   runLoginTypeSyncPass,
+  runMemberGroupSyncPass,
   runProfileSyncPass,
   runPromotionSyncPass,
   runPurchaseElementSyncPass,
@@ -113,6 +118,21 @@ export const JOB_GROUPS: readonly JobGroup[] = [
     passes: [
       { job: 'client_session_sync', run: runClientSessionSyncPass },
       { job: 'attendance_sync', run: runAttendanceSyncPass },
+    ],
+  },
+  {
+    name: 'lesson-signoff',
+    expectedEveryHours: 24,
+    summary:
+      'Client groups (the FI), one emailed Jotform sign-off link per attended SDC lesson, ' +
+      'signatures read back from Jotform, reminders until signed, and the signed PDFs ' +
+      'filed into the month/FI folders in Google Drive.',
+    passes: [
+      { job: 'member_group_sync', run: runMemberGroupSyncPass },
+      { job: 'lesson_signoff_sync', run: runLessonSignoffSyncPass },
+      { job: 'lesson_signoff_check', run: runLessonSignoffCheckPass },
+      { job: 'lesson_signoff_remind', run: runLessonSignoffRemindPass },
+      { job: 'lesson_signoff_file', run: runLessonSignoffFilePass },
     ],
   },
   {

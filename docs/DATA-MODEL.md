@@ -1294,6 +1294,142 @@ Kept as plain `text`, deliberately without a foreign key — the same reasoning 
 `/category` list does not return, and a hard FK would fail the whole row for a
 missing lookup, which is the failure this design exists to avoid.
 
+## Lesson sign-off (task 038, 0070)
+
+The studio collects a parent signature for every attended lesson of a
+self-direction (SDC) student, on a Jotform "Student Lesson Confirmation Form"
+(Student, Date, Teacher Name, Course Code, FI, Signature). Phase 1 creates the
+request and emails the admin a prefilled link; signature detection and the Drive
+files are later phases.
+
+### The FI is a client group, so groups are mirrored
+
+WellnessLiving has **no Fiscal Intermediary field**. Checked 19 Nov 2026: none of
+the seven custom client fields is one ("Broker Information" is the self-direction
+broker, free text, on ~20 of 308 clients), the client type "SDC Client" says who
+is self-directed but not funded by whom, and no FI appears among 23,694 purchase
+payers. What the studio actually uses is **client groups**: "SDC Clients" plus one
+group per FI (ISS, AIM, EEDA, …, and "Self Pay").
+
+So `member_group` / `member_group_member` mirror them, **replaced on every run**:
+WL keeps current membership only, and a merge would leave a student's old FI on
+new forms. Measured: of 216 SDC members, 186 have exactly one other group, 28 have
+none, 2 have two. The FI is "the one group that is not SDC Clients", and **Self
+Pay counts** — the studio's merged files are named `… - SELF PAY` too. Zero or two
+is a skip with a reason, never a guess.
+
+`member_group_member.uid` has **no FK to `person`**. Group membership names uids
+the client list has not stored (seen 20 Nov 2026), and stubbing people to satisfy
+a constraint on a mirror table protects nothing.
+
+### `lesson_signoff` — one row per attended visit
+
+**Unique on `k_visit`.** The hourly sync re-reads the same attendance every run;
+the visit key is what makes "one form per lesson" a database fact instead of a
+hope. A `sent` or `signed` row is never touched again, and the status flips to
+`sent` with `status=eq.pending` in the filter so it can never overwrite a later
+state.
+
+**The form fields are snapshotted**, as they were sent. `fi_*` in particular is
+the FI on the day: WL keeps no history, and a student who changes FI mid-month
+must keep the old one on the lessons already sent.
+
+**Skipped is not final.** A `skipped` row (`no-fi`, `multiple-fi`,
+`missing-detail`) is offered again every run, so when staff tag the FI in WL the
+lesson goes out without anyone touching this database. A `pending` row is a send
+that failed; it is retried too.
+
+**`id` is the form's hidden `lessonId`.** The form has no time on it, so two
+lessons on one day with the same student, teacher, class and FI produce identical
+visible forms — measured: one SDC student had two 120-minute lessons with one
+teacher on 30 Oct 2026, at 5:30 and 7:30 PM. Each link carries its row's `id` in a
+hidden field, so each submission names exactly one row. It is the `id` UUID and
+not `k_visit` because the link travels in email and its query can be edited: a
+sequential WL key is a digit away from another student's lesson, a random UUID is
+not, and it does not expose WL keys. The upsert never sends `id`, so a pending row
+retried next hour keeps the UUID it was created with; if the write returns no `id`
+the email is not sent.
+
+**What is deliberately not stored:** the prefilled URL and the recipient. Both are
+configuration (the form host, `SIGNOFF_TO`), and a host never belongs in a stored
+record. The link is rebuilt from config when needed.
+
+**Course Code** is the WL class title upper-cased with each `" | "` as `" - "` —
+`MUSIC FOR EVERYONE - LIVE PERFORMANCE INSTRUCTION - 60 MINUTES`, exactly the
+studio's signed sample. **Which classes** is the part before the first `" | "`,
+matched against `SIGNOFF_CLASSES` (Music, DJ and Music Production For Everyone,
+agreed 25 Nov 2026 — 1,685 of 1,809 SDC lessons since 1 Aug; Live Performance
+Instruction and In-Home are variants of those and match).
+
+### Phase 2: signatures and reminders (0071)
+
+**Every submission is stored, matched or not** (`jotform_submission`). A submission
+that names no lesson, or whose visible fields differ from what was sent, has no
+`lesson_signoff` row to land on — and it is exactly the one the admin needs to see;
+the month-end list reports them. `outcome` is null until checked.
+
+**Matched by the hidden `lessonId`, then re-checked.** `lessonId` is
+`lesson_signoff.id`, so a submission names one row even when two lessons' forms look
+identical. The visible fields are compared anyway, because the link is a URL and
+its query can be edited; a difference is `mismatch` and the lesson stays unsigned.
+The lesson flips to `signed` only from `pending`/`sent`, so of two submissions for
+one lesson exactly one wins and the other is `duplicate`.
+
+**What is deliberately not stored:** the signature image's URL. Jotform answers a
+signature with a link on its own host, and a host never belongs in a stored
+record; `has_signature` is all matching needs. (Phase 3 turned out not to need the
+image: Jotform's Drive integration delivers the whole PDF — see below.)
+`lesson_id_received` is `text`, not `uuid`, so a test submission or
+an edited link is still recorded (as `unknown-lesson`) instead of rejected.
+
+**`signed_at` is when the sync saw it**, to the hour. Jotform's `created_at` is in
+US Eastern with no offset (measured on the first real submission, 25 Nov 2026 —
+although the account is set to Asia/Kolkata); it is kept
+verbatim as `jotform_created_at`, never parsed as an instant.
+
+**`reminder_count` counts steps, not emails.** The schedule is +3 days, +7 days and
+09:00 three days before the lesson's month end, in studio time
+(`SIGNOFF_TIMEZONE`); a step under two days after the previous one is dropped.
+If several fall due together (the sync was down), one reminder goes out and all
+are counted — a stopped sync never catches up with a burst.
+
+**`lesson_signoff_report`** is one row per month whose unsigned list went out,
+written only after the email succeeded, so a failed send is retried next hour.
+
+### Phase 3: filing the signed PDF in Drive (0072)
+
+**Five columns on `lesson_signoff`, no new table.** A filed PDF belongs to exactly
+one lesson and a lesson has at most one, so `drive_file_id` (unique when set),
+`drive_folder_id`, `drive_file_name` and `filed_at` sit on the lesson.
+`pdf_missing_reported_at` makes the "signed 24 hours ago, still no PDF" email go out
+once per lesson.
+
+**Jotform makes the PDF; we only move it.** Its public API has no PDF endpoint
+(WL-API-NOTES.md, Jotform section), but its Google Drive integration drops one PDF
+per submission into a single folder, named `<submission id>.pdf` — and it uses the
+PDF template without the hidden Lesson ID row. Rejected alternatives: **building
+the PDF ourselves** (a second rendering of the studio's form to keep in step), and
+**Jotform's own folder settings** (checked in its Workflow builder with the user,
+25 Nov 2026: one fixed folder name and an optional subfolder per submission whose
+name the PDF takes — it cannot make the month/FI tree, and it files every
+submission, tests and edited links included).
+
+**`drive_folder_id` is the `<FI> - <MONTH>` folder**, recorded because phase 4 (the
+month-end merge, `FIRST LAST - FI.pdf`) works one folder at a time. The month is the
+**lesson's** (`dtl_start_local`), not the signing date's: a 30 November lesson signed
+on 2 December is a November sign-off. The FI is upper-cased in the folder name, as
+the studio's merged files spell it (`… - SELF PAY`).
+
+**The order survives a crash.** The move, the rename and a tag
+(`appProperties.lessonSignoffId`) are one Drive request; the row is written after.
+A run that dies in between leaves a moved, tagged file and an unfiled row — the next
+run's lookup finds the tag and only records it. The obvious order, "write the row,
+then move", would record a file still sitting in the drop folder.
+
+**The file name adds the start time** — `First-Last-MM-DD-YYYY-HHMMAM.pdf` against the
+studio's `First-Last-MM-DD-YYYY.pdf` — because two lessons on one day produced three
+files with identical names in October 2026.
+
 ## Control plane
 
 ```

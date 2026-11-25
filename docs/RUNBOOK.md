@@ -86,6 +86,102 @@ from every log line and are the ones the rotation procedures below apply to.
 
 ---
 
+### Lesson sign-off (task 038, optional)
+
+Read straight from the process environment, like SMTP. `lesson_signoff_sync` does nothing
+until **all** of `SIGNOFF_TO`, `SIGNOFF_START_DATE`, `JOTFORM_FORM_HOST`, `JOTFORM_FORM_ID` and
+`SMTP_HOST` are set; until then its summary is `skipped` and names the missing ones. It sends
+through the SMTP settings above.
+
+| Variable             | Kind       | Rotatable | Owner / source |
+| -------------------- | ---------- | --------- | -------------- |
+| `SIGNOFF_TO`         | coordinate | no        | the one address every sign-off link is emailed to (the studio admin, for now) |
+| `SIGNOFF_START_DATE` | coordinate | no        | `YYYY-MM-DD`, local lesson date; earlier lessons never get a sign-off. 2026-11-24 at go-live |
+| `SIGNOFF_CLASSES`    | coordinate | no        | comma list; default `Music For Everyone,DJ For Everyone,Music Production For Everyone` (agreed 25 Nov 2026) |
+| `SIGNOFF_GROUP`      | coordinate | no        | the WL client group that needs sign-offs; default `SDC Clients` |
+| `JOTFORM_FORM_HOST`  | coordinate | no        | `form.jotform.com`; a HIPAA or EU Jotform account serves forms from a different host |
+| `JOTFORM_FORM_ID`    | coordinate | no        | the number in the master form's URL |
+| `JOTFORM_API_KEY`    | credential | yes       | Jotform → Settings → API. Phase 2 reads submissions with it (read-only use; a Read Access key is enough). Redacted from logs. Without it, signature detection and reminders report `skipped` |
+| `JOTFORM_API_HOST`   | coordinate | no        | `api.jotform.com`; `eu-api.jotform.com` / `hipaa-api.jotform.com` for accounts on those servers |
+| `SIGNOFF_TIMEZONE`   | coordinate | no        | the studio's IANA timezone for month-end reminders; default `America/New_York` (empty means the default) |
+
+**The master form's field unique names are code, not config**: `student`, `date`,
+`teacherName`, `courseCode`, `fi`, and a **hidden** `lessonId` (`JOTFORM_FIELDS` in
+[`src/sync/lesson-signoff.ts`](../src/sync/lesson-signoff.ts), read from the test form through
+the Jotform API on 25 Nov 2026). When `JOTFORM_FORM_ID` moves to the studio's real form, that
+form must use the same unique names — Jotform ignores an unknown prefill parameter silently,
+so a mismatch shows up only as an empty field on the parent's screen. For `lessonId` it shows
+up nowhere: the field is hidden, so a missing one is invisible until phase 2 cannot match a
+signature. Check it on the real form (Field Properties → Advanced → Hidden, unique name
+`lessonId`) before switching. **Hidden on the form is not hidden on the PDF**: Jotform's
+default submission PDF prints a "Lesson ID" row. Once per form, create the PDF layout
+(Settings → Documents → Add a New Document → Start with Default → Next) and delete the
+Lesson ID row from the document only — the field must stay on the form. Done on the test
+form 25 Nov 2026; the real form needs it too. The test form is on
+Jotform's **Free plan (100 submissions a month)**; the studio's volume is about 500.
+
+**For the hourly run, these are GitHub repository secrets**, passed by
+[`sync-run.yml`](../.github/workflows/sync-run.yml) like the SMTP ones. A secret that is not
+created arrives as an empty string, which the config reads as unset: the pass reports
+`skipped` and the rest of the sync runs on. `SIGNOFF_CLASSES`, `SIGNOFF_GROUP` and `SIGNOFF_TIMEZONE` fall back
+to their defaults when empty. **Reminders need detection:** `lesson_signoff_remind` stays
+`skipped` until `JOTFORM_API_HOST` and `JOTFORM_API_KEY` are set, so it can never remind
+for a lesson that is already signed.
+
+#### Phase 3: Google Drive filing
+
+`lesson_signoff_file` moves each **signed** lesson's PDF out of the folder Jotform's Google
+Drive integration drops it in, into `<MONTH> / <MONTH> - UNMERGED / <FI> - <MONTH>`, renamed
+`First-Last-MM-DD-YYYY-HHMMAM.pdf`. It is `skipped` until phase 1's settings **and** all seven
+below are set.
+
+| Variable                       | Kind       | Rotatable | Owner / source |
+| ------------------------------ | ---------- | --------- | -------------- |
+| `GOOGLE_OAUTH_HOST`            | coordinate | no        | `oauth2.googleapis.com` |
+| `GOOGLE_DRIVE_API_HOST`        | coordinate | no        | `www.googleapis.com` |
+| `GOOGLE_CLIENT_ID`             | credential | yes       | Google Cloud → the OAuth client below. Redacted from logs |
+| `GOOGLE_CLIENT_SECRET`         | credential | yes       | the same client. Redacted |
+| `GOOGLE_REFRESH_TOKEN`         | credential | yes       | made once, signed in as the folder owner (steps below). **Full Drive access to that account.** Redacted |
+| `GOOGLE_DRIVE_INBOX_FOLDER_ID` | coordinate | no        | the folder the Jotform integration sends to — the part of its URL after `/folders/` |
+| `GOOGLE_DRIVE_ROOT_FOLDER_ID`  | coordinate | no        | the folder that holds the `<MONTH YEAR>` folders |
+
+**Jotform side, once per form:** Settings → Integrations → Google Drive → "Send submission
+PDFs", to the inbox folder, **no subfolder per submission**, using the PDF document without
+the Lesson ID row (above). Each PDF arrives as `<submission id>.pdf`. Phase 3 never touches a
+PDF whose submission did not sign a lesson — tests, edited links and duplicates stay in the
+inbox, and the month-end list names them.
+
+**Making the Google credentials** (about 10 minutes, all signed in as the Google account that
+owns or can edit both folders — the studio's, eventually):
+
+1. console.cloud.google.com → New project.
+2. APIs & Services → Library → **Google Drive API** → Enable.
+3. Google Auth Platform (older UI: OAuth consent screen): app name, support email. Audience:
+   **Internal** on a Workspace account; on a plain Gmail account **External**, add the account
+   as a test user, then **Publish app** ("In production"). **An app left in "Testing" issues
+   refresh tokens that die after 7 days** — the pass then fails with
+   `Google token refresh failed: invalid_grant`.
+4. Data access → Add scope `https://www.googleapis.com/auth/drive`. Full Drive is required:
+   `drive.file` covers only files this app created, and Jotform created these.
+5. Clients → Create client → **Web application**, authorized redirect URI
+   `https://developers.google.com/oauthplayground`. Keep the client id and secret.
+6. developers.google.com/oauthplayground → ⚙ → "Use your own OAuth credentials" → paste
+   them; Step 1: scope `https://www.googleapis.com/auth/drive` → Authorize APIs → sign in as
+   the folder owner ("Google hasn't verified this app" is expected for your own app:
+   Advanced → continue) → Step 2: Exchange authorization code for tokens → copy the
+   **refresh token**.
+7. Put all seven values in `.env` and as GitHub repository secrets (`sync-run.yml` passes them).
+
+**Why a user and not a service account:** a service account has no storage quota, so it cannot
+create files in a My Drive folder — phase 4's merged PDFs need exactly that. **Moving from a
+test setup to the studio's account** is step 6 only, signed in as the studio account, plus the
+two folder ids; the project and client stay.
+
+**When a PDF does not arrive:** a signed lesson with no PDF 24 hours after signing is emailed
+to `SIGNOFF_TO`, once per lesson. The usual cause is the Jotform integration switched off or
+pointed elsewhere. Nothing needs re-running once it is fixed — the pass looks for every
+unfiled signed lesson's PDF every hour.
+
 ## 2. Where they live
 
 | Environment       | Storage                                     | How the app reads it                   |
@@ -297,6 +393,38 @@ provider and the account it sends from are **not recorded here yet**; fill them 
 §10a tells an operator to check "the sending provider's log" and does not say whose.
 
 ---
+
+### 4g. `JOTFORM_API_KEY`
+
+Read by `lesson_signoff_check` only, to list the sign-off form's submissions (task 038,
+phase 2). It is in `credentialValues()`, so it is scrubbed from every log line.
+
+1. Jotform → Settings → **API** → Create New Key. Read Access is enough — the client
+   only lists submissions.
+2. Set it in the GitHub repository secret `JOTFORM_API_KEY` and any local `.env`.
+3. Verify: the next hourly run's `lesson_signoff_check` is `ok`, not `failed` with
+   `Jotform error 401`.
+4. Delete the old key on the same page.
+
+A key reads **every form and submission on the Jotform account**, signatures and
+student names included. Treat an exposed one as §5 describes.
+
+### 4h. `GOOGLE_REFRESH_TOKEN` / `GOOGLE_CLIENT_SECRET`
+
+Read by `lesson_signoff_file` only (task 038, phase 3). All three Google credentials are in
+`credentialValues()`, so they are scrubbed from every log line.
+
+- **Refresh token:** repeat step 6 of "Making the Google credentials" (§1, phase 3), then
+  revoke the old one at myaccount.google.com → Security → Third-party connections (removing
+  the app there revokes **every** token it holds — make the new one afterwards).
+- **Client secret:** Google Cloud → Clients → the client → add a secret, update
+  `GOOGLE_CLIENT_SECRET`, verify, then delete the old secret. A refresh token survives a
+  secret change.
+- Verify: the next hourly run's `lesson_signoff_file` is `ok`, not `failed` with
+  `Google token refresh failed`.
+
+A refresh token is **full read/write on that account's Drive**. Treat an exposed one as §5
+describes: revoke first.
 
 ## 5. If a credential leaks
 

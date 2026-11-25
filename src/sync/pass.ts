@@ -41,6 +41,34 @@ import { type TransactionReport, writeTransactionPage } from './transactions.js'
 import { writeClientList } from './clients.js';
 import { writeLocationList } from './locations.js';
 import { writeLoginTypeList } from './login-types.js';
+import { writeMemberGroupList } from './member-groups.js';
+import {
+  lessonSignoffCandidates,
+  missingSignoffSettings,
+  processLessonSignoff,
+} from './lesson-signoff.js';
+import {
+  missingSignoffCheckSettings,
+  processSubmission,
+  storeNewSubmissions,
+  uncheckedSubmissions,
+} from './lesson-signoff-check.js';
+import {
+  missingSignoffRemindSettings,
+  processReminder,
+  remindersDueNow,
+  sendDueMonthReports,
+} from './lesson-signoff-remind.js';
+import {
+  FolderResolver,
+  missingSignoffFileSettings,
+  processFiling,
+  reportMissingPdfs,
+  unfiledSignedLessons,
+} from './lesson-signoff-file.js';
+import { DriveClient } from '../google/drive.js';
+import { JotformClient } from '../jotform/client.js';
+import { createSmtpClient, type SmtpClient } from '../notify/smtp.js';
 import { writeMembership } from './memberships.js';
 import { writePromotionList } from './promotions.js';
 import { writePurchaseList } from './purchases.js';
@@ -104,6 +132,12 @@ export interface SyncPassDeps {
    * a different answer after someone has added contacts to GoHighLevel.
    */
   retryUnresolved?: boolean;
+  /** Injected mailer for lesson_signoff_sync. Tests pass a fake; production builds one. */
+  smtp?: SmtpClient;
+  /** Injected Jotform client for lesson_signoff_check. Tests pass a fake; production builds one. */
+  jotform?: Pick<JotformClient, 'listSubmissions'>;
+  /** Injected Drive client for lesson_signoff_file. Tests pass a fake; production builds one. */
+  drive?: Pick<DriveClient, 'listFiles' | 'createFolder' | 'moveFile'>;
 }
 
 export interface SyncPassSummary {
@@ -963,6 +997,294 @@ export function runLoginTypeSyncPass(
           throw error;
         }
       },
+  });
+}
+
+/**
+ * Runs the client-group sync: every WL client group and its members, in one call.
+ *
+ * For this studio a group is a student's Fiscal Intermediary, and "SDC Clients"
+ * marks who needs a lesson sign-off - lesson_signoff_sync reads both from the
+ * tables this fills (see member-groups.ts, migration 0070).
+ */
+export function runMemberGroupSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  return runPass(config, deps, {
+    jobName: 'member_group_sync',
+    workType: 'member_group_list',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      await enqueue(
+        db,
+        [{ work_type: 'member_group_list', target_key: 'all', k_business: kBusiness }],
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ wl, db, kBusiness, runId, nowIso }) =>
+      async (item) => {
+        try {
+          const response = await wl.request(WL_PATHS.memberGroupList, {
+            query: { is_return_members: 1 },
+            priorAttempt: item.attempt_count,
+          });
+          await writeMemberGroupList(db, { kBusiness, response, runId, syncedAt: nowIso() });
+          return { kind: 'done' };
+        } catch (error) {
+          const outcome = outcomeFromError(error);
+          if (outcome !== null) return outcome;
+          throw error;
+        }
+      },
+  });
+}
+
+/** How long a failed sign-off email waits before the next try. */
+const SIGNOFF_SEND_RETRY_MS = 15 * 60_000;
+
+/**
+ * Runs the lesson sign-off pass (task 038, phase 1): every attended SDC lesson in
+ * a sign-off class gets one lesson_signoff row and one email to SIGNOFF_TO with a
+ * prefilled Jotform link. Reads only this database and sends mail - no WL call.
+ *
+ * NOT CONFIGURED IS 'skipped', SAID OUT LOUD. Until SIGNOFF_TO, SIGNOFF_START_DATE,
+ * JOTFORM_FORM_HOST, JOTFORM_FORM_ID and SMTP_HOST are all set, the pass opens no
+ * run, creates nothing, and names what is missing in its summary - a half-set
+ * config must not email the admin links to a form that does not exist.
+ *
+ * It sits in the same flat wave as attendance_sync, so a lesson attended this hour
+ * is usually picked up next hour: the queue and the k_visit key make that safe.
+ */
+export function runLessonSignoffSyncPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  const missing = missingSignoffSettings(config);
+  if (missing.length > 0) {
+    return Promise.resolve({
+      runId: 'none',
+      state: 'skipped',
+      claimed: 0,
+      done: 0,
+      requeued: 0,
+      dead: 0,
+      itemsRemaining: 0,
+      error: `lesson sign-off is not configured: ${missing.join(', ')} unset`,
+    });
+  }
+  const smtp = deps.smtp ?? createSmtpClient(config.smtp);
+  return runPass(config, deps, {
+    jobName: 'lesson_signoff_sync',
+    workType: 'lesson_signoff',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      const visits = await lessonSignoffCandidates(db, kBusiness, config.signoff);
+      await enqueue(
+        db,
+        visits.map((k) => ({ work_type: 'lesson_signoff', target_key: k, k_business: kBusiness })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ db, kBusiness, runId, nowIso }) =>
+      async (item) => {
+        const result = await processLessonSignoff(
+          db,
+          smtp,
+          config.signoff,
+          kBusiness,
+          item.target_key,
+          nowIso(),
+        );
+        if (result.kind !== 'send-failed') return { kind: 'done' };
+        return {
+          kind: 'requeue',
+          requeueAfterMs: SIGNOFF_SEND_RETRY_MS,
+          failure: internalFailure(runId, `sign-off email not sent: ${result.detail}`),
+        };
+      },
+  });
+}
+
+/** The summary a sign-off pass returns when its settings are incomplete. */
+function notConfigured(what: string, missing: readonly string[]): SyncPassSummary {
+  return {
+    runId: 'none',
+    state: 'skipped',
+    claimed: 0,
+    done: 0,
+    requeued: 0,
+    dead: 0,
+    itemsRemaining: 0,
+    error: `${what} is not configured: ${missing.join(', ')} unset`,
+  };
+}
+
+/**
+ * Lesson sign-off, phase 2: read new Jotform submissions and match each to its
+ * lesson by the hidden lessonId (see lesson-signoff-check.ts). The seed reads
+ * Jotform - one GET an hour normally - and stores new submissions unchecked; each
+ * is then a queue item, so one that fails to check is retried on its own.
+ */
+export function runLessonSignoffCheckPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  const missing = missingSignoffCheckSettings(config);
+  if (missing.length > 0) {
+    return Promise.resolve(notConfigured('lesson sign-off detection', missing));
+  }
+  const jotform =
+    deps.jotform ??
+    new JotformClient(
+      { apiHost: config.signoff.apiHost ?? '', apiKey: config.signoff.apiKey ?? '' },
+      { timeoutMs: config.runtime.httpTimeoutMs },
+    );
+  return runPass(config, deps, {
+    jobName: 'lesson_signoff_check',
+    workType: 'jotform_submission',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      await storeNewSubmissions(db, jotform, config.signoff, kBusiness);
+      const ids = await uncheckedSubmissions(db, kBusiness);
+      await enqueue(
+        db,
+        ids.map((id) => ({
+          work_type: 'jotform_submission',
+          target_key: id,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+      );
+    },
+    makeHandler:
+      ({ db, nowIso }) =>
+      async (item) => {
+        await processSubmission(db, item.target_key, nowIso());
+        return { kind: 'done' };
+      },
+  });
+}
+
+/**
+ * Lesson sign-off, phase 2: per-lesson reminders (+3 days, +7 days, 3 days
+ * before month end) and the month-end unsigned list, all to SIGNOFF_TO for now.
+ * Needs phase 1's settings AND the Jotform API's: reminding without detection
+ * would remind for lessons already signed. See lesson-signoff-remind.ts.
+ */
+export function runLessonSignoffRemindPass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  const missing = missingSignoffRemindSettings(config);
+  if (missing.length > 0) {
+    return Promise.resolve(notConfigured('lesson sign-off reminders', missing));
+  }
+  const smtp = deps.smtp ?? createSmtpClient(config.smtp);
+  return runPass(config, deps, {
+    jobName: 'lesson_signoff_remind',
+    workType: 'lesson_signoff_reminder',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      const nowMs = Date.parse(nowIso());
+      const ids = await remindersDueNow(db, kBusiness, config.signoff.timeZone, nowMs);
+      await enqueue(
+        db,
+        ids.map((id) => ({
+          work_type: 'lesson_signoff_reminder',
+          target_key: id,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+      );
+      const reports = await sendDueMonthReports(db, smtp, config.signoff, kBusiness, nowMs);
+      if (reports.failed.length > 0) {
+        // Thrown so the run is marked failed and visible; nothing was recorded,
+        // so next hour tries the list again.
+        throw new Error(`month-end unsigned list not sent for ${reports.failed.join(', ')}`);
+      }
+    },
+    makeHandler:
+      ({ db, runId, nowIso }) =>
+      async (item) => {
+        const result = await processReminder(
+          db,
+          smtp,
+          config.signoff,
+          item.target_key,
+          Date.parse(nowIso()),
+        );
+        if (result.kind === 'wait-for-check') {
+          return { kind: 'defer', requeueAfterMs: SIGNOFF_SEND_RETRY_MS };
+        }
+        if (result.kind !== 'send-failed') return { kind: 'done' };
+        return {
+          kind: 'requeue',
+          requeueAfterMs: SIGNOFF_SEND_RETRY_MS,
+          failure: internalFailure(runId, `sign-off reminder not sent: ${result.detail}`),
+        };
+      },
+  });
+}
+
+/**
+ * Lesson sign-off, phase 3: move each signed lesson's PDF from Jotform's Drive
+ * drop folder into "<MONTH> / <MONTH> - UNMERGED / <FI> - <MONTH>", renamed
+ * First-Last-MM-DD-YYYY-HHMMAM.pdf (see lesson-signoff-file.ts).
+ *
+ * RE-SEEDED EVERY HOUR. A lesson whose PDF has not arrived yet is 'done' for this
+ * run, so the 24-hour fresh-done window would hide it until tomorrow; the window
+ * is switched off here. The set is small - signed and not yet filed.
+ *
+ * The seed also emails the admin, once per lesson, about signed lessons still
+ * without a PDF 24 hours on. A failed send throws (the run shows failed, nothing
+ * is recorded, next hour tries again), as the month-end list does.
+ */
+export function runLessonSignoffFilePass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  const missing = missingSignoffFileSettings(config);
+  if (missing.length > 0) {
+    return Promise.resolve(notConfigured('lesson sign-off Drive filing', missing));
+  }
+  const d = config.signoff.drive;
+  const drive =
+    deps.drive ??
+    new DriveClient(
+      {
+        oauthHost: d.oauthHost ?? '',
+        apiHost: d.apiHost ?? '',
+        clientId: d.clientId ?? '',
+        clientSecret: d.clientSecret ?? '',
+        refreshToken: d.refreshToken ?? '',
+      },
+      { timeoutMs: config.runtime.httpTimeoutMs },
+    );
+  const smtp = deps.smtp ?? createSmtpClient(config.smtp);
+  return runPass(config, deps, {
+    jobName: 'lesson_signoff_file',
+    workType: 'lesson_signoff_file',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      const ids = await unfiledSignedLessons(db, kBusiness);
+      await enqueue(
+        db,
+        ids.map((id) => ({
+          work_type: 'lesson_signoff_file',
+          target_key: id,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+        { freshDoneWindowMs: 0 },
+      );
+      await reportMissingPdfs(db, smtp, config.signoff, kBusiness, Date.parse(nowIso()));
+    },
+    makeHandler: ({ db, nowIso }) => {
+      // One resolver per run, shared by every item: see FolderResolver.
+      const folders = new FolderResolver(drive);
+      return async (item) => {
+        await processFiling(db, drive, folders, d, item.target_key, nowIso());
+        return { kind: 'done' };
+      };
+    },
   });
 }
 
@@ -2197,6 +2519,15 @@ const FULL_SYNC_ORDER: ReadonlyArray<{
   // purchase-derived stub and marks resolved services, so it must run after the
   // purchase pass that creates those stubs.
   { job: 'service_sync', run: runServiceSyncPass },
+  // lesson sign-off (task 038): groups first, then the sign-offs, which read the
+  // attendance, session and person rows every pass above has written.
+  { job: 'member_group_sync', run: runMemberGroupSyncPass },
+  { job: 'lesson_signoff_sync', run: runLessonSignoffSyncPass },
+  // phase 2: read signatures back from Jotform, then remind for the rest.
+  { job: 'lesson_signoff_check', run: runLessonSignoffCheckPass },
+  { job: 'lesson_signoff_remind', run: runLessonSignoffRemindPass },
+  // phase 3: file the signed lessons' PDFs - after the check that signs them.
+  { job: 'lesson_signoff_file', run: runLessonSignoffFilePass },
 ];
 
 /**
@@ -2276,6 +2607,18 @@ const FULL_SYNC_WAVES: ReadonlyArray<
     // reports advanced only on their own cron, for no saving.
     { job: 'tx_item_sync', run: runTransactionItemSyncPass },
     { job: 'tx_payment_sync', run: runTransactionPaymentSyncPass },
+    // Lesson sign-off (task 038). In the same flat wave, so it reads the
+    // attendance and groups the PREVIOUS run stored - a lesson attended this
+    // hour is emailed next hour, the same converge-over-runs trade as above.
+    { job: 'member_group_sync', run: runMemberGroupSyncPass },
+    { job: 'lesson_signoff_sync', run: runLessonSignoffSyncPass },
+    // Phase 2. Concurrent with the check, so a reminder handler re-reads the
+    // lesson and waits for any unchecked submission before it sends.
+    { job: 'lesson_signoff_check', run: runLessonSignoffCheckPass },
+    { job: 'lesson_signoff_remind', run: runLessonSignoffRemindPass },
+    // Phase 3. Files what the PREVIOUS run's check signed - a lesson signed this
+    // hour is filed next hour, the same converge-over-runs trade.
+    { job: 'lesson_signoff_file', run: runLessonSignoffFilePass },
   ],
 ];
 

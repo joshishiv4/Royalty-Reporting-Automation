@@ -1,7 +1,8 @@
 # Status and plan
 
-Last updated **28 Oct 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (The 28 Oct update covers the client note only:
+Last updated **25 Nov 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (The 25 Nov update covers the lesson sign-off
+entries under "In progress" only, phase 3 included. The 28 Oct update covers the client note only:
 dropping its date, `0066`, copying it into `teacher_note`, `0067`, and one row per note,
 `0068`. The 19 Oct update covers the client-note entry only; the
 13 Oct one the retention entry, the 12 Oct one the orphaned run under it, the 8 Oct
@@ -742,6 +743,99 @@ why it is shaped that way.
 | Health views and RLS | ✅ applied + proven on the live DB (21 Aug 2026) |
 
 ## In progress
+
+### Lesson sign-off, phase 1 — code complete, `0070` applied, no email sent yet (25 Nov 2026)
+
+Task 038 (`Tasks/backlog/038-jotform-lesson-signoff-automation/`). Every attended
+lesson of an "SDC Clients" student in a sign-off class (Music / DJ / Music
+Production For Everyone, from `SIGNOFF_START_DATE` = 24 Nov 2026) gets one
+`lesson_signoff` row and one email to `SIGNOFF_TO` — the admin, for now — with a
+prefilled Jotform link (Student, Date, Teacher Name, Course Code, FI, and the row's
+`id` in a hidden `lessonId` so two identical-looking lessons stay apart). Two new
+passes in the hourly wave and a new `lesson-signoff` job: `member_group_sync`
+(the FI is a WL client group) and `lesson_signoff_sync` (database only, no WL call).
+
+**Verified:** 32 new tests, each guarantee mutation-checked (never twice, the FI
+and class rules, the local start date, failed sends retried, the empty-group-list
+guard). The Jotform key and test form (`JOTFORM_FORM_ID`) were checked through the
+Jotform API, and a prefilled link filled all five fields in a browser; the hidden
+`lessonId` field took a prefilled value and showed nothing on the page.
+
+**Not done / blocked:**
+- `JOTFORM_FORM_HOST` must be set (`form.jotform.com`); without it the pass reports
+  `skipped` and sends nothing.
+- The test account is on Jotform's Free plan (100 submissions a month against ~500).
+- Whether the hidden `lessonId` is left off Jotform's submission PDF is unchecked —
+  needs one real submission.
+- A live dry run found 6 lessons from 24 Nov that would be emailed; none has been
+  sent — waiting on the user's go-ahead.
+- Phase 3 (Drive filing) is built — see below. The month-end merge is phase 4.
+
+### Lesson sign-off, phase 2 — code complete, `0071` not yet applied (25 Nov 2026)
+
+Two more passes in the hourly wave, in the `lesson-signoff` job:
+`lesson_signoff_check` reads new Jotform submissions (one GET an hour) and matches
+each to its lesson by the hidden `lessonId`, re-checking the visible fields;
+`lesson_signoff_remind` re-sends the same link at +3 days, +7 days and 3 days before
+month end (studio time, `SIGNOFF_TIMEZONE`), and sends the month's unsigned list
+the day before month end. Still all to `SIGNOFF_TO`.
+
+**Verified:** 45 new tests; 12 mutations each turned the suite red (accepting an
+edited field, signing without the status guard, storing the signature URL, the
+two-day gap, overdue steps as one, waiting for an unchecked submission, recording
+a failed month list, studio timezone, the missed-month catch-up, the key in the
+URL, the body's `responseCode`, stopping at a known page).
+
+**Not done / blocked:**
+- `0071` must be applied before deploying.
+- `JOTFORM_API_HOST` (`api.jotform.com`) and `JOTFORM_API_KEY` must be set, locally
+  and as GitHub secrets; until then both passes report `skipped`.
+- Answer shape confirmed on one real test submission (25 Nov): parsed as designed and
+  judged `signed` against the values its link carried.
+- **The hidden `lessonId` DOES appear on Jotform's submission PDF** ("Lesson ID" row,
+  checked 25 Nov 2026). Hidden on the form is not hidden on the PDF. The user then set up
+  a PDF document template without it; that "Signed PDF Document" shows no Lesson ID —
+  but it is **not returned by the submissions API**. Resolved in phase 3: Jotform's Google
+  Drive integration delivers that PDF, and phase 3 files it.
+- Not run against live data.
+- 28 SDC students have no FI group and 2 have two; their lessons are skipped until
+  the studio tags them or decides.
+
+### Lesson sign-off, phase 3 — Drive filing, code complete, `0072` not yet applied (25 Nov 2026)
+
+One more pass in the hourly wave, `lesson_signoff_file`: each **signed** lesson's PDF —
+made by Jotform's Google Drive integration, `<submission id>.pdf` in one drop folder — is
+moved into `<MONTH> / <MONTH> - UNMERGED / <FI> - <MONTH>` (the lesson's month) and renamed
+`First-Last-MM-DD-YYYY-HHMMAM.pdf`. Folders are found or created. A signed lesson still
+without a PDF 24 hours on is emailed to `SIGNOFF_TO` once. New `src/google/drive.ts` acts as
+the studio's Google user through an OAuth refresh token (no new npm package). Jotform's own
+folder settings were checked with the user first and cannot build this tree (see
+DATA-MODEL.md, phase 3).
+
+**Verified:** 28 new tests; 21 mutations each turned the suite red (filing an unsigned
+lesson, no crash recovery, no per-run folder memo, the 24-hour cutoff, alerting twice, a
+swallowed alert failure, no time in the name, FI case, the wrong PDF of two, the wrong tag
+value, token caching and early refresh, an ignored Drive error, a file left in the drop
+folder, no paging, quote escaping, the refresh token and Drive host in logs, a folder URL
+as an id, the fetch allow-list, a Google host literal in source). **Not covered by a test:**
+that the seed re-enqueues every hour (`freshDoneWindowMs: 0` in `pass.ts`) — without it
+a lesson whose PDF arrives late would be looked for again only after 24 hours.
+
+**Not done / blocked:**
+- `0072` must be applied before deploying (after `0071`).
+- The seven `GOOGLE_*` settings (RUNBOOK §1, phase 3) — the user is making the OAuth
+  client and refresh token. Until then the pass reports `skipped`.
+- **Run end to end locally, 25 Nov 2026**, against the user's own Drive (test root
+  folder) with `SIGNOFF_TO` = the user: 6 lessons of 24 Nov emailed, one signed, the
+  check judged it `signed`, and the filing pass moved its PDF to
+  `NOVEMBER 2026 / NOVEMBER 2026 - UNMERGED / AIM - NOVEMBER 2026 /
+  First-Last-11-24-2026-1000AM.pdf`, tagged. Three fake-lessonId test submissions were
+  `unknown-lesson`; the one whose PDF reached Drive stayed in the drop folder, as designed.
+  Those 6 rows are real lessons with a test signature on one — reset before go-live.
+- Not yet on `main`, so the hourly job does not run phases 1-3; the `GOOGLE_*` GitHub
+  secrets are not set.
+- **Phase 4, the month-end merge** (`FIRST LAST - FI.pdf`), not started; needs the
+  grace-period answer (task 038, open question 2) before 30 Nov.
 
 ### The two transaction reports — code complete, waiting on one migration (17 Sep 2026)
 
