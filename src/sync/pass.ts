@@ -59,6 +59,14 @@ import {
   remindersDueNow,
   sendDueMonthReports,
 } from './lesson-signoff-remind.js';
+import {
+  FolderResolver,
+  missingSignoffFileSettings,
+  processFiling,
+  reportMissingPdfs,
+  unfiledSignedLessons,
+} from './lesson-signoff-file.js';
+import { DriveClient } from '../google/drive.js';
 import { JotformClient } from '../jotform/client.js';
 import { createSmtpClient, type SmtpClient } from '../notify/smtp.js';
 import { writeMembership } from './memberships.js';
@@ -128,6 +136,8 @@ export interface SyncPassDeps {
   smtp?: SmtpClient;
   /** Injected Jotform client for lesson_signoff_check. Tests pass a fake; production builds one. */
   jotform?: Pick<JotformClient, 'listSubmissions'>;
+  /** Injected Drive client for lesson_signoff_file. Tests pass a fake; production builds one. */
+  drive?: Pick<DriveClient, 'listFiles' | 'createFolder' | 'moveFile'>;
 }
 
 export interface SyncPassSummary {
@@ -1212,6 +1222,69 @@ export function runLessonSignoffRemindPass(
           failure: internalFailure(runId, `sign-off reminder not sent: ${result.detail}`),
         };
       },
+  });
+}
+
+/**
+ * Lesson sign-off, phase 3: move each signed lesson's PDF from Jotform's Drive
+ * drop folder into "<MONTH> / <MONTH> - UNMERGED / <FI> - <MONTH>", renamed
+ * First-Last-MM-DD-YYYY-HHMMAM.pdf (see lesson-signoff-file.ts).
+ *
+ * RE-SEEDED EVERY HOUR. A lesson whose PDF has not arrived yet is 'done' for this
+ * run, so the 24-hour fresh-done window would hide it until tomorrow; the window
+ * is switched off here. The set is small - signed and not yet filed.
+ *
+ * The seed also emails the admin, once per lesson, about signed lessons still
+ * without a PDF 24 hours on. A failed send throws (the run shows failed, nothing
+ * is recorded, next hour tries again), as the month-end list does.
+ */
+export function runLessonSignoffFilePass(
+  config: AppConfig,
+  deps: SyncPassDeps = {},
+): Promise<SyncPassSummary> {
+  const missing = missingSignoffFileSettings(config);
+  if (missing.length > 0) {
+    return Promise.resolve(notConfigured('lesson sign-off Drive filing', missing));
+  }
+  const d = config.signoff.drive;
+  const drive =
+    deps.drive ??
+    new DriveClient(
+      {
+        oauthHost: d.oauthHost ?? '',
+        apiHost: d.apiHost ?? '',
+        clientId: d.clientId ?? '',
+        clientSecret: d.clientSecret ?? '',
+        refreshToken: d.refreshToken ?? '',
+      },
+      { timeoutMs: config.runtime.httpTimeoutMs },
+    );
+  const smtp = deps.smtp ?? createSmtpClient(config.smtp);
+  return runPass(config, deps, {
+    jobName: 'lesson_signoff_file',
+    workType: 'lesson_signoff_file',
+    seed: async ({ db, kBusiness, nowIso }) => {
+      const ids = await unfiledSignedLessons(db, kBusiness);
+      await enqueue(
+        db,
+        ids.map((id) => ({
+          work_type: 'lesson_signoff_file',
+          target_key: id,
+          k_business: kBusiness,
+        })),
+        nowIso(),
+        { freshDoneWindowMs: 0 },
+      );
+      await reportMissingPdfs(db, smtp, config.signoff, kBusiness, Date.parse(nowIso()));
+    },
+    makeHandler: ({ db, nowIso }) => {
+      // One resolver per run, shared by every item: see FolderResolver.
+      const folders = new FolderResolver(drive);
+      return async (item) => {
+        await processFiling(db, drive, folders, d, item.target_key, nowIso());
+        return { kind: 'done' };
+      };
+    },
   });
 }
 
@@ -2453,6 +2526,8 @@ const FULL_SYNC_ORDER: ReadonlyArray<{
   // phase 2: read signatures back from Jotform, then remind for the rest.
   { job: 'lesson_signoff_check', run: runLessonSignoffCheckPass },
   { job: 'lesson_signoff_remind', run: runLessonSignoffRemindPass },
+  // phase 3: file the signed lessons' PDFs - after the check that signs them.
+  { job: 'lesson_signoff_file', run: runLessonSignoffFilePass },
 ];
 
 /**
@@ -2541,6 +2616,9 @@ const FULL_SYNC_WAVES: ReadonlyArray<
     // lesson and waits for any unchecked submission before it sends.
     { job: 'lesson_signoff_check', run: runLessonSignoffCheckPass },
     { job: 'lesson_signoff_remind', run: runLessonSignoffRemindPass },
+    // Phase 3. Files what the PREVIOUS run's check signed - a lesson signed this
+    // hour is filed next hour, the same converge-over-runs trade.
+    { job: 'lesson_signoff_file', run: runLessonSignoffFilePass },
   ],
 ];
 

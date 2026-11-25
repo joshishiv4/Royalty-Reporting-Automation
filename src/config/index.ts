@@ -86,6 +86,13 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
     JOTFORM_API_HOST: processEnv.JOTFORM_API_HOST,
     JOTFORM_API_KEY: processEnv.JOTFORM_API_KEY,
     SIGNOFF_TIMEZONE: processEnv.SIGNOFF_TIMEZONE,
+    GOOGLE_OAUTH_HOST: processEnv.GOOGLE_OAUTH_HOST,
+    GOOGLE_DRIVE_API_HOST: processEnv.GOOGLE_DRIVE_API_HOST,
+    GOOGLE_CLIENT_ID: processEnv.GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET: processEnv.GOOGLE_CLIENT_SECRET,
+    GOOGLE_REFRESH_TOKEN: processEnv.GOOGLE_REFRESH_TOKEN,
+    GOOGLE_DRIVE_INBOX_FOLDER_ID: processEnv.GOOGLE_DRIVE_INBOX_FOLDER_ID,
+    GOOGLE_DRIVE_ROOT_FOLDER_ID: processEnv.GOOGLE_DRIVE_ROOT_FOLDER_ID,
   });
   if (!runtime.success) {
     throw new ConfigValidationError(formatIssues(runtime.error));
@@ -146,6 +153,15 @@ export async function loadConfig(input: LoadConfigInput = {}): Promise<AppConfig
       apiHost: runtime.data.JOTFORM_API_HOST ?? null,
       apiKey: runtime.data.JOTFORM_API_KEY ?? null,
       timeZone: runtime.data.SIGNOFF_TIMEZONE,
+      drive: Object.freeze({
+        oauthHost: runtime.data.GOOGLE_OAUTH_HOST ?? null,
+        apiHost: runtime.data.GOOGLE_DRIVE_API_HOST ?? null,
+        clientId: runtime.data.GOOGLE_CLIENT_ID ?? null,
+        clientSecret: runtime.data.GOOGLE_CLIENT_SECRET ?? null,
+        refreshToken: runtime.data.GOOGLE_REFRESH_TOKEN ?? null,
+        inboxFolderId: runtime.data.GOOGLE_DRIVE_INBOX_FOLDER_ID ?? null,
+        rootFolderId: runtime.data.GOOGLE_DRIVE_ROOT_FOLDER_ID ?? null,
+      }),
     }),
   });
 }

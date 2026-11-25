@@ -223,6 +223,7 @@ describe('the success check cannot be bypassed', () => {
     join('src', 'supabase', 'client.ts'), // Supabase REST writes/reads, not WL
     join('src', 'ghl', 'client.ts'), // GoHighLevel REST, not WL
     join('src', 'jotform', 'client.ts'), // Jotform REST, not WL - owns its responseCode check
+    join('src', 'google', 'drive.ts'), // Google OAuth + Drive, not WL - owns its error check
   ]);
 
   /** An actual call site, not a `typeof globalThis.fetch` type annotation. */

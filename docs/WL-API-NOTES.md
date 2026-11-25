@@ -766,6 +766,26 @@ behaviour is recorded here.
 - **A hidden field is printed on the submission PDF.** The test submission's PDF
   (Inbox → Download PDF, 25 Nov 2026) showed a "Lesson ID" row with the UUID between FI
   and Signature. "Hidden" applies to the form page only.
+- **The "Signed PDF Document" files are not in the API.** After the user set up a PDF
+  document template without the Lesson ID row, the Inbox shows two attachments per
+  submission ("Signed PDF Document" and "... with Audit Trail"), and that PDF has no
+  Lesson ID (checked 25 Nov 2026). `GET /form/{id}/submissions` returns neither — the
+  answers are exactly the form's fields, nothing more. Phase 3 needs another route to
+  that PDF, or builds its own.
+- **The public API has no PDF endpoint at all.** Checked against
+  api.jotform.com/docs on 25 Nov 2026: `/user`, `/label`, `/form`, `/submission`,
+  `/report`, `/folder`, `/system` — none returns a submission or signed PDF. The one
+  file listing, `GET /form/{id}/files`, returned **0** files for a form with two signed
+  submissions (not even the signature images). The routes to Jotform's own PDF are
+  its integrations (Google Drive: "Send submission PDFs and uploaded files") or the
+  notification email attachment.
+- **The Google Drive integration names each PDF by submission id**, `<submission id>.pdf`,
+  all in one folder when "subfolder per submission" is off (seen 25 Nov 2026). Phase 3
+  relies on that name. Its folder settings — also in the Workflow builder's Google Drive
+  "Send Files" step, checked with the user 25 Nov 2026 — are a typed folder name (no
+  folder picker, no field values), an optional subfolder per submission, and a PDF
+  document picker; there is no file-name setting, and Jotform's answers say the PDF takes
+  the subfolder's name. It cannot build a month/FI tree, and it uploads every submission.
 - **`created_at` carries no offset, and it is US Eastern** — not the account's
   timezone. Measured 25 Nov 2026: a form submitted about 15:28 India time came back
   `2026-11-25 04:58:46` (EST, UTC-5) on an account set to Asia/Kolkata. Stored

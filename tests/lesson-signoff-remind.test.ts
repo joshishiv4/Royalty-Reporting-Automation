@@ -24,6 +24,15 @@ const SIGNOFF: SignoffConfig = {
   apiHost: 'api.example.test',
   apiKey: 'test-jotform-key',
   timeZone: TZ,
+  drive: {
+    oauthHost: null,
+    apiHost: null,
+    clientId: null,
+    clientSecret: null,
+    refreshToken: null,
+    inboxFolderId: null,
+    rootFolderId: null,
+  },
 };
 const ID = 'cccccccc-0000-4000-8000-000000000001';
 

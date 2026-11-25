@@ -28,6 +28,15 @@ const SIGNOFF: SignoffConfig = {
   apiHost: 'api.example.test',
   apiKey: 'test-jotform-key',
   timeZone: 'America/New_York',
+  drive: {
+    oauthHost: null,
+    apiHost: null,
+    clientId: null,
+    clientSecret: null,
+    refreshToken: null,
+    inboxFolderId: null,
+    rootFolderId: null,
+  },
 };
 
 describe('the form fields, in the studio sample format', () => {
@@ -145,6 +154,15 @@ describe('missingSignoffSettings', () => {
       apiHost: null,
       apiKey: null,
       timeZone: 'America/New_York',
+      drive: {
+        oauthHost: null,
+        apiHost: null,
+        clientId: null,
+        clientSecret: null,
+        refreshToken: null,
+        inboxFolderId: null,
+        rootFolderId: null,
+      },
     };
     expect(missingSignoffSettings({ signoff: none, smtp: { host: null } as never })).toEqual([
       'SIGNOFF_TO',

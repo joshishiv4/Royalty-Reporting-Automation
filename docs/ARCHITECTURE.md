@@ -25,6 +25,7 @@ src/
   secrets/       where credentials come from
   wl/            the WellnessLiving client
   jotform/       the read-only Jotform client (lesson sign-off, task 038)
+  google/        the Google Drive client (lesson sign-off filing, task 038 phase 3)
   supabase/      Supabase health probe
   logging/       structured logging and redaction
   http/          shared HTTP-route concerns
@@ -85,7 +86,7 @@ correctly does not start.
 | Writing WL responses to Supabase (raw_wl → typed rows → raw_link) | [`src/sync/writer.ts`](../src/sync/writer.ts) |
 | Writing GHL responses to Supabase (raw_ghl), and the recorder that makes every search store itself | [`src/sync/ghl-writer.ts`](../src/sync/ghl-writer.ts) |
 | Reading how far the sync has got, from the queue rather than from a run summary | [`src/sync/progress.ts`](../src/sync/progress.ts) |
-| The eight scheduled jobs (`lesson-signoff` added for task 038; phase 2 added its `lesson_signoff_check` and `lesson_signoff_remind` passes) — which passes each one runs, and in what order | [`src/sync/jobs.ts`](../src/sync/jobs.ts) |
+| The eight scheduled jobs (`lesson-signoff` added for task 038; phase 2 added its `lesson_signoff_check` and `lesson_signoff_remind` passes, phase 3 `lesson_signoff_file`) — which passes each one runs, and in what order | [`src/sync/jobs.ts`](../src/sync/jobs.ts) |
 | Jobs that should have run and did not — the alert nothing else can produce | [`src/notify/overdue.ts`](../src/notify/overdue.ts) |
 | Writing purchases (list → purchase + purchase_item, stub FKs) | [`src/sync/purchases.ts`](../src/sync/purchases.ts) |
 | Enriching purchases with money (receipt → totals, payments, credit) | [`src/sync/receipts.ts`](../src/sync/receipts.ts) |
@@ -100,6 +101,7 @@ correctly does not start.
 | Lesson sign-off, task 038 phase 1 (attended SDC lesson in a sign-off class → one `lesson_signoff` row → one email to `SIGNOFF_TO` with a prefilled Jotform link; Course Code / Date / FI formatting, the class and FI rules, the never-twice guarantee) | [`src/sync/lesson-signoff.ts`](../src/sync/lesson-signoff.ts) |
 | Lesson sign-off phase 2, signatures: new Jotform submissions → `jotform_submission`, each matched to its lesson by the hidden `lessonId`, visible fields re-checked, verdicts `signed / mismatch / unknown-lesson / no-signature / duplicate` | [`src/sync/lesson-signoff-check.ts`](../src/sync/lesson-signoff-check.ts) |
 | Lesson sign-off phase 2, reminders: the +3 d / +7 d / month-end − 3 d schedule in studio time, one reminder per due step, and the month-end unsigned list | [`src/sync/lesson-signoff-remind.ts`](../src/sync/lesson-signoff-remind.ts) |
+| Lesson sign-off phase 3, Drive filing: a **signed** lesson's PDF (made by Jotform's Drive integration, `<submission id>.pdf` in one drop folder) moved into `<MONTH> / <MONTH> - UNMERGED / <FI> - <MONTH>` and renamed `First-Last-MM-DD-YYYY-HHMMAM.pdf`; folders found before made, once per run; crash recovery by the file's `lessonSignoffId` tag; the 24-hour missing-PDF alert | [`src/sync/lesson-signoff-file.ts`](../src/sync/lesson-signoff-file.ts) |
 | Linking a person to their GoHighLevel contact (phone first, email second, names never) | [`src/ghl/matcher.ts`](../src/ghl/matcher.ts) |
 | The class schedule (schedule/class/list → session + session_staff, keyed on class **and** date) | [`src/sync/sessions.ts`](../src/sync/sessions.ts) |
 | Who booked and who turned up (login/attendance/list → attendance, per occurrence) | [`src/sync/attendance.ts`](../src/sync/attendance.ts) |
@@ -169,6 +171,18 @@ envelope inside" trap to guard against.
 Read-only by shape, like the GHL client above: the request method is a `#private`
 GET, so no caller can point it at a write. Jotform, like WL, can answer HTTP 200
 with an error inside — `responseCode` decides.
+
+### Google Drive
+
+| Question | File |
+|---|---|
+| The only Google boundary: refresh-token → access-token exchange (cached until a minute before expiry), list files by a Drive `q` query, create a folder, move + rename + tag a file in **one** PATCH | [`src/google/drive.ts`](../src/google/drive.ts) |
+
+Acts as the studio's Google **user** (OAuth refresh token), not a service account:
+a service account has no storage quota, so it could not create the merged PDFs
+phase 4 needs in a My Drive folder. No delete, trash or permission surface. Errors
+name the path, never the host; the refresh token and client secret travel only in
+the token request body.
 
 ### Entry points
 
@@ -358,6 +372,7 @@ to re-run.
 | `0068` | **One `wl_client_note` row per WL note.** WL joins a profile's notes into one string with `", "` (164 of 339 clients have several, 676 notes on dev, 28 Oct 2026); the portal showed them as one card. Drops `unique (uid)`, adds `note_key` (first 32 hex of sha256 over the note's HTML, `#n` for a repeat — a hash, not a position, so a new note on top does not make every other note look edited) and `position` (display order), unique `(uid, note_key)`. `teacher_note_link` becomes `(uid, note_key)` plus `position`, readable by `authenticated` as note id + position only. `sync_wl_note_to_teacher_note(uid, note_key)` replaces `0067`'s per-client version; the trigger passes both. New `replace_wl_client_notes(uids, notes)` (service role only) is how the sync writes a page: each client keeps exactly its notes on the page. **Does not split existing rows** — that needs the sync's `noteText`; it gives each the key the sync would, so single notes keep theirs and the next client-list pass splits the combined ones. **Apply before deploying the sync code**: the old code upserts on `uid` alone. Re-running `0067` restores the single-key function — re-run `0068` after it. Trailing checks: keys and uniques, every WL note with an identity has a live link, link key unreadable and position readable, functions not callable through the API, old function gone, trigger present |
 | `0069` | **`interest_icon` — LLM-assigned icon cache for interest tags.** The "Things I'm Into" home card needs an icon per tag, but tags are free text inferred by the quiz recommender, so icons cannot be hardcoded. The quiz-attempt handler asks the model to pick an icon from the registry and upserts the `(tag, icon)` pair here; the interests API reads it back. One row per unique lowercased tag — the same tag always shows the same icon across students and sessions. UUID PK, unique on `tag`, RLS enabled with no policy (service role only). No author or date beyond `created_at` |
 | `0070` | **Lesson sign-off (task 038).** `member_group` + `member_group_member`: WL client groups and who is in them, from `/v1/member/group/list?is_return_members=1` — for this studio a group is a student's Fiscal Intermediary (28 groups; "SDC Clients" 216 members, 186 in exactly one other group, 19 Nov 2026). Membership is replaced each run (`synced_at` older than the run is deleted) because WL keeps current membership only; **no FK from `member_group_member.uid` to `person`** — members the client list has not stored yet exist. `lesson_signoff`: one row per attended visit, **unique on `k_visit`** so the hourly sync never creates or emails a lesson twice; the form fields are snapshotted as sent and `fi_*` is the FI on the day. Status `pending/sent/skipped/signed`, `skip_reason` `no-fi/multiple-fi/missing-detail`, a check that a skip always has a reason. **No URL and no recipient stored** — both embed configuration. RLS on, no policy, on all three |
+| `0072` | **Lesson sign-off phase 3 (task 038): Drive filing.** `lesson_signoff` gains `drive_file_id` (unique when set), `drive_folder_id` (the `<FI> - <MONTH>` folder, for phase 4's merge), `drive_file_name`, `filed_at` and `pdf_missing_reported_at` (the 24-hour alert goes out once). Jotform makes the PDF — its Drive integration is the only route to it, the API has none — and phase 3 only moves and renames it. Jotform's own folder settings were checked with the user (25 Nov 2026): one fixed folder name plus a per-submission subfolder whose name the PDF takes, and every submission filed, tests included — so the month/FI tree and the signed-only rule are ours. Partial index on signed-and-unfiled for the hourly seed |
 | `0071` | **Lesson sign-off phase 2 (task 038).** `jotform_submission`: every submission of the master form, matched or not — one that names no lesson or does not match what was sent has no `lesson_signoff` row to sit on, and it is the one the admin must see. `outcome` null until checked, then `signed/mismatch/unknown-lesson/no-signature/duplicate`. **No signature URL stored** (it is on Jotform's host) — `has_signature` only; `lesson_id_received` is **text**, so an unparseable id is still recorded. `lesson_signoff` gains `reminder_count`, `last_reminded_at`, `jotform_submission_id` (unique when set). `lesson_signoff_report`: one row per month whose unsigned list went out. RLS on, no policy |
 
 `supabase/checks/` holds read-only verification scripts — RLS bypass and isolation
@@ -499,6 +514,30 @@ They run concurrently, so a reminder handler re-reads the lesson and waits for a
 unchecked submission naming it — the signature may be in that submission.
 Reminders need detection: `lesson_signoff_remind` is `skipped` unless the Jotform API
 settings are set too.
+
+Phase 3 adds `lesson_signoff_file`, which reads this database and Google Drive:
+
+```
+lesson_signoff_file
+seed     lesson_signoff signed, filed_at null      → one queue item each, EVERY hour
+           (fresh-done window off: a PDF that has not arrived must be looked for again)
+         + one email to SIGNOFF_TO listing signed lessons still unfiled 24 h after
+           signing, each lesson once (pdf_missing_reported_at)
+handler  one Drive listing: "<submission id>.pdf" in the drop folder, OR a file
+           tagged lessonSignoffId = this lesson
+         tagged file found → an earlier run moved it and died: record it, move nothing
+         no PDF yet → done; next hour looks again
+         otherwise find-or-create <MONTH> / <MONTH> - UNMERGED / <FI> - <MONTH>
+           (month of the LESSON; FI upper-cased; once per run, shared by all items)
+         one PATCH: move out of the drop folder, rename First-Last-MM-DD-YYYY-HHMMAM.pdf,
+           tag lessonSignoffId → then record drive_file_id / folder / name / filed_at
+```
+
+Only **signed** lessons are filed. A test, an edited link, a mismatch or a duplicate
+never signs a lesson, so its PDF stays in the drop folder, where the month-end list
+(phase 2) already names its submission. A lesson signed this hour is filed next hour
+— the check that signs it runs in the same wave. `skipped` until all seven
+`GOOGLE_*` settings are set, on top of phase 1's.
 
 ## What a sync run costs
 

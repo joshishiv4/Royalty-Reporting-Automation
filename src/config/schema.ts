@@ -318,6 +318,33 @@ export const runtimeOptionsSchema = z.object({
     .refine(isTimeZone, {
       message: 'SIGNOFF_TIMEZONE must be an IANA timezone, e.g. America/New_York',
     }),
+  // --- Lesson sign-off, phase 3: Google Drive filing -------------------------
+  // All optional: until every one is set, lesson_signoff_file is 'skipped' and
+  // names what is missing. RUNBOOK.md has the setup. Hosts are configuration.
+  /** Google's OAuth token host - the refresh token is exchanged there. */
+  GOOGLE_OAUTH_HOST: optionalText.refine((v) => v === undefined || /^[a-z0-9.-]+$/i.test(v), {
+    message: 'GOOGLE_OAUTH_HOST must be a bare host, no scheme or path',
+  }),
+  /** The Drive API host. */
+  GOOGLE_DRIVE_API_HOST: optionalText.refine((v) => v === undefined || /^[a-z0-9.-]+$/i.test(v), {
+    message: 'GOOGLE_DRIVE_API_HOST must be a bare host, no scheme or path',
+  }),
+  /** The OAuth client the studio created in Google Cloud. Redacted from logs. */
+  GOOGLE_CLIENT_ID: optionalText,
+  /** That client's secret. A credential. */
+  GOOGLE_CLIENT_SECRET: optionalText,
+  /** The studio user's consent, made once (RUNBOOK.md). A credential - full Drive access. */
+  GOOGLE_REFRESH_TOKEN: optionalText,
+  /** The folder Jotform's Drive integration drops every submission PDF into. */
+  GOOGLE_DRIVE_INBOX_FOLDER_ID: optionalText.refine(
+    (v) => v === undefined || /^[A-Za-z0-9_-]+$/.test(v),
+    { message: 'GOOGLE_DRIVE_INBOX_FOLDER_ID must be the id from the folder URL, not the URL' },
+  ),
+  /** The folder the "<MONTH YEAR>" folders live in. */
+  GOOGLE_DRIVE_ROOT_FOLDER_ID: optionalText.refine(
+    (v) => v === undefined || /^[A-Za-z0-9_-]+$/.test(v),
+    { message: 'GOOGLE_DRIVE_ROOT_FOLDER_ID must be the id from the folder URL, not the URL' },
+  ),
 });
 
 function isTimeZone(tz: string): boolean {
@@ -381,6 +408,22 @@ export interface SignoffConfig {
   readonly apiKey: string | null;
   /** The studio's IANA timezone, for month-end reminders. */
   readonly timeZone: string;
+  /** Google Drive filing (phase 3). */
+  readonly drive: SignoffDriveConfig;
+}
+
+/** Phase 3's Google settings. Null is unset; the pass names what is missing. */
+export interface SignoffDriveConfig {
+  readonly oauthHost: string | null;
+  readonly apiHost: string | null;
+  /** Credential. */
+  readonly clientId: string | null;
+  /** Credential. */
+  readonly clientSecret: string | null;
+  /** Credential. */
+  readonly refreshToken: string | null;
+  readonly inboxFolderId: string | null;
+  readonly rootFolderId: string | null;
 }
 
 export interface SyncConfig {

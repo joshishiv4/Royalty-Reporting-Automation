@@ -21,6 +21,15 @@ const config = {
     apiHost: null,
     apiKey: null,
     timeZone: 'America/New_York',
+    drive: {
+      oauthHost: null,
+      apiHost: null,
+      clientId: null,
+      clientSecret: null,
+      refreshToken: null,
+      inboxFolderId: null,
+      rootFolderId: null,
+    },
   },
 } as unknown as AppConfig;
 
@@ -88,6 +97,7 @@ describe('runFullSyncPass', () => {
       'lesson_signoff_sync',
       'lesson_signoff_check',
       'lesson_signoff_remind',
+      'lesson_signoff_file',
     ]);
     expect(summary.passes.every((p) => p.ran)).toBe(true);
     expect(summary.state).toBe('ok');
@@ -210,6 +220,7 @@ describe('runFullSyncPassParallel', () => {
         'lesson_signoff_sync',
         'lesson_signoff_check',
         'lesson_signoff_remind',
+        'lesson_signoff_file',
       ].sort(),
     );
     expect(summary.passes.every((p) => p.ran)).toBe(true);
@@ -291,7 +302,7 @@ describe('runFullSyncPassParallel', () => {
     const summary = await runFullSyncPassParallel(config, { wl, db, now: () => 0 });
 
     // Every pass either ok or failed - none should be missing from the list.
-    expect(summary.passes).toHaveLength(22);
+    expect(summary.passes).toHaveLength(23);
     expect(summary.state).toBe('failed');
     const staff = summary.passes.find((p) => p.job === 'staff_sync');
     expect(staff?.summary?.state).toBe('failed');

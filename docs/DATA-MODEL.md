@@ -1377,8 +1377,9 @@ one lesson exactly one wins and the other is `duplicate`.
 
 **What is deliberately not stored:** the signature image's URL. Jotform answers a
 signature with a link on its own host, and a host never belongs in a stored
-record; `has_signature` is all matching needs. Phase 3 reads the image by
-submission id. `lesson_id_received` is `text`, not `uuid`, so a test submission or
+record; `has_signature` is all matching needs. (Phase 3 turned out not to need the
+image: Jotform's Drive integration delivers the whole PDF — see below.)
+`lesson_id_received` is `text`, not `uuid`, so a test submission or
 an edited link is still recorded (as `unknown-lesson`) instead of rejected.
 
 **`signed_at` is when the sync saw it**, to the hour. Jotform's `created_at` is in
@@ -1394,6 +1395,40 @@ are counted — a stopped sync never catches up with a burst.
 
 **`lesson_signoff_report`** is one row per month whose unsigned list went out,
 written only after the email succeeded, so a failed send is retried next hour.
+
+### Phase 3: filing the signed PDF in Drive (0072)
+
+**Five columns on `lesson_signoff`, no new table.** A filed PDF belongs to exactly
+one lesson and a lesson has at most one, so `drive_file_id` (unique when set),
+`drive_folder_id`, `drive_file_name` and `filed_at` sit on the lesson.
+`pdf_missing_reported_at` makes the "signed 24 hours ago, still no PDF" email go out
+once per lesson.
+
+**Jotform makes the PDF; we only move it.** Its public API has no PDF endpoint
+(WL-API-NOTES.md, Jotform section), but its Google Drive integration drops one PDF
+per submission into a single folder, named `<submission id>.pdf` — and it uses the
+PDF template without the hidden Lesson ID row. Rejected alternatives: **building
+the PDF ourselves** (a second rendering of the studio's form to keep in step), and
+**Jotform's own folder settings** (checked in its Workflow builder with the user,
+25 Nov 2026: one fixed folder name and an optional subfolder per submission whose
+name the PDF takes — it cannot make the month/FI tree, and it files every
+submission, tests and edited links included).
+
+**`drive_folder_id` is the `<FI> - <MONTH>` folder**, recorded because phase 4 (the
+month-end merge, `FIRST LAST - FI.pdf`) works one folder at a time. The month is the
+**lesson's** (`dtl_start_local`), not the signing date's: a 30 November lesson signed
+on 2 December is a November sign-off. The FI is upper-cased in the folder name, as
+the studio's merged files spell it (`… - SELF PAY`).
+
+**The order survives a crash.** The move, the rename and a tag
+(`appProperties.lessonSignoffId`) are one Drive request; the row is written after.
+A run that dies in between leaves a moved, tagged file and an unfiled row — the next
+run's lookup finds the tag and only records it. The obvious order, "write the row,
+then move", would record a file still sitting in the drop folder.
+
+**The file name adds the start time** — `First-Last-MM-DD-YYYY-HHMMAM.pdf` against the
+studio's `First-Last-MM-DD-YYYY.pdf` — because two lessons on one day produced three
+files with identical names in October 2026.
 
 ## Control plane
 

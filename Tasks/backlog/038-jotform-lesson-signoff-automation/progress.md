@@ -212,6 +212,38 @@ on Jotform's PDF.
 on Jotform's PDF** - remove it from the PDF template, or have phase 3 build the PDF.
 The test submission (fake lessonId) should be deleted in Jotform before the check runs.
 
+**Second test submission, 25 Nov 2026:** parsed correctly. The user's PDF document
+template ("Signed PDF Document" + "with Audit Trail" in the Inbox) omits Lesson ID - but
+those files are not in the submissions API. Open for phase 3: how to fetch that PDF
+(ask Jotform, or build the PDF ourselves). Two test submissions (fake lessonIds
+...0001, ...0002) to delete before the check runs.
+
+## Phase 3 built - 25 Nov 2026 (branch `features/HRRAFEBAV-162`)
+
+ERP: the Drive half of **HRRAFEBAV-165**. The merge (`FIRST LAST - FI.pdf`) is phase 4.
+
+Decided with the user: **Jotform makes the PDF** - its Google Drive integration drops
+`<submission id>.pdf` into one folder - and phase 3 **files** it. Jotform's own folder
+settings (form integration and Workflow builder) were checked together on 25 Nov: a typed
+folder name, a subfolder per submission, the PDF named after the subfolder - no month/FI
+tree, and every submission uploaded. Google sign-in is the **studio's Google user** via an
+OAuth refresh token (a service account cannot create files in My Drive, which phase 4
+needs).
+
+Built: migration `0072` (filing columns on `lesson_signoff`); `src/google/drive.ts`;
+`src/sync/lesson-signoff-file.ts`; pass `lesson_signoff_file` (in the `lesson-signoff`
+job and the hourly wave); config `GOOGLE_*` (7); `sync-run.yml` passes them. Only
+**signed** lessons are filed, into `<MONTH> / <MONTH> - UNMERGED / <FI> - <MONTH>` (lesson
+month, FI upper-cased) as `First-Last-MM-DD-YYYY-HHMMAM.pdf`; one PATCH moves, renames and
+tags (`lessonSignoffId`) so a crashed run is finished next hour; a signed lesson with no
+PDF after 24 h is emailed to `SIGNOFF_TO` once. 28 tests, 21 mutations caught; the hourly
+re-seed (`freshDoneWindowMs: 0`) is not covered by a test.
+
+**Before it runs:** apply `0072`; the user makes the Google OAuth client + refresh token
+(RUNBOOK §1, phase 3) and sets the seven `GOOGLE_*` values in `.env` and GitHub secrets;
+for testing, inbox = the current "Lesson sign-offs" folder, root = a test folder. Then one
+signed test lesson end to end. Delete the two fake-lessonId test submissions first.
+
 ## Log
 
 - **2026-11-19** — Assessment of the manual process; FI search (custom fields,
@@ -223,3 +255,5 @@ The test submission (fake lessonId) should be deleted in Jotform before the chec
   verified. Sample PDF + Drive unmerged/merged layout captured. Sync gap found.
   User decisions recorded (per lesson, month-end deadline, attended only, parent
   signs, no visible form change, staff will tag untagged students). Handoff written.
+- **2026-11-25** — Phases 1-3 built (sign-off emails; signature detection + reminders;
+  Drive filing). Phase 4 (month-end merge) next.

@@ -83,6 +83,14 @@ jobs:
           JOTFORM_API_HOST: ${{ secrets.JOTFORM_API_HOST }}
           JOTFORM_API_KEY: ${{ secrets.JOTFORM_API_KEY }}
           SIGNOFF_TIMEZONE: ${{ secrets.SIGNOFF_TIMEZONE }}
+          # Phase 3: Google Drive filing (RUNBOOK.md). Same rule: unset is 'skipped'.
+          GOOGLE_OAUTH_HOST: ${{ secrets.GOOGLE_OAUTH_HOST }}
+          GOOGLE_DRIVE_API_HOST: ${{ secrets.GOOGLE_DRIVE_API_HOST }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_INBOX_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_INBOX_FOLDER_ID }}
+          GOOGLE_DRIVE_ROOT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}
           # Optional tuning. A secret that is not set arrives as an empty string
           # rather than as absent, which Zod would read as a bad value instead of
           # falling back - so each is defaulted here to the schema's own default.

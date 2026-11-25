@@ -6,6 +6,7 @@ import {
   runClientSessionSyncPass,
   runGhlMatchSyncPass,
   runLessonSignoffCheckPass,
+  runLessonSignoffFilePass,
   runLessonSignoffRemindPass,
   runLessonSignoffSyncPass,
   runLocationSyncPass,
@@ -124,12 +125,14 @@ export const JOB_GROUPS: readonly JobGroup[] = [
     expectedEveryHours: 24,
     summary:
       'Client groups (the FI), one emailed Jotform sign-off link per attended SDC lesson, ' +
-      'signatures read back from Jotform, and reminders until signed.',
+      'signatures read back from Jotform, reminders until signed, and the signed PDFs ' +
+      'filed into the month/FI folders in Google Drive.',
     passes: [
       { job: 'member_group_sync', run: runMemberGroupSyncPass },
       { job: 'lesson_signoff_sync', run: runLessonSignoffSyncPass },
       { job: 'lesson_signoff_check', run: runLessonSignoffCheckPass },
       { job: 'lesson_signoff_remind', run: runLessonSignoffRemindPass },
+      { job: 'lesson_signoff_file', run: runLessonSignoffFilePass },
     ],
   },
   {
