@@ -825,8 +825,15 @@ a lesson whose PDF arrives late would be looked for again only after 24 hours.
 - `0072` must be applied before deploying (after `0071`).
 - The seven `GOOGLE_*` settings (RUNBOOK §1, phase 3) — the user is making the OAuth
   client and refresh token. Until then the pass reports `skipped`.
-- Not run against real Drive. The file name `<submission id>.pdf` was seen once (25 Nov);
-  if Jotform names it differently, nothing is filed and the 24-hour alert fires.
+- **Run end to end locally, 25 Nov 2026**, against the user's own Drive (test root
+  folder) with `SIGNOFF_TO` = the user: 6 lessons of 24 Nov emailed, one signed, the
+  check judged it `signed`, and the filing pass moved its PDF to
+  `NOVEMBER 2026 / NOVEMBER 2026 - UNMERGED / AIM - NOVEMBER 2026 /
+  First-Last-11-24-2026-1000AM.pdf`, tagged. Three fake-lessonId test submissions were
+  `unknown-lesson`; the one whose PDF reached Drive stayed in the drop folder, as designed.
+  Those 6 rows are real lessons with a test signature on one — reset before go-live.
+- Not yet on `main`, so the hourly job does not run phases 1-3; the `GOOGLE_*` GitHub
+  secrets are not set.
 - **Phase 4, the month-end merge** (`FIRST LAST - FI.pdf`), not started; needs the
   grace-period answer (task 038, open question 2) before 30 Nov.
 
