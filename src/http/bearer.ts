@@ -19,6 +19,20 @@ export function isAuthorized(
   const presented = match?.[1];
   if (presented === undefined) return false;
 
+  return secretMatches(presented, expected);
+}
+
+/**
+ * Constant-time comparison of a presented secret with the configured one, for a
+ * caller that cannot send a header (Jotform's webhook carries its key in the URL).
+ * False when nothing is configured or nothing was presented.
+ */
+export function secretMatches(
+  presented: string | null | undefined,
+  expected: string | undefined,
+): boolean {
+  if (expected === undefined || expected.length === 0) return false;
+  if (presented === null || presented === undefined || presented.length === 0) return false;
   const a = Buffer.from(presented);
   const b = Buffer.from(expected);
   // timingSafeEqual throws on length mismatch, so length is checked first. The

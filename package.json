@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@types/nodemailer": "^8.0.1",
+    "@vercel/functions": "3.11.1",
     "nodemailer": "^9.1.0",
     "zod": "^3.23.8"
   },

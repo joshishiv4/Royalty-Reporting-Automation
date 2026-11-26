@@ -62,6 +62,48 @@ describe('JotformClient.listSubmissions', () => {
   });
 });
 
+describe('JotformClient.getSubmission (task 039)', () => {
+  it('reads one submission by id, the key in the header only', async () => {
+    const fetch = respond({
+      responseCode: 200,
+      content: { id: '9001', form_id: '42', answers: {} },
+    });
+    const client = new JotformClient({ apiHost: HOST, apiKey: KEY }, { fetch });
+
+    expect(await client.getSubmission('9001')).toEqual({ id: '9001', form_id: '42', answers: {} });
+    const [input, init] = fetch.mock.calls[0] ?? [];
+    expect(input).toBe(`https://${HOST}/submission/9001`);
+    expect(input as string).not.toContain(KEY);
+    expect((init?.headers as Record<string, string>).APIKEY).toBe(KEY);
+  });
+
+  // An id from a webhook body is outside input: it must not be able to change the path.
+  it('encodes the id, so it cannot walk to another endpoint', async () => {
+    const fetch = respond({ responseCode: 200, content: { id: 'x' } });
+    const client = new JotformClient({ apiHost: HOST, apiKey: KEY }, { fetch });
+    await client.getSubmission('../user');
+    expect(fetch.mock.calls[0]?.[0] as string).toContain('/submission/..%2Fuser');
+  });
+
+  it('content that is not a submission is an error, not an empty answer', async () => {
+    const client = new JotformClient(
+      { apiHost: HOST, apiKey: KEY },
+      { fetch: respond({ responseCode: 200, content: [] }) },
+    );
+    await expect(client.getSubmission('9001')).rejects.toThrow('content is not a submission');
+  });
+
+  it('a Jotform error (e.g. no such submission) is thrown with its own message', async () => {
+    const client = new JotformClient(
+      { apiHost: HOST, apiKey: KEY },
+      { fetch: respond({ responseCode: 404, message: 'Submission not found' }, 404) },
+    );
+    await expect(client.getSubmission('1')).rejects.toThrow(
+      'Jotform error 404: Submission not found',
+    );
+  });
+});
+
 describe('Jotform settings', () => {
   const parse = (env: Record<string, string>) => runtimeOptionsSchema.parse(env);
 
