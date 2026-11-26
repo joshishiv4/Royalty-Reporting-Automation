@@ -537,13 +537,19 @@ export async function runQueue(
 /**
  * How long a 'done' row is kept before `pruneDoneItems` removes it.
  *
- * TWENTY DAYS, AND THE FLOOR IS TWENTY-FOUR HOURS. Anything inside
+ * THREE DAYS, AND THE FLOOR IS TWENTY-FOUR HOURS. Anything inside
  * DEFAULT_FRESH_DONE_WINDOW_MS is load-bearing: enqueue reads today's 'done'
  * rows to decide whether a target has already been refreshed, so pruning into
- * that window makes the dedupe blind and re-queues work the same day. Twenty
- * days clears it twenty times over and still removes the overwhelming majority
- * of the table. Past it a 'done' row has no reader at all - the dedupe cannot
- * see it, and the claim and countEligible both filter on 'pending'.
+ * that window makes the dedupe blind and re-queues work the same day. Past it a
+ * 'done' row has no reader at all - the dedupe cannot see it, and the claim and
+ * countEligible both filter on 'pending'. Three days keeps two clear days of
+ * margin over the floor for a debugging session, and nothing more.
+ *
+ * WHY NOT TWENTY ANY MORE. Twenty was 0063's window (13 Oct 2026). At ~58,000
+ * rows a day it HOLDS about 1.16M rows - and on 26 Nov 2026, with the table at
+ * that size, client_session_sync failed with a statement timeout on sync_queue:
+ * the same failure 0063 was written for, at 1,506,074 rows. Three days holds
+ * about 175,000.
  *
  * WHY ANY OF THIS. sync_queue was never pruned. It reached 1,506,074 'done' rows
  * by 13 Oct 2026, at which point count(*) over the table no longer completed
@@ -551,7 +557,41 @@ export async function runQueue(
  * with a statement timeout, leaving 3,500 items unqueued. Two indexes (0050,
  * 0060) each moved that bottleneck without shrinking the table.
  */
-export const DEFAULT_RETENTION_MS = 20 * 24 * 60 * 60 * 1000;
+export const DEFAULT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * The most rows sync_queue should hold, whatever the age rule left.
+ *
+ * A SAFETY NET, NOT THE RULE. At today's volume the 3-day window keeps the table
+ * near 175,000 rows and this never fires. It is for the day that is not normal -
+ * a backfill or a re-seed that queues several days' worth at once - when the age
+ * rule alone would let the table cross the size at which statements started
+ * timing out (~1.16M on 26 Nov, ~1.5M on 13 Oct). 300,000 is well under both.
+ *
+ * It removes the OLDEST 'done' rows and nothing else, and never inside the
+ * 24-hour floor: if the last day alone is over the cap, that is reported as
+ * `overCap`, not "fixed" by blinding the dedupe.
+ */
+export const DEFAULT_QUEUE_ROW_CAP = 300_000;
+
+/**
+ * How old a resolved 'dead' row must be before it is removed.
+ *
+ * TWO DAYS, AND IT MUST STAY UNDER DEFAULT_RETENTION_MS. "Resolved" is proved by
+ * a LATER 'done' row for the same target, and that row is itself pruned after
+ * the retention window (3 days). A dead row waiting longer than that would
+ * usually outlive its own proof and never be removed - the 7 days first proposed
+ * on 26 Nov 2026 would have cleared almost nothing. With the wait under the
+ * window, every resolution is visible to at least one hourly run while the dead
+ * row is old enough: the done row lives from when it finished until 3 days
+ * later, and it always finishes after the dead row died. pruneQueue runs this
+ * step BEFORE the age rule for the same reason.
+ *
+ * Two days still gives the 06:00 sweep two mornings to report the failure
+ * before the record of it goes. A 'dead' row with no later 'done' row is never
+ * removed.
+ */
+export const DEFAULT_RESOLVED_DEAD_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;
 
 /** How many rows one prune statement removes. See 0063 on why this is batched. */
 export const DEFAULT_PRUNE_BATCH = 5000;
@@ -610,6 +650,217 @@ export async function pruneDoneItems(
     if (n < batch) return { removed, batches, done: true };
   }
   return { removed, batches, done: false };
+}
+
+/**
+ * Removes 'dead' rows whose target has been done since, a batch per statement.
+ *
+ * A dead row is final: the next sync queues the same target again as a NEW row
+ * (enqueue_sync_items skips only targets with a pending or in_progress row). When
+ * that row reaches 'done' the dead one is resolved - but it still reads as a live
+ * problem to the alert sweep, whose parked total caps at 1,000 and was already
+ * past it (1,001 dead rows, 26 Nov 2026). `prune_resolved_dead_sync_queue` (0073)
+ * decides "resolved" in SQL; this only loops it.
+ *
+ * A dead row with no later 'done' row is still failing and is never removed.
+ */
+export async function pruneResolvedDeadItems(
+  db: SupabaseClient,
+  opts: Pick<PruneOptions, 'before' | 'batch' | 'maxBatches' | 'now'> = {},
+): Promise<{ readonly removed: number; readonly batches: number; readonly done: boolean }> {
+  const now = opts.now ?? (() => Date.now());
+  const before = opts.before ?? new Date(now() - DEFAULT_RESOLVED_DEAD_RETENTION_MS).toISOString();
+  const batch = opts.batch ?? DEFAULT_PRUNE_BATCH;
+  const maxBatches = opts.maxBatches ?? 1000;
+
+  let removed = 0;
+  let batches = 0;
+  for (; batches < maxBatches;) {
+    const n = await db.rpc<number>('prune_resolved_dead_sync_queue', {
+      p_before: before,
+      p_limit: batch,
+    });
+    batches += 1;
+    removed += n;
+    if (n < batch) return { removed, batches, done: true };
+  }
+  return { removed, batches, done: false };
+}
+
+export interface CapResult {
+  /** The estimate the cap was measured against, before anything was removed. */
+  readonly estimatedRows: number;
+  readonly cap: number;
+  readonly removed: number;
+  /**
+   * True when the table is still over the cap and the only 'done' rows left are
+   * inside the 24-hour floor. Not fixable by deleting - it means a day's volume
+   * alone exceeds the cap - so it is reported for a human, never forced.
+   */
+  readonly overCap: boolean;
+}
+
+/**
+ * Brings sync_queue under `cap` rows by removing the oldest 'done' rows.
+ *
+ * THE SIZE IS AN ESTIMATE, READ ONCE. `sync_queue_estimated_rows` (0073) returns
+ * n_live_tup, never count(*) - on this table count(*) is the statement that
+ * stopped completing (cancelled at 10,141 ms, 13 Oct 2026). It is read once and
+ * the excess worked off locally: the stats behind it trail a delete by up to a
+ * second, so re-reading between batches could over-delete by a batch.
+ *
+ * NEVER INSIDE THE FLOOR. The cutoff is now - 24h, and prune_sync_queue clamps it
+ * there again in SQL. If the oldest-first deletes come back short before the
+ * excess is gone, everything older than a day is already gone and the cap cannot
+ * be met without blinding enqueue's dedupe: that is `overCap`, for an alert.
+ *
+ * Runs AFTER the age prune, so on a normal day the estimate is under the cap and
+ * this costs one cheap read.
+ */
+export async function enforceQueueCap(
+  db: SupabaseClient,
+  opts: { cap?: number; batch?: number; maxBatches?: number; now?: () => number } = {},
+): Promise<CapResult> {
+  const now = opts.now ?? (() => Date.now());
+  const cap = opts.cap ?? DEFAULT_QUEUE_ROW_CAP;
+  const batch = opts.batch ?? DEFAULT_PRUNE_BATCH;
+  const maxBatches = opts.maxBatches ?? 1000;
+
+  const estimatedRows = Number(await db.rpc<number>('sync_queue_estimated_rows', {}));
+  const excess = estimatedRows - cap;
+  if (!(excess > 0)) return { estimatedRows, cap, removed: 0, overCap: false };
+
+  const floor = new Date(now() - DEFAULT_FRESH_DONE_WINDOW_MS).toISOString();
+  let removed = 0;
+  let floorReached = false;
+  for (let batches = 0; batches < maxBatches && removed < excess; batches += 1) {
+    const want = Math.min(batch, excess - removed);
+    const n = await db.rpc<number>('prune_sync_queue', { p_before: floor, p_limit: want });
+    removed += n;
+    // Short: nothing older than the floor is left to take.
+    if (n < want) {
+      floorReached = true;
+      break;
+    }
+  }
+  // Running out of maxBatches is NOT overCap: the next run carries on. Only the
+  // floor - a day's volume alone over the cap - is something a human must see.
+  return { estimatedRows, cap, removed, overCap: floorReached && removed < excess };
+}
+
+/** The job name a prune's sync_run row carries, so the alert sweep reports it. */
+export const QUEUE_PRUNE_JOB = 'queue_prune';
+
+export interface QueuePruneSummary {
+  readonly done: { readonly removed: number; readonly batches: number; readonly done: boolean };
+  readonly resolvedDead: {
+    readonly removed: number;
+    readonly batches: number;
+    readonly done: boolean;
+  };
+  readonly cap: CapResult;
+  /** 'failed' only for overCap; a thrown error is the caller's to record. */
+  readonly state: 'ok' | 'partial' | 'failed';
+}
+
+/**
+ * The whole maintenance step, in the order that keeps it cheap.
+ *
+ * 1. RESOLVED DEAD: 'dead' rows past 2 days whose target has been done since.
+ *    FIRST, because the proof of "done since" is a 'done' row the next step may
+ *    delete (see DEFAULT_RESOLVED_DEAD_RETENTION_MS).
+ * 2. AGE: 'done' rows past the retention window (3 days).
+ * 3. CAP: only then, if the table is still over the cap, the oldest 'done' rows
+ *    down to the 24-hour floor. Last, because on a normal day the age rule
+ *    already brought the table under it and this is one cheap read.
+ *
+ * NEVER 'pending' OR 'in_progress' - including an item mid-retry, which lives on
+ * its original row as 'pending' with a later next_attempt_at. Every delete here
+ * goes through a SQL function whose predicate names 'done' or 'dead' explicitly.
+ *
+ * `partial` when a step stopped at maxBatches (the next hourly run carries on);
+ * `failed` only when the cap cannot be met without entering the floor.
+ */
+export async function pruneQueue(
+  db: SupabaseClient,
+  opts: {
+    readonly retentionMs?: number;
+    readonly resolvedDeadRetentionMs?: number;
+    readonly cap?: number;
+    readonly batch?: number;
+    readonly maxBatches?: number;
+    readonly now?: () => number;
+  } = {},
+): Promise<QueuePruneSummary> {
+  const now = opts.now ?? (() => Date.now());
+  const shared = {
+    now,
+    ...(opts.batch === undefined ? {} : { batch: opts.batch }),
+    ...(opts.maxBatches === undefined ? {} : { maxBatches: opts.maxBatches }),
+  };
+
+  const retentionMs = opts.retentionMs ?? DEFAULT_RETENTION_MS;
+  // Never wait longer than the done rows live, or the proof is gone first.
+  const deadWaitMs = Math.min(
+    opts.resolvedDeadRetentionMs ?? DEFAULT_RESOLVED_DEAD_RETENTION_MS,
+    retentionMs,
+  );
+  const resolvedDead = await pruneResolvedDeadItems(db, {
+    ...shared,
+    before: new Date(now() - deadWaitMs).toISOString(),
+  });
+  const done = await pruneDoneItems(db, {
+    ...shared,
+    before: new Date(now() - retentionMs).toISOString(),
+  });
+  const cap = await enforceQueueCap(db, {
+    ...shared,
+    ...(opts.cap === undefined ? {} : { cap: opts.cap }),
+  });
+
+  const state: QueuePruneSummary['state'] = cap.overCap
+    ? 'failed'
+    : done.done && resolvedDead.done
+      ? 'ok'
+      : 'partial';
+  return { done, resolvedDead, cap, state };
+}
+
+/**
+ * Writes the prune's outcome to sync_run, where the alert sweep already looks.
+ *
+ * WHY A RUN ROW. The prune failed on 18, 20 and 24 Nov 2026 and nobody was told:
+ * a failed Actions run mails at most whoever last edited the cron, and the sweep
+ * reads only sync_run and sync_queue. A 'failed' row here is reported by the
+ * next sweep like any crashed pass. Written once, at the end, because the run is
+ * a minute long - there is no heartbeat to keep.
+ *
+ * Best effort: if the database is what failed, this fails too, and the non-zero
+ * exit (a red Actions run) is the signal that is left.
+ */
+export async function recordQueuePruneRun(
+  db: SupabaseClient,
+  run: {
+    readonly runId: string;
+    readonly kBusiness: string;
+    readonly startedAt: string;
+    readonly finishedAt: string;
+    readonly state: 'ok' | 'partial' | 'failed';
+    readonly error: string | null;
+  },
+): Promise<void> {
+  await db.insert('sync_run', [
+    {
+      run_id: run.runId,
+      job_name: QUEUE_PRUNE_JOB,
+      k_business: run.kBusiness,
+      started_at: run.startedAt,
+      finished_at: run.finishedAt,
+      heartbeat_at: run.finishedAt,
+      state: run.state,
+      ...(run.error === null ? {} : { error: run.error }),
+    },
+  ]);
 }
 
 function targetKey(i: { work_type: string; target_key: string; k_business: string }): string {

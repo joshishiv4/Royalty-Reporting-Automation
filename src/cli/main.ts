@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 import { SWEEP_CRASH_WINDOW_MS, notifyDeadLetter } from '../notify/index.js';
+import { randomUUID } from 'node:crypto';
 import {
   DEFAULT_FRESH_DONE_WINDOW_MS,
+  DEFAULT_QUEUE_ROW_CAP,
   DEFAULT_RETENTION_MS,
   pruneDoneItems,
+  pruneQueue,
+  recordQueuePruneRun,
 } from '../sync/queue.js';
 import { SupabaseClient } from '../supabase/client.js';
 import { loadConfig } from '../config/index.js';
@@ -34,9 +38,12 @@ Commands:
   sync:full-parallel Run every sync pass in dependency waves, in parallel within each
                      wave. Aimed at a local backfill: each pass seeds ONCE and drains
                      within its own budget (default 90 min per pass).
-  queue:prune        Delete sync_queue rows that are done and past the retention
-                     window (20 days). DRY RUN unless --apply is given.
-                       --apply  --days=N  --batch=N  --max-batches=N
+  queue:prune        Keep sync_queue bounded: delete done rows past the retention
+                     window (3 days), dead rows over 2 days old whose target has
+                     since been done, then the oldest done rows while the table is
+                     over the cap (300,000), never inside the last 24 hours.
+                     DRY RUN unless --apply is given. Exit 1 if over the cap.
+                       --apply  --days=N  --cap=N  --batch=N  --max-batches=N
   config:check       Resolve and validate config only. Makes no network calls.
   config:show        Print the resolved config with credentials fingerprinted.
   help               Show this message.
@@ -276,9 +283,16 @@ async function main(argv: readonly string[]): Promise<number> {
        * re-queues the same work the same day. Checked here rather than left to
        * the caller, because the caller is a cron line somebody edits at 2am.
        *
-       * EXIT 0 WHEN THE BACKLOG IS NOT YET CLEAR. The first runs meet 1.5M rows
-       * and stop at maxBatches by design; 'done: false' is progress, not failure.
-       * The run that cannot reach the database fails via the throw.
+       * EXIT 0 WHEN THE BACKLOG IS NOT YET CLEAR. The first runs meet a backlog
+       * and stop at maxBatches by design; 'partial' is progress, not failure -
+       * the next hourly run carries on.
+       *
+       * EXIT 1, AND A 'failed' RUN ROW, when the prune throws or the table is
+       * over the cap with nothing older than 24 hours left to remove. The row is
+       * what the morning alert sweep reads (it reports failed sync_run rows); the
+       * exit code turns the Actions run red, which is the signal left when the
+       * database itself is what failed. The prune failed silently on 18, 20 and
+       * 24 Nov 2026 - that is what this closes.
        */
       const days = Number(readOption(argv, 'days') ?? String(DEFAULT_RETENTION_MS / 86_400_000));
       if (!Number.isFinite(days) || days <= 1) {
@@ -289,31 +303,83 @@ async function main(argv: readonly string[]): Promise<number> {
         );
         return 1;
       }
+      const cap = Number(readOption(argv, 'cap') ?? String(DEFAULT_QUEUE_ROW_CAP));
+      if (!Number.isFinite(cap) || cap <= 0) {
+        console.error('--cap must be a positive number of rows.');
+        return 1;
+      }
       const batch = readOption(argv, 'batch');
       const maxBatches = readOption(argv, 'max-batches');
-      const db = new SupabaseClient(config.supabase);
-      const result = await pruneDoneItems(db, {
-        before: new Date(Date.now() - days * 86_400_000).toISOString(),
-        ...(batch === null ? {} : { batch: Number(batch) }),
-        ...(maxBatches === null ? {} : { maxBatches: Number(maxBatches) }),
-        dryRun: !argv.includes('--apply'),
-      });
       const applied = argv.includes('--apply');
-      logger.info('queue prune', { days, applied, ...result });
+      const db = new SupabaseClient(config.supabase);
+
+      if (!applied) {
+        // The dry run stays what it was: a count of what the AGE rule would take.
+        const result = await pruneDoneItems(db, {
+          before: new Date(Date.now() - days * 86_400_000).toISOString(),
+          ...(batch === null ? {} : { batch: Number(batch) }),
+          dryRun: true,
+        });
+        logger.info('queue prune', { days, applied, ...result });
+        console.log(
+          JSON.stringify(
+            {
+              env: config.env,
+              days,
+              applied,
+              ...result,
+              note: 'dry run - re-run with --apply to delete',
+            },
+            null,
+            2,
+          ),
+        );
+        return 0;
+      }
+
+      const runId = randomUUID().replace(/-/g, '').slice(0, 8);
+      const startedAt = new Date().toISOString();
+      let summary: Awaited<ReturnType<typeof pruneQueue>> | null = null;
+      let error: string | null = null;
+      try {
+        summary = await pruneQueue(db, {
+          retentionMs: days * 86_400_000,
+          cap,
+          ...(batch === null ? {} : { batch: Number(batch) }),
+          ...(maxBatches === null ? {} : { maxBatches: Number(maxBatches) }),
+        });
+        if (summary.state === 'failed') {
+          error =
+            `sync_queue is over the ${String(cap)}-row cap (estimated ` +
+            `${String(summary.cap.estimatedRows)}) with no done rows older than 24h left to remove`;
+        }
+      } catch (e) {
+        error = e instanceof Error ? `${e.name}: ${e.message}` : 'unknown error';
+      }
+      const state = error === null ? (summary?.state ?? 'failed') : 'failed';
+
+      try {
+        await recordQueuePruneRun(db, {
+          runId,
+          kBusiness: config.wl.kBusiness,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          state,
+          error,
+        });
+      } catch {
+        // The database is likely what failed; the exit code below still says so.
+      }
+
+      logger.info('queue prune', { days, cap, applied, runId, state, ...(summary ?? {}) });
       console.log(
         JSON.stringify(
-          {
-            env: config.env,
-            days,
-            applied,
-            ...result,
-            ...(applied ? {} : { note: 'dry run - re-run with --apply to delete' }),
-          },
+          { env: config.env, days, cap, applied, runId, state, error, summary },
           null,
           2,
         ),
       );
-      return 0;
+      return state === 'failed' ? 1 : 0;
     }
 
     case 'alert:sweep': {
