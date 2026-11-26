@@ -791,7 +791,24 @@ behaviour is recorded here.
   `2026-11-25 04:58:46` (EST, UTC-5) on an account set to Asia/Kolkata. Stored
   verbatim, never parsed as an instant.
 - **Daily API limit by plan** — the Free test account showed `limit-left: 994` of
-  1,000. Polling hourly is 24 calls a day.
+  1,000. Polling hourly is 24 calls a day. The task 039 webhook adds one
+  `GET /submission/{id}` per submission: ~500 a month, well inside it.
+
+### The form webhook (task 039, from the docs 26 Nov 2026 — not yet measured)
+
+- **Documented:** "The Webhooks integration has a 5-second request timeout by default",
+  raisable only on Enterprise (jotform.com/help/245). That is why the route answers first
+  and works under `waitUntil` afterwards.
+- **Not documented, assumed until the first real call:** the body. Jotform's samples read
+  `submissionID` and `rawRequest` from a form POST, and a user on its help pages calls it
+  multipart/form-data. The route reads `submissionID` from multipart, urlencoded or JSON
+  and ignores everything else.
+- **Not documented:** whether a `?key=` query string on the webhook URL survives, any
+  retry on failure, any request signing, and support for custom headers (asked on its
+  help pages, unanswered). The route therefore assumes **no retry** — the hourly poll is
+  the backstop — and no signature, which is why it trusts only the id.
+- **Not checked against the docs** (the endpoint list did not render): `GET /submission/{id}`.
+  Assumed to answer the same submission shape as the list.
 
 ## GoHighLevel
 

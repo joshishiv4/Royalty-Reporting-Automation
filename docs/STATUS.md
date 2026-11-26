@@ -2,7 +2,7 @@
 
 Last updated **26 Nov 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed. (The 26 Nov update covers the `sync_queue`
-entry under it only. The 25 Nov update covers the lesson sign-off
+entry under it and the lesson sign-off webhook entry (task 039) under "In progress" only. The 25 Nov update covers the lesson sign-off
 entries under "In progress" only, phase 3 included. The 28 Oct update covers the client note only:
 dropping its date, `0066`, copying it into `teacher_note`, `0067`, and one row per note,
 `0068`. The 19 Oct update covers the client-note entry only; the
@@ -881,6 +881,33 @@ First-Last-11-24-2026-1000AM.pdf`, tagged. Three fake-lessonId test submissions 
   secrets are not set.
 - **Phase 4, the month-end merge** (`FIRST LAST - FI.pdf`), not started; needs the
   grace-period answer (task 038, open question 2) before 30 Nov.
+
+### Lesson sign-off, Jotform webhook — code complete, not deployed (task 039, 26 Nov 2026)
+
+New Vercel route `api/jotform-webhook.ts`: Jotform calls it on every submission, it answers
+at once (Jotform's webhook times out after 5 s) and, under Vercel's `waitUntil`, reads the
+submission back from the Jotform API, stores and judges it with phase 2's functions and, if
+signed, files it with phase 3's `processFiling` under the `lesson_signoff_file` job lock,
+polling up to 45 s for the PDF. Target: filed within a minute instead of at the next hourly
+run, which stays as the backstop. No migration. New dependency `@vercel/functions` (pinned
+3.11.1) for `waitUntil` — chosen by the user over working only inside Jotform's 5 s.
+
+**Verified:** `npm run verify` green, 1,035 tests, 27 of them new; 11 mutations each turned
+the suite red (filing without the lock, the lock not released on a throw, overrunning the
+budget, re-filing a filed lesson, overwriting a known submission, storing another form's
+submission, an unchecked key, an unvalidated id, the key or a host left in the log line).
+
+**Not done / blocked:**
+
+- **Not measured against Jotform.** Its docs give only the 5 s timeout. Assumed until the
+  first real call: the body is multipart with `submissionID`; the `?key=` query string is
+  kept on the URL; `GET /submission/{id}` works on the Free plan. The route also reads
+  urlencoded and JSON bodies.
+- Deploy: Vercel needs `JOTFORM_WEBHOOK_KEY` and the phase 1-3 settings (RUNBOOK, "Jotform
+  webhook"); then the URL goes on the test form's Webhooks integration, and one signed test
+  lesson is timed to its Drive folder.
+- The webhook files only after the hourly `lesson_signoff_file` pass has run once on that
+  database (it creates the lock's row).
 
 ### The two transaction reports — code complete, waiting on one migration (17 Sep 2026)
 

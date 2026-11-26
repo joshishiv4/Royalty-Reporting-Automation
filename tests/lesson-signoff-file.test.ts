@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import type { DriveFile } from '../src/google/drive.js';
 import { FOLDER_MIME } from '../src/google/drive.js';
 import type { SmtpClient } from '../src/notify/smtp.js';
 import {
@@ -13,6 +12,7 @@ import {
   reportMissingPdfs,
   unfiledSignedLessons,
 } from '../src/sync/lesson-signoff-file.js';
+import { fakeDrive, type FakeFile } from './helpers/fake-drive.js';
 import { fakePostgrest, type Row } from './helpers/fake-postgrest.js';
 
 const K_BUSINESS = '111111';
@@ -40,81 +40,6 @@ function lesson(id: string, time: string, over: Partial<Row> = {}): Row {
     pdf_missing_reported_at: null,
     ...over,
   };
-}
-
-// ---------------------------------------------------------------------------
-// An in-memory Drive that understands the two query shapes the module sends.
-// ---------------------------------------------------------------------------
-
-interface FakeFile {
-  id: string;
-  name: string;
-  mimeType?: string;
-  parents: string[];
-  appProperties?: Record<string, string>;
-}
-
-const unq = (s: string): string => s.replace(/\\(.)/g, '$1');
-
-function fakeDrive(initial: FakeFile[]) {
-  const files: FakeFile[] = initial.map((f) => ({ ...f, parents: [...f.parents] }));
-  const calls = { list: 0, create: [] as string[], move: [] as string[] };
-  let next = 1;
-  const drive = {
-    files,
-    calls,
-    listFiles(query: string): Promise<DriveFile[]> {
-      calls.list += 1;
-      const strings = [...query.matchAll(/'((?:[^'\\]|\\.)*)'/g)].map((m) => unq(m[1] ?? ''));
-      if (query.includes('mimeType')) {
-        const [parent, name] = strings;
-        return Promise.resolve(
-          files.filter(
-            (f) =>
-              f.mimeType === FOLDER_MIME && f.parents.includes(parent ?? '') && f.name === name,
-          ),
-        );
-      }
-      const [inbox, name, , tagValue] = strings;
-      return Promise.resolve(
-        files.filter(
-          (f) =>
-            (f.parents.includes(inbox ?? '') && f.name === name) ||
-            f.appProperties?.[LESSON_TAG] === tagValue,
-        ),
-      );
-    },
-    async createFolder(name: string, parentId: string): Promise<DriveFile> {
-      calls.create.push(name);
-      await Promise.resolve(); // let a concurrent caller interleave, as a real request would
-      const f: FakeFile = {
-        id: `folder-${String(next++)}`,
-        name,
-        mimeType: FOLDER_MIME,
-        parents: [parentId],
-      };
-      files.push(f);
-      return f;
-    },
-    moveFile(
-      fileId: string,
-      m: {
-        fromParent: string;
-        toParent: string;
-        name: string;
-        appProperties: Record<string, string>;
-      },
-    ): Promise<DriveFile> {
-      calls.move.push(fileId);
-      const f = files.find((x) => x.id === fileId);
-      if (f === undefined) return Promise.reject(new Error('no such file'));
-      f.parents = f.parents.filter((p) => p !== m.fromParent).concat(m.toParent);
-      f.name = m.name;
-      f.appProperties = { ...f.appProperties, ...m.appProperties };
-      return Promise.resolve({ ...f });
-    },
-  };
-  return drive;
 }
 
 const pdfInInbox = (id: string, submissionId: string): FakeFile => ({

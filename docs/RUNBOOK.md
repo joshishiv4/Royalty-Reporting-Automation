@@ -182,6 +182,39 @@ to `SIGNOFF_TO`, once per lesson. The usual cause is the Jotform integration swi
 pointed elsewhere. Nothing needs re-running once it is fixed — the pass looks for every
 unfiled signed lesson's PDF every hour.
 
+#### Jotform webhook: filed within a minute (task 039, optional)
+
+Without it a signature is filed at the next hourly run. With it, Jotform calls
+`/api/jotform-webhook` on Vercel on every submission, and the route checks and files that
+one submission at once (polling up to 45 s for the PDF). The hourly passes stay on as the
+backstop, so the webhook can be switched off at any time by removing it from the form.
+
+| Variable              | Kind       | Rotatable | Owner / source                                                                                                  |
+| --------------------- | ---------- | --------- | --------------------------------------------------------------------------------------------------------------- |
+| `JOTFORM_WEBHOOK_KEY` | credential | yes       | ours: a long random string (`openssl rand -hex 32`). **Vercel only.** Unset = the route answers 401 to everyone |
+
+**The webhook runs on Vercel, not GitHub Actions**, so Vercel needs its own copy of every
+setting it reads: `JOTFORM_WEBHOOK_KEY`, phase 1's (`SIGNOFF_TO`, `SIGNOFF_START_DATE`,
+`JOTFORM_FORM_HOST`, `JOTFORM_FORM_ID`, `SMTP_HOST`), phase 2's (`JOTFORM_API_HOST`,
+`JOTFORM_API_KEY`) and phase 3's seven `GOOGLE_*`. One missing → the route answers 503
+naming it, and the hourly sync carries on as before.
+
+**Jotform side, once per form:** Settings → Integrations → **Webhooks** → paste
+`https://<vercel app>/api/jotform-webhook?key=<JOTFORM_WEBHOOK_KEY>` → Add → Complete
+integration. Submit one test lesson; the Vercel function log shows one
+`jotform_webhook` line with its result (`filing` / `checked` / `left-for-hourly`).
+
+**Why the key is in the URL:** Jotform's webhook cannot send an Authorization header, so
+the bearer check the other routes use is impossible here. The URL may therefore appear in
+Vercel's request log. That is accepted because the key is worth little: the route takes
+only the submission id from the call and re-reads the submission from the Jotform API, so
+anyone holding the key can at most make it re-check a real submission — never sign or
+file one. The key is still redacted from every line the route itself logs.
+
+**First run on a fresh database:** the webhook files under the `lesson_signoff_file` job
+lock, whose row the hourly pass creates on its first run. Until that has run once, the
+webhook signs but leaves the filing to the hourly pass.
+
 ## 2. Where they live
 
 | Environment       | Storage                                     | How the app reads it                   |
@@ -425,6 +458,20 @@ Read by `lesson_signoff_file` only (task 038, phase 3). All three Google credent
 
 A refresh token is **full read/write on that account's Drive**. Treat an exposed one as §5
 describes: revoke first.
+
+### 4i. `JOTFORM_WEBHOOK_KEY`
+
+Read by `api/jotform-webhook.ts` only (task 039), from Vercel's environment. Redacted from
+every line the route logs. It is in the webhook URL on the form, so rotating it is two edits
+that must happen together; a submission that arrives in between is refused (401) and filed
+by the hourly passes instead, so nothing is lost.
+
+1. Make a new value: `openssl rand -hex 32`.
+2. Vercel → the project → Settings → Environment Variables → `JOTFORM_WEBHOOK_KEY` → the new
+   value → redeploy.
+3. Jotform → the form → Settings → Integrations → Webhooks → remove the old URL, add it again
+   with `?key=<new value>`.
+4. Verify: submit a test lesson; Vercel's log shows a `jotform_webhook` line, not a 401.
 
 ## 5. If a credential leaks
 

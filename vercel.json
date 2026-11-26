@@ -25,6 +25,9 @@
     },
     "api/sync-status.ts": {
       "maxDuration": 60
+    },
+    "api/jotform-webhook.ts": {
+      "maxDuration": 60
     }
   },
   "headers": [
