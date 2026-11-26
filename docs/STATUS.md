@@ -1,7 +1,8 @@
 # Status and plan
 
-Last updated **25 Nov 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (The 25 Nov update covers the lesson sign-off
+Last updated **26 Nov 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (The 26 Nov update covers the `sync_queue`
+entry under it only. The 25 Nov update covers the lesson sign-off
 entries under "In progress" only, phase 3 included. The 28 Oct update covers the client note only:
 dropping its date, `0066`, copying it into `teacher_note`, `0067`, and one row per note,
 `0068`. The 19 Oct update covers the client-note entry only; the
@@ -12,14 +13,14 @@ is, because it starts M05.)
 
 ## The plan
 
-| Phase | Scope | Status |
-|---|---|---|
-| **M01** foundation | Config, secrets, auth, HTTP client, retry, logging, health | ✅ done |
-| **M02** schema | Tables for people, money, sessions, control plane, raw payloads | ✅ done |
-| **M03** sync engine | The code that reads WL and writes to those tables | ✅ done — 17 passes, 6 scheduled jobs, live |
-| **M04a** GHL matching | Contact matching against GoHighLevel | ✅ done — `src/ghl/`, `ghl_match_sync` runs nightly |
-| **M04b** royalty calculation | The number this project exists to produce | ⬜ **not started — this is the next work**. Its missing input got closer on 17 Sep: WL's own transaction reports carry a revenue category (see below) |
-| **M05** portal | Student portal reading the same database | 🟦 **a student signs in, 9 Oct 2026** — `0053` wires the sign-in, `0054` made it reachable, and a real student has now completed one. Task 028; teacher sign-in is task 032 |
+| Phase                        | Scope                                                           | Status                                                                                                                                                                      |
+| ---------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **M01** foundation           | Config, secrets, auth, HTTP client, retry, logging, health      | ✅ done                                                                                                                                                                     |
+| **M02** schema               | Tables for people, money, sessions, control plane, raw payloads | ✅ done                                                                                                                                                                     |
+| **M03** sync engine          | The code that reads WL and writes to those tables               | ✅ done — 17 passes, 6 scheduled jobs, live                                                                                                                                 |
+| **M04a** GHL matching        | Contact matching against GoHighLevel                            | ✅ done — `src/ghl/`, `ghl_match_sync` runs nightly                                                                                                                         |
+| **M04b** royalty calculation | The number this project exists to produce                       | ⬜ **not started — this is the next work**. Its missing input got closer on 17 Sep: WL's own transaction reports carry a revenue category (see below)                       |
+| **M05** portal               | Student portal reading the same database                        | 🟦 **a student signs in, 9 Oct 2026** — `0053` wires the sign-in, `0054` made it reachable, and a real student has now completed one. Task 028; teacher sign-in is task 032 |
 
 **M03 is complete and running unattended.** Seventeen passes read WellnessLiving
 into eighteen tables, grouped into six named jobs on their own crons, with a lease
@@ -31,6 +32,47 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 **What is left is the calculation itself.** Everything above is input. The royalty
 number — the thing the project is named for — has not been written. See "Not
 started" below.
+
+### `sync_queue` bounded, 26 Nov 2026 - tested, `0073` not yet applied
+
+The hourly sync failed in `client_session_sync` with `57014: canceling statement
+due to statement timeout [table=sync_queue]` (Actions run 45712245583). The table
+was ~1.16M rows (estimated): ~1,159,000 `done`, 31 `pending`, 1,001 `dead`;
+~709,000 `session_attendance`. That is what `0063`'s 20-day window holds at
+~58,000 rows a day — not a missed prune. The daily prune had also failed on 18,
+20 and 24 Nov (3 of 8 runs), silently.
+
+**Written (task 035, reopened):** `0073` (oldest-first prune off a new index, the
+24 h floor in SQL, `sync_queue_estimated_rows()`, `prune_resolved_dead_sync_queue`);
+`pruneQueue` in `src/sync/queue.ts` — resolved dead rows over 2 days, then `done`
+over **3 days**, then a **300,000-row cap**; `queue:prune` records a `queue_prune`
+sync_run row and exits 1 on failure so the sweep reports it; `queue-prune.yml`
+**hourly at :50**. See DATA-MODEL, "Three days, hourly, with a cap".
+
+**Changed from the ticket: resolved dead rows go after 2 days, not 7.** The proof
+of "resolved" is a later `done` row, and those now live 3 days, so a 7-day wait
+would have outlived its proof and removed almost nothing.
+
+**Verified:** `npm run verify` passes (82 files, 1,008 tests). Mutation-checked:
+each of these turns `tests/sync-queue-prune.test.ts` red — retention of 12 h; the
+cap ignoring the 24 h floor; the cap ignoring its excess; `overCap` on running out
+of batches; the age rule run before the resolved-dead step; a dead wait of 7 days
+with the clamp to the retention removed.
+
+**Why the prune failed, read from the logs:** all three runs (18, 20, 24 Nov)
+died 9–15 s into `queue:prune --apply` with `57014: canceling statement due to
+statement timeout` — a `prune_sync_queue` batch itself timing out, which is what
+`0073`'s oldest-first index addresses. They ran at 14:17–16:13 UTC, not 05:30:
+GitHub had delayed the scheduled runs by hours, into the hourly syncs.
+
+**Narrowed, not pinned:** in run 45712245583 `client_session_sync` had finished
+every item it claimed (`claimed` = `done`, 0 dead) when a `sync_queue` statement
+timed out — a queue statement (claim, reclaim or the enqueue reads), not item
+processing. The log does not name which; it is the table size either way.
+
+**Not done:** `0073` not applied (apply with the sync idle); then the first hourly
+runs clear the backlog, 500k rows a step per run. Re-measure after, and watch 24 h
+of green hourly `sync` runs.
 
 ### Each WL note is its own row, 28 Oct 2026 - written, `0068` not yet applied
 
@@ -109,20 +151,20 @@ unlike the 9 Oct orphaned run.
 **The cause is the one this file has carried since 23 Sep: the table is never
 pruned.** Measured 13 Oct:
 
-| query | rows | time |
-|---|---|---|
-| `state = 'done'` | **1,506,074** | 3,222 ms |
-| `state = 'pending'` | 3,500 | 1,055 ms |
-| `work_type = 'session_attendance'` | 943,399 | 2,354 ms |
-| `count(*)` whole table | — | **cancelled, 10,141 ms** |
+| query                              | rows          | time                     |
+| ---------------------------------- | ------------- | ------------------------ |
+| `state = 'done'`                   | **1,506,074** | 3,222 ms                 |
+| `state = 'pending'`                | 3,500         | 1,055 ms                 |
+| `work_type = 'session_attendance'` | 943,399       | 2,354 ms                 |
+| `count(*)` whole table             | —             | **cancelled, 10,141 ms** |
 
 A count of the table no longer completes. Counting 3,500 rows through a partial
 index takes a second. Growth: 532,415 (23 Sep) → 869,798 (1 Oct) → 1,506,074
 `done` (13 Oct), nearly tripled in three weeks.
 
 **Two indexes bought time; neither shrank the table.** `0050` fixed the fresh-done
-dedupe read (8.5-9.7 s → 0.28-1.1 s) and said so itself: *"It does not shrink the
-table, so the cleanup above is still open."* `0060` fixed the post-drain count.
+dedupe read (8.5-9.7 s → 0.28-1.1 s) and said so itself: _"It does not shrink the
+table, so the cleanup above is still open."_ `0060` fixed the post-drain count.
 The failure has now moved to the INSERT in `enqueue_sync_items` - a third
 statement, same cause.
 
@@ -178,7 +220,7 @@ being an escalation route.
 
 **The isolation check passes, and finding that out found a bug that would have
 broken every sign-in.** `link_signed_in_identity()` used `min(i.id)` to pull the
-single matching identity, and PostgreSQL has no min/max *aggregate* for `uuid` —
+single matching identity, and PostgreSQL has no min/max _aggregate_ for `uuid` —
 the type sorts, so it reads as though it should work. `check_function_bodies` only
 syntax-checks a plpgsql body, so `0053` created the function cleanly and it raised
 `42883` on the first call: every first sign-in, for everyone. `0053` was amended in
@@ -192,7 +234,7 @@ The check needed three fixes of its own to be worth believing, and each is worth
 knowing:
 
 - D assumed `anon` reaches the table and is filtered to zero rows. `0053` revokes
-  anon outright and table privileges are checked *before* row security, so the
+  anon outright and table privileges are checked _before_ row security, so the
   refusal is the pass and a count asserted the weaker guarantee.
 - Every `FAIL` line now travels in the closing exception, not only in a `NOTICE`.
   The Supabase SQL editor does not surface notices, so the first full run said
@@ -253,13 +295,13 @@ address nobody vouched for. **Applied 9 Oct 2026** in the SQL editor, like
 
 **Email does not identify a student, measured before the rule was written:**
 
-| | |
-|---|---|
-| `app.student` rows | 1,297 |
-| no email at all | **17** — cannot sign in by email, ever |
-| addresses on more than one row | **51**, covering 123 rows |
-| worst collision | **16 rows share one address** |
-| `identity.auth_user_id` populated | **0** |
+|                                   |                                        |
+| --------------------------------- | -------------------------------------- |
+| `app.student` rows                | 1,297                                  |
+| no email at all                   | **17** — cannot sign in by email, ever |
+| addresses on more than one row    | **51**, covering 123 rows              |
+| worst collision                   | **16 rows share one address**          |
+| `identity.auth_user_id` populated | **0**                                  |
 
 So the rule is **exactly one match or no code**, and zero, two and sixteen are
 reported identically — a form that answers differently is an oracle for who has an
@@ -381,13 +423,13 @@ read. Removing the key turns 5 tests red (mutation-checked).
 
 **Proven against the portal, read-only, 1 Oct 2026:**
 
-| | Key omitted | Key = 3 | Portal |
-|---|---|---|---|
-| 739 full history: rows | 10,851 | 34,255 | — |
+|                              | Key omitted   | Key = 3           | Portal        |
+| ---------------------------- | ------------- | ----------------- | ------------- |
+| 739 full history: rows       | 10,851        | 34,255            | —             |
 | 739 full history: total paid | $2,964,730.92 | **$5,243,133.68** | $5,243,133.68 |
-| 739 full history: sales tax | $148.05 | **$177.45** | $177.45 |
-| 739, 1 Jan 2025: net sales | $12,087.50 | **$13,738.50** | $13,738.50 |
-| 799, 1 Jan 2025: rows | 54 | **62** | 57 + 5 failed |
+| 739 full history: sales tax  | $148.05       | **$177.45**       | $177.45       |
+| 739, 1 Jan 2025: net sales   | $12,087.50    | **$13,738.50**    | $13,738.50    |
+| 799, 1 Jan 2025: rows        | 54            | **62**            | 57 + 5 failed |
 
 **Since explained, the same day.** Net Sales was the wrong field: the portal sums
 `o_net_sale.m_amount`, which matches it to the cent, and `m_net_sale` is $47,592.09
@@ -454,12 +496,12 @@ reached nothing**. `client_session_sync` therefore had not run since **14 Sep**.
 `client-sessions.ts`, and a visit is read once when booked and again after it
 happens. With no runs, the second read never came:
 
-| Week | Total | WL says attended | We said |
-|---|---|---|---|
-| 14 Sep | 190 | — | **1** |
-| 7 Sep | 177 | 135 | 108 |
-| 31 Aug | 207 | — | 173 |
-| 24 Aug and earlier | ~150–200 | — | ≈ total |
+| Week               | Total    | WL says attended | We said |
+| ------------------ | -------- | ---------------- | ------- |
+| 14 Sep             | 190      | —                | **1**   |
+| 7 Sep              | 177      | 135              | 108     |
+| 31 Aug             | 207      | —                | 173     |
+| 24 Aug and earlier | ~150–200 | —                | ≈ total |
 
 Everything to 24 Aug is healthy, so the damage is bounded to two weeks.
 
@@ -498,12 +540,12 @@ fine while two tables were empty and a third was days old.
 
 **What was measured.**
 
-| | |
-|---|---|
+|                                   |                                                                                              |
+| --------------------------------- | -------------------------------------------------------------------------------------------- |
 | `tx_payment_sync`, `tx_item_sync` | `last_clean_completion_at` **NULL** - never completed once since they were created on 18 Sep |
-| `pay_transaction` | **no rows at all** |
-| `client_list_sync` | last completed **19 Sep**; `person.synced_at` **4.5 days** old |
-| every run of all three | 3-13 seconds, always `partial`, `report_handle` null |
+| `pay_transaction`                 | **no rows at all**                                                                           |
+| `client_list_sync`                | last completed **19 Sep**; `person.synced_at` **4.5 days** old                               |
+| every run of all three            | 3-13 seconds, always `partial`, `report_handle` null                                         |
 
 **The cause.** These three resume a WellnessLiving report across invocations: one
 asks for a build and saves a handle, a later one polls it, a later one reads
@@ -702,19 +744,19 @@ each night.
 
 ### Foundation
 
-| Area | Where |
-|---|---|
-| Config with three secret providers, fails closed | `src/config/`, `src/secrets/` |
-| WL OAuth2 with a shared, self-refreshing token cache | `src/wl/token.ts` |
-| WL client asserting `status === "ok"` centrally | `src/wl/client.ts` |
-| Failure classification: auth / transient / permanent | `src/wl/client.ts` |
-| Backoff 1s/5s/25s, requeue 1/5/25 min (rung from prior-attempt count), jittered; WL Retry-After honoured, requeued if too long to sleep | `src/wl/retry.ts` |
-| Batch runner: pooled, budget-aware, resumable | `src/wl/batch.ts` |
-| Internal trace ids, `runId.seq` | `src/wl/trace.ts` |
-| Structured logging, redaction before fan-out, optional files | `src/logging/` |
-| Health probes for WL and Supabase | `src/health/`, `src/wl/health.ts`, `src/supabase/health.ts` |
-| Shared constant-time bearer check for routes | `src/http/bearer.ts` |
-| Vercel health endpoint | `api/health.ts` |
+| Area                                                                                                                                    | Where                                                       |
+| --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Config with three secret providers, fails closed                                                                                        | `src/config/`, `src/secrets/`                               |
+| WL OAuth2 with a shared, self-refreshing token cache                                                                                    | `src/wl/token.ts`                                           |
+| WL client asserting `status === "ok"` centrally                                                                                         | `src/wl/client.ts`                                          |
+| Failure classification: auth / transient / permanent                                                                                    | `src/wl/client.ts`                                          |
+| Backoff 1s/5s/25s, requeue 1/5/25 min (rung from prior-attempt count), jittered; WL Retry-After honoured, requeued if too long to sleep | `src/wl/retry.ts`                                           |
+| Batch runner: pooled, budget-aware, resumable                                                                                           | `src/wl/batch.ts`                                           |
+| Internal trace ids, `runId.seq`                                                                                                         | `src/wl/trace.ts`                                           |
+| Structured logging, redaction before fan-out, optional files                                                                            | `src/logging/`                                              |
+| Health probes for WL and Supabase                                                                                                       | `src/health/`, `src/wl/health.ts`, `src/supabase/health.ts` |
+| Shared constant-time bearer check for routes                                                                                            | `src/http/bearer.ts`                                        |
+| Vercel health endpoint                                                                                                                  | `api/health.ts`                                             |
 
 **815 tests across 69 files.** CI runs format, lint, typecheck, tests, a
 fail-closed startup assertion, and gitleaks over full history on every push.
@@ -726,21 +768,21 @@ why it is shaped that way.
 
 ### Tickets closed
 
-| Ticket | |
-|---|---|
-| Supabase projects created and reachable | ✅ dev and prod |
-| Repository skeleton, CI | ✅ |
-| Per-environment settings | ✅ |
-| Secrets management | ✅ (local `.env` / settings file; Secrets Manager unused) |
-| HTTP 200 error handling | ✅ |
-| Rate limiting and retry | ✅ (limit later removed as unjustified) |
-| Trace ids | ✅ internal; WL's own is unreliable |
-| Person model | ✅ |
-| Purchase / payment / service | ✅ |
-| Session / attendance | ✅ |
-| Sync tracking tables | ✅ |
-| Raw payload tables | ✅ |
-| Health views and RLS | ✅ applied + proven on the live DB (21 Aug 2026) |
+| Ticket                                  |                                                           |
+| --------------------------------------- | --------------------------------------------------------- |
+| Supabase projects created and reachable | ✅ dev and prod                                           |
+| Repository skeleton, CI                 | ✅                                                        |
+| Per-environment settings                | ✅                                                        |
+| Secrets management                      | ✅ (local `.env` / settings file; Secrets Manager unused) |
+| HTTP 200 error handling                 | ✅                                                        |
+| Rate limiting and retry                 | ✅ (limit later removed as unjustified)                   |
+| Trace ids                               | ✅ internal; WL's own is unreliable                       |
+| Person model                            | ✅                                                        |
+| Purchase / payment / service            | ✅                                                        |
+| Session / attendance                    | ✅                                                        |
+| Sync tracking tables                    | ✅                                                        |
+| Raw payload tables                      | ✅                                                        |
+| Health views and RLS                    | ✅ applied + proven on the live DB (21 Aug 2026)          |
 
 ## In progress
 
@@ -762,6 +804,7 @@ Jotform API, and a prefilled link filled all five fields in a browser; the hidde
 `lessonId` field took a prefilled value and showed nothing on the page.
 
 **Not done / blocked:**
+
 - `JOTFORM_FORM_HOST` must be set (`form.jotform.com`); without it the pass reports
   `skipped` and sends nothing.
 - The test account is on Jotform's Free plan (100 submissions a month against ~500).
@@ -787,6 +830,7 @@ a failed month list, studio timezone, the missed-month catch-up, the key in the
 URL, the body's `responseCode`, stopping at a known page).
 
 **Not done / blocked:**
+
 - `0071` must be applied before deploying.
 - `JOTFORM_API_HOST` (`api.jotform.com`) and `JOTFORM_API_KEY` must be set, locally
   and as GitHub secrets; until then both passes report `skipped`.
@@ -822,6 +866,7 @@ that the seed re-enqueues every hour (`freshDoneWindowMs: 0` in `pass.ts`) — w
 a lesson whose PDF arrives late would be looked for again only after 24 hours.
 
 **Not done / blocked:**
+
 - `0072` must be applied before deploying (after `0071`).
 - The seven `GOOGLE_*` settings (RUNBOOK §1, phase 3) — the user is making the OAuth
   client and refresh token. Until then the pass reports `skipped`.
@@ -829,7 +874,7 @@ a lesson whose PDF arrives late would be looked for again only after 24 hours.
   folder) with `SIGNOFF_TO` = the user: 6 lessons of 24 Nov emailed, one signed, the
   check judged it `signed`, and the filing pass moved its PDF to
   `NOVEMBER 2026 / NOVEMBER 2026 - UNMERGED / AIM - NOVEMBER 2026 /
-  First-Last-11-24-2026-1000AM.pdf`, tagged. Three fake-lessonId test submissions were
+First-Last-11-24-2026-1000AM.pdf`, tagged. Three fake-lessonId test submissions were
   `unknown-lesson`; the one whose PDF reached Drive stayed in the drop folder, as designed.
   Those 6 rows are real lessons with a test signature on one — reset before go-live.
 - Not yet on `main`, so the hourly job does not run phases 1-3; the `GOOGLE_*` GitHub
@@ -843,14 +888,14 @@ WellnessLiving's integrations team named two reports on `POST /v1/report/query`:
 **739 "All Transactions (Item View)"** and **799 "All Transactions (Payment
 View)"**. Both were probed live against dev the same day and both work.
 
-| | 739 | 799 |
-|---|---|---|
-| Fields | 141 | 140 |
-| Rows, `1980-01-01 .. today`, Cash mode (key absent, see 1 Oct 2026) | 10,913 | 10,196 |
-| Rows, Accrual and cash, to 9 Sep 2026 | **34,255** | — |
-| Pages at `i_limit` 1000 | 11 | 11 |
-| Full-history build time | **90s** | ~60s |
-| A 20-day window | 62 rows, **6s** | — |
+|                                                                     | 739             | 799    |
+| ------------------------------------------------------------------- | --------------- | ------ |
+| Fields                                                              | 141             | 140    |
+| Rows, `1980-01-01 .. today`, Cash mode (key absent, see 1 Oct 2026) | 10,913          | 10,196 |
+| Rows, Accrual and cash, to 9 Sep 2026                               | **34,255**      | —      |
+| Pages at `i_limit` 1000                                             | 11              | 11     |
+| Full-history build time                                             | **90s**         | ~60s   |
+| A 20-day window                                                     | 62 rows, **6s** | —      |
 
 **What is built:** migration `0038` (`pay_transaction`, `pay_transaction_item`),
 `src/sync/transactions.ts`, `src/sync/tx-window.ts`, two passes
@@ -871,18 +916,18 @@ load has not run.
 
 **Three things worth knowing before using these tables.**
 
-*They are not yet a proven replacement for the purchase path.* The 10,913-row
+_They are not yet a proven replacement for the purchase path._ The 10,913-row
 count measured here was Cash mode, the accounting key being absent (see 1 Oct
 2026 above). In Accrual and cash the item report returns 34,255 rows, more than
 the 20,561 in `purchase_item`. Whether it covers every purchase item has not
 been measured. The two sources must be reconciled before either produces a
 royalty figure, and **that reconciliation is not written**.
 
-*A refund finally has a date.* `purchase.m_refund` carries none, so a refund has
+_A refund finally has a date._ `purchase.m_refund` carries none, so a refund has
 always landed in the original purchase's month. In the reports it is its own
 negative row with its own `dtu_date`.
 
-*A queued build on these reports returns ROWS* — fifty of them, from the previous
+_A queued build on these reports returns ROWS_ — fifty of them, from the previous
 build — where the client-list report returns an empty list. "We got rows" is
 evidence of nothing here, and the page reader now refuses outright to return
 rows from an unfinished build.
@@ -931,13 +976,13 @@ Say them when reporting any number (they are also in RUNBOOK.md section 9):
 Migration 0029 made `attendance.id_visit` the field the royalty rule turns on.
 Measured on live dev the same day, read-only:
 
-| | |
-|---|---|
-| `attendance` rows | 4,431 |
-| `id_visit` **is null** | **4,431 — every row** |
-| `session_outcome.is_countable = true` | **0** |
-| stored `/v1/schedule/page/element` payloads in `raw_wl` | **4,990** |
-| `attendance.k_visit` present | 4,431 — every row |
+|                                                         |                       |
+| ------------------------------------------------------- | --------------------- |
+| `attendance` rows                                       | 4,431                 |
+| `id_visit` **is null**                                  | **4,431 — every row** |
+| `session_outcome.is_countable = true`                   | **0**                 |
+| stored `/v1/schedule/page/element` payloads in `raw_wl` | **4,990**             |
+| `attendance.k_visit` present                            | 4,431 — every row     |
 
 0029 added the column and rebuilt the view to require `id_visit = '3'`, but the
 column starts empty and no pass has run since. `client-sessions.ts` does write it;
@@ -954,29 +999,29 @@ stored payloads each carry `id_visit` (200 of 200 sampled), and every attendance
 row has its `k_visit`, so the gap was closed with **zero WellnessLiving calls**.
 Re-parsed and applied 31 Aug 2026:
 
-| | before | after |
-|---|---|---|
-| `attendance` rows | 4,431 | 4,431 |
-| `id_visit` is null | **4,431** | **0** |
-| `is_attended = true` | 0 | 3 |
-| `session_outcome.is_countable` | 0 | 0 |
+|                                | before    | after |
+| ------------------------------ | --------- | ----- |
+| `attendance` rows              | 4,431     | 4,431 |
+| `id_visit` is null             | **4,431** | **0** |
+| `is_attended = true`           | 0         | 3     |
+| `session_outcome.is_countable` | 0         | 0     |
 
 ### Why `is_countable` is still 0 — and why that is correct
 
 Measured the same day, each condition the view requires, counted separately:
 
-| Condition | Rows passing |
-|---|---|
-| `id_visit = '3'` (ATTEND) | 3 |
-| session has already started | 34 |
-| **`is_reviewed = true`** | **0** |
-| not a booking request / not studio-cancelled / not waitlisted | 4,431 each |
+| Condition                                                     | Rows passing |
+| ------------------------------------------------------------- | ------------ |
+| `id_visit = '3'` (ATTEND)                                     | 3            |
+| session has already started                                   | 34           |
+| **`is_reviewed = true`**                                      | **0**        |
+| not a booking request / not studio-cancelled / not waitlisted | 4,431 each   |
 
 **`is_reviewed` is the only thing standing in the way, and it is ours, not
 WellnessLiving's** (0010). It is studio-review workflow state, `not null default
 false`, set by whoever reviews — nothing in WL supplies it. So zero countable
-sessions is the schema doing exactly what M08 asked for: *"sessions not yet
-reviewed by the studio are stored and visible, but never counted as attended"*.
+sessions is the schema doing exactly what M08 asked for: _"sessions not yet
+reviewed by the studio are stored and visible, but never counted as attended"_.
 Nothing is broken here; the pipeline is waiting on a human.
 
 ### Then appointment attendance was read for the first time — 31 Aug 2026
@@ -990,19 +1035,19 @@ class-only". It is `k_appointment`. The pass now picks the parameter from
 681 dead out of 1,018 before.
 
 | `attendance.id_visit` | after backfill | after appointment sync |
-|---|---|---|
-| 1 BOOK | 4,425 | 4,371 |
-| 3 ATTEND | 3 | **19** |
-| **6 CANCEL** | **0** | **26** |
-| 7 PENDING | 3 | 15 |
+| --------------------- | -------------- | ---------------------- |
+| 1 BOOK                | 4,425          | 4,371                  |
+| 3 ATTEND              | 3              | **19**                 |
+| **6 CANCEL**          | **0**          | **26**                 |
+| 7 PENDING             | 3              | 15                     |
 
 | `session_outcome.outcome` | after backfill | after appointment sync |
-|---|---|---|
-| `upcoming` | 4,396 | 4,371 |
-| **`unknown`** | **29** | **0** |
-| `attended` | 3 | 19 |
-| **`client_cancelled`** | **0** | **26** |
-| `awaiting_staff` | 3 | 15 |
+| ------------------------- | -------------- | ---------------------- |
+| `upcoming`                | 4,396          | 4,371                  |
+| **`unknown`**             | **29**         | **0**                  |
+| `attended`                | 3              | 19                     |
+| **`client_cancelled`**    | **0**          | **26**                 |
+| `awaiting_staff`          | 3              | 15                     |
 
 Two things to take from this.
 
@@ -1013,7 +1058,7 @@ place, but it now reports 0 rather than 29.
 **Client cancellation is in the database for the first time — 26 of them.** This
 is the M08 blocker that read "client cancellation is not reported anywhere in the
 API" closed with evidence: WL reports it as `id_visit` 6 (CANCEL, in time) and 4
-(PENALTY, too late). What is still not published is a cancellation *timestamp* on
+(PENALTY, too late). What is still not published is a cancellation _timestamp_ on
 the endpoints this project calls — see WL-API-NOTES.md for the two that do carry
 one and why neither is wired up yet.
 
@@ -1054,16 +1099,16 @@ appeared: the clock correction moved four days of sessions into the past at once
 
 Everything below is read-only counting, no WellnessLiving calls:
 
-| | |
-|---|---|
-| `person` | 1,285, of which **517 `is_active`** — matches the portal's 517 exactly |
-| matched to a GoHighLevel contact | 317 |
-| `session` | 4,423 — 11 class, 4,412 appointment |
-| `session_staff` | 4,423 — **every session has a teacher attached** |
-| `purchase` / `purchase_item` | 20,347 / 20,561 |
-| `purchase_payment` | 19,975 |
-| `purchase_account_credit` | 19,438 — the prepaid-credit breakdown M06 requires |
-| `sync_queue` | every work type fully drained, 0 pending, 0 failed, 0 dead |
+|                                  |                                                                        |
+| -------------------------------- | ---------------------------------------------------------------------- |
+| `person`                         | 1,285, of which **517 `is_active`** — matches the portal's 517 exactly |
+| matched to a GoHighLevel contact | 317                                                                    |
+| `session`                        | 4,423 — 11 class, 4,412 appointment                                    |
+| `session_staff`                  | 4,423 — **every session has a teacher attached**                       |
+| `purchase` / `purchase_item`     | 20,347 / 20,561                                                        |
+| `purchase_payment`               | 19,975                                                                 |
+| `purchase_account_credit`        | 19,438 — the prepaid-credit breakdown M06 requires                     |
+| `sync_queue`                     | every work type fully drained, 0 pending, 0 failed, 0 dead             |
 
 ## Blocked, and what unblocks it
 
@@ -1132,12 +1177,12 @@ author and date, if one exists.
 `data_health_issue` cannot be appended to - Postgres makes you write the whole
 thing out - so a branch nobody retypes simply vanishes. It has happened:
 
-* `0023` added `ghl_unresolved_48h` (board item M05's 48-hour alert) and pointed
+- `0023` added `ghl_unresolved_48h` (board item M05's 48-hour alert) and pointed
   the three GoHighLevel rows at `ghl_unresolved_since` so `data_health.oldest`
   meant something. `0026` recreated the view from an older copy and **silently
   lost both**. Nothing failed. The alert simply stopped existing, and `oldest`
   went back to resetting on every sync.
-* Found 31 Aug 2026 only because `0033` had to touch the view too, and the live
+- Found 31 Aug 2026 only because `0033` had to touch the view too, and the live
   view was checked against the file before rewriting it.
 
 **Before recreating `data_health_issue`, list the live view's branches first**
@@ -1160,7 +1205,6 @@ default only fires on insert. After a full re-check of all 43,733 rows, not one
 of them reported having been confirmed. `data_health`'s staleness checks read
 this column.
 
-
 **Which GoHighLevel fields to report — no longer blocks M06 (27 Aug 2026).**
 M06 is built and the ticket can close. The blocker was self-inflicted: "the
 agreed fields" was being modelled as **columns**, so nothing could be built
@@ -1174,11 +1218,11 @@ The re-parse promise was kept literally: 0026 backfilled 317 clients out of the
 
 **Still needed from the client, but nothing waits on it:**
 
-| Question | What happens meanwhile |
-|---|---|
-| Which fields to report | `is_reported` is false on all of them, so no field appears on a client record. One `UPDATE` turns each on |
+| Question                   | What happens meanwhile                                                                                                                                                                                                                                                                                                                                                                                |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Which fields to report     | `is_reported` is false on all of them, so no field appears on a client record. One `UPDATE` turns each on                                                                                                                                                                                                                                                                                             |
 | What the fields are called | `ghl_custom_field.name` is null and `client_ghl` falls back to the id. Measured: exactly **three** field ids exist in this location's data — `ibhlYPvuAeAA3N8iJqv6` (54 contacts; values `DJ`, `PIANO`, `LIVE SOUND`, `VOICE`, `MUSIC PRODUCTION`), `7NBvgQs2s08waeVnsl6J` (21, free text), `f48pVfYaewIDJl35G1X1` (2). So the conversation is "here are your three fields", not "please send a list" |
-| Replace or merge on tags | **Decided: replace.** Many tags are operational state GoHighLevel retires, and merging would strand them permanently. `raw_ghl` keeps every fetch, so it is reversible |
+| Replace or merge on tags   | **Decided: replace.** Many tags are operational state GoHighLevel retires, and merging would strand them permanently. `raw_ghl` keeps every fetch, so it is reversible                                                                                                                                                                                                                                |
 
 The one thing to know rather than fix: enrichment is **fetched once** at match
 time and never refreshed, so `fetched_at` is the date of the match, not of the
@@ -1191,7 +1235,6 @@ a refresh route, not a longer interval.
 `GET /locations/{id}/customFields`, which answers **401** for a contacts-scope
 Private Integration Token. Adding `locations.readonly` in GHL → Settings →
 Private Integrations would let the names be fetched instead of asked for.
-
 
 **Raw payload retention — now measured (24 Aug 2026, task 024).** `raw_wl` and
 `raw_ghl` will outgrow every other table and hold the most personal data in the
@@ -1237,14 +1280,14 @@ runs in production, and RUNBOOK.md section 7 carries per-pass medians, p90s and
 observed maxima measured over 26,516 `sync_run` rows. Prefer those when sizing
 anything new.
 
-| | |
-|---|---|
-| WL staff | 20 |
-| …of which have a teaching flag | 14 |
-| WL clients with "Staff Client Profile" | 47 |
-| Purchases for one sampled client | 27 |
-| Receipt calls for 47 clients | ~1,270 |
-| Estimated calls for one full pass | ~1,780 |
-| GHL contacts | 22,865 |
-| Vercel function cap | 60s (step budget 50s) |
-| Sequential cost of 20 staff + detail | 21 calls, 14.6s |
+|                                        |                       |
+| -------------------------------------- | --------------------- |
+| WL staff                               | 20                    |
+| …of which have a teaching flag         | 14                    |
+| WL clients with "Staff Client Profile" | 47                    |
+| Purchases for one sampled client       | 27                    |
+| Receipt calls for 47 clients           | ~1,270                |
+| Estimated calls for one full pass      | ~1,780                |
+| GHL contacts                           | 22,865                |
+| Vercel function cap                    | 60s (step budget 50s) |
+| Sequential cost of 20 staff + detail   | 21 calls, 14.6s       |

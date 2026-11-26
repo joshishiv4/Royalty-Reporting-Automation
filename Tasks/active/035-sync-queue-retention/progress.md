@@ -24,7 +24,41 @@ None. One open question that does not block the migration: whether a DELETE alon
 restores performance, or whether the indexes need reindexing afterwards. It
 changes the acceptance measurement, not the prune itself.
 
+## Reopened 2026-11-26: 3-day retention, hourly prune, size cap
+
+- [x] `0073`: oldest-first prune index, 24 h floor in SQL, row estimate, resolved-dead prune
+- [x] `pruneQueue` (resolved dead 2 d → done 3 d → cap 300k), `queue_prune` sync_run row, exit 1 on failure
+- [x] `queue-prune.yml` hourly at :50
+- [x] Tests rewritten in `tests/sync-queue-prune.test.ts`
+- [x] Docs: ARCHITECTURE, DATA-MODEL, STATUS (26 Nov), RUNBOOK §8h
+- [x] `npm run verify` — 82 files, 1,008 tests pass
+- [x] Mutation-check — 8 mutations, all red (see STATUS 26 Nov)
+- [x] Read the 18/20/24 Nov prune logs — `57014` in the prune batch itself, 9–15 s in
+- [~] Statement in `client_session_sync` — narrowed to a queue statement after the drain; log does not name it
+- [ ] Apply `0073` with the sync idle; watch the first hourly prunes clear the backlog
+- [ ] Re-measure; 24 h of green hourly `sync` runs
+
 ## Log
+
+### 2026-11-26
+
+- `client_session_sync` failed: `57014 ... [table=sync_queue]`. Table ~1.16M rows
+  (estimated): ~1,159,000 done, 31 pending, 1,001 dead. 20-day retention at
+  ~58k rows/day holds that much; the daily prune also failed 18, 20, 24 Nov.
+- User chose: age rule first (3 days), size cap as safety net, resolved-dead
+  cleanup, hourly prune with an alert.
+- Found while writing tests: a 7-day wait on resolved dead rows outlives the
+  3-day done row that proves resolution, so it would clear almost nothing. Set to
+  2 days and ran that step before the age rule; a test simulates every success
+  hour across two weeks.
+- Later the same day, with C: freed: `npm run verify` green (1,008 tests). Mutations
+  that each turned the prune tests red: retention 12 h (5 failed); cap ignores
+  floor (1); cap ignores excess (2); overCap on maxBatches (1); dead wait 7 d (1,
+  defaults); dead wait 2.5 d (1, defaults); age before dead (1, ordering test); no
+  clamp + 7 d (2, incl. the hour-by-hour simulation).
+- Prune failure logs read with `gh`: runs 44324546001, 44752003465, 45434486070
+  all `57014` 9–15 s into the delete. Scheduled 05:30, they actually started
+  14:17–16:13 UTC (GitHub delay), overlapping the hourly sync.
 
 ### 2026-10-13
 
