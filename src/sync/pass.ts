@@ -1053,8 +1053,9 @@ const SIGNOFF_SEND_RETRY_MS = 15 * 60_000;
  * run, creates nothing, and names what is missing in its summary - a half-set
  * config must not email the admin links to a form that does not exist.
  *
- * It sits in the same flat wave as attendance_sync, so a lesson attended this hour
- * is usually picked up next hour: the queue and the k_visit key make that safe.
+ * In the parallel full sync it starts after attendance_sync and member_group_sync
+ * have finished (`after` in FULL_SYNC_WAVES), so a lesson whose attendance that run
+ * stores is emailed in the same run. The k_visit key keeps any re-run safe.
  */
 export function runLessonSignoffSyncPass(
   config: AppConfig,
@@ -2577,12 +2578,19 @@ const MIN_PASS_BUDGET_MS = 3_000;
  * sequential runFullSyncPass is still what the Vercel cron uses; this mode is
  * for a local backfill that wants every worker busy at once.
  */
-const FULL_SYNC_WAVES: ReadonlyArray<
-  ReadonlyArray<{
-    readonly job: string;
-    readonly run: (config: AppConfig, deps: SyncPassDeps) => Promise<SyncPassSummary>;
-  }>
-> = [
+export interface WaveEntry {
+  readonly job: string;
+  readonly run: (config: AppConfig, deps: SyncPassDeps) => Promise<SyncPassSummary>;
+  /**
+   * Passes EARLIER in the same wave this one waits for: it starts once each of
+   * them has settled - ok, partial, skipped or failed alike - and every other
+   * pass still starts at once. Not a return to waves: one pass waits on the
+   * handful it reads, instead of a whole stage waiting on the slowest pass.
+   */
+  readonly after?: readonly string[];
+}
+
+export const FULL_SYNC_WAVES: ReadonlyArray<ReadonlyArray<WaveEntry>> = [
   [
     { job: 'login_type_sync', run: runLoginTypeSyncPass },
     { job: 'client_list_sync', run: runClientListSyncPass },
@@ -2607,18 +2615,32 @@ const FULL_SYNC_WAVES: ReadonlyArray<
     // reports advanced only on their own cron, for no saving.
     { job: 'tx_item_sync', run: runTransactionItemSyncPass },
     { job: 'tx_payment_sync', run: runTransactionPaymentSyncPass },
-    // Lesson sign-off (task 038). In the same flat wave, so it reads the
-    // attendance and groups the PREVIOUS run stored - a lesson attended this
-    // hour is emailed next hour, the same converge-over-runs trade as above.
+    // Lesson sign-off (task 038). NOT the converge-over-runs trade above: a
+    // missed lesson here is an email hours late, because the "next run" is not
+    // an hour away - runs take about an hour and never overlap, so on 26 Nov
+    // 2026 they started at 03:49, 10:21 and 17:23. In run #298 the sign-off pass
+    // looked in its first 5 seconds, found 0, and attendance_sync then stored
+    // the day's lessons over the next 58 minutes. So lesson_signoff_sync waits
+    // for the two passes it reads (`after`); the rest of the wave does not.
+    // Sessions need no wait: attendance_sync seeds FROM stored sessions, so any
+    // visit it marks attended already has its session row.
     { job: 'member_group_sync', run: runMemberGroupSyncPass },
-    { job: 'lesson_signoff_sync', run: runLessonSignoffSyncPass },
+    {
+      job: 'lesson_signoff_sync',
+      run: runLessonSignoffSyncPass,
+      after: ['attendance_sync', 'member_group_sync'],
+    },
     // Phase 2. Concurrent with the check, so a reminder handler re-reads the
     // lesson and waits for any unchecked submission before it sends.
     { job: 'lesson_signoff_check', run: runLessonSignoffCheckPass },
     { job: 'lesson_signoff_remind', run: runLessonSignoffRemindPass },
-    // Phase 3. Files what the PREVIOUS run's check signed - a lesson signed this
-    // hour is filed next hour, the same converge-over-runs trade.
-    { job: 'lesson_signoff_file', run: runLessonSignoffFilePass },
+    // Phase 3. After the check, so a form signed before this run is filed in
+    // it. The Jotform webhook (task 039) usually files sooner still.
+    {
+      job: 'lesson_signoff_file',
+      run: runLessonSignoffFilePass,
+      after: ['lesson_signoff_check'],
+    },
   ],
 ];
 
@@ -2994,9 +3016,10 @@ async function closeRun(
  *   - Each pass's seed runs EXACTLY ONCE. The pass's own inner loop drains its
  *     queue within the given budget; there is no outer restart, so a done item
  *     is never re-enqueued during a run.
- *   - Passes inside a wave run concurrently. Passes across waves are still
- *     sequential, so FK dependencies (purchase -> receipt, session -> attendance)
- *     hold.
+ *   - Passes inside a wave run concurrently - except one that names passes in
+ *     `after`, which starts once those have settled (whatever their outcome).
+ *     Passes across waves are still sequential, so FK dependencies
+ *     (purchase -> receipt, session -> attendance) hold.
  *   - One shared WlTokenClient means the whole run authenticates once. Each
  *     pass still gets its own WlClient so its runId and sync_run row are
  *     distinct.
@@ -3012,6 +3035,8 @@ async function closeRun(
 export async function runFullSyncPassParallel(
   config: AppConfig,
   deps: SyncPassDeps = {},
+  /** The pass list; tests pass their own to exercise the `after` waits. */
+  waves: ReadonlyArray<ReadonlyArray<WaveEntry>> = FULL_SYNC_WAVES,
 ): Promise<FullSyncSummary> {
   const now = deps.now ?? (() => Date.now());
   const passBudgetMs = deps.budgetMs ?? DEFAULT_PARALLEL_PASS_BUDGET_MS;
@@ -3022,39 +3047,59 @@ export async function runFullSyncPassParallel(
 
   const passes: FullSyncPassResult[] = [];
 
-  for (const wave of FULL_SYNC_WAVES) {
-    // Every pass in this wave gets its own WlClient (distinct runId, shared
-    // token cache). An injected wl (tests) is reused: a fake client has no
-    // sync_run constraint to collide with.
-    const waveResults = await Promise.all(
-      wave.map(({ job, run }) => {
-        const wl =
-          deps.wl ??
-          new WlClient(config.wl, {
-            tokens,
-            env: config.env,
-            timeoutMs: config.runtime.httpTimeoutMs,
-            now,
-          });
-        return run(config, { ...deps, wl, db, budgetMs: passBudgetMs, now })
-          .then((summary): FullSyncPassResult => ({ job, ran: true, summary }))
-          .catch((error: unknown): FullSyncPassResult => ({
-            job,
-            ran: true,
-            summary: {
-              runId: 'error',
-              state: 'failed',
-              claimed: 0,
-              done: 0,
-              requeued: 0,
-              dead: 0,
-              itemsRemaining: UNKNOWN_REMAINING,
-              error: error instanceof Error ? error.message : String(error),
-            },
-          }));
-      }),
+  for (const wave of waves) {
+    // Each pass's result promise, by job, for the `after` waits below. Every one
+    // RESOLVES (a throw becomes a 'failed' result), so a waiting pass starts
+    // after a failed one too - it reads whatever was stored.
+    const started = new Map<string, Promise<FullSyncPassResult>>();
+    const startPass = ({ job, run }: WaveEntry): Promise<FullSyncPassResult> => {
+      // Every pass in this wave gets its own WlClient (distinct runId, shared
+      // token cache). An injected wl (tests) is reused: a fake client has no
+      // sync_run constraint to collide with.
+      const wl =
+        deps.wl ??
+        new WlClient(config.wl, {
+          tokens,
+          env: config.env,
+          timeoutMs: config.runtime.httpTimeoutMs,
+          now,
+        });
+      return run(config, { ...deps, wl, db, budgetMs: passBudgetMs, now })
+        .then((summary): FullSyncPassResult => ({ job, ran: true, summary }))
+        .catch((error: unknown): FullSyncPassResult => ({
+          job,
+          ran: true,
+          summary: {
+            runId: 'error',
+            state: 'failed',
+            claimed: 0,
+            done: 0,
+            requeued: 0,
+            dead: 0,
+            itemsRemaining: UNKNOWN_REMAINING,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        }));
+    };
+    for (const entry of wave) {
+      const waits = (entry.after ?? []).map((name) => {
+        const p = started.get(name);
+        // Earlier in the same wave only: a name that is missing or later would
+        // either never start this pass or silently not wait - both wrong.
+        if (p === undefined) {
+          throw new Error(`${entry.job} waits for ${name}, which is not earlier in its wave`);
+        }
+        return p;
+      });
+      started.set(
+        entry.job,
+        waits.length === 0 ? startPass(entry) : Promise.all(waits).then(() => startPass(entry)),
+      );
+    }
+    // Results in the wave's listed order, as before.
+    passes.push(
+      ...(await Promise.all(wave.map((e) => started.get(e.job) as Promise<FullSyncPassResult>))),
     );
-    passes.push(...waveResults);
   }
 
   const ran = passes

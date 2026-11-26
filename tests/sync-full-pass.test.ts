@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../src/config/schema.js';
 import type { SupabaseClient } from '../src/supabase/client.js';
 import type { WlClient } from '../src/wl/client.js';
-import { runFullSyncPass, runFullSyncPassParallel } from '../src/sync/pass.js';
+import {
+  FULL_SYNC_WAVES,
+  runFullSyncPass,
+  runFullSyncPassParallel,
+  type SyncPassSummary,
+  type WaveEntry,
+} from '../src/sync/pass.js';
 
 const config = {
   env: 'dev',
@@ -359,6 +365,149 @@ describe('runFullSyncPassParallel', () => {
     // MANY selects were made and the entries are not the trivial 5-total we'd
     // expect from a serial run of just wave 1.
     expect(entries.length).toBeGreaterThan(5);
+  });
+});
+
+/**
+ * `after`: one pass waits for the passes it reads, the rest of the wave does not.
+ *
+ * Why it exists: in run #298 (26 Nov 2026) lesson_signoff_sync looked in its first
+ * 5 seconds, found 0 lessons, and attendance_sync then stored the day's lessons
+ * over 58 minutes - and the next run was hours away, not one.
+ */
+describe('runFullSyncPassParallel - passes that wait (`after`)', () => {
+  const ok: SyncPassSummary = {
+    runId: 'r',
+    state: 'ok',
+    claimed: 0,
+    done: 0,
+    requeued: 0,
+    dead: 0,
+    itemsRemaining: 0,
+  };
+
+  /** A pass that records when it starts and finishes only when released. */
+  function heldPass(name: string, log: string[]) {
+    let release: (fail?: boolean) => void = () => undefined;
+    const done = new Promise<boolean>((resolve) => {
+      release = (fail = false) => resolve(fail);
+    });
+    const entry: WaveEntry = {
+      job: name,
+      run: async () => {
+        log.push(`start ${name}`);
+        const fail = await done;
+        log.push(`end ${name}`);
+        if (fail) throw new Error(`${name} failed`);
+        return ok;
+      },
+    };
+    return { entry, release: (fail?: boolean) => release(fail) };
+  }
+
+  function quickPass(name: string, log: string[], after?: string[]): WaveEntry {
+    return {
+      job: name,
+      run: () => {
+        log.push(`start ${name}`);
+        return Promise.resolve(ok);
+      },
+      ...(after === undefined ? {} : { after }),
+    };
+  }
+
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const deps = () => ({ wl: fakeWl(), db: fakeDb(), now: () => 0 });
+
+  it('a waiting pass starts only after what it reads has finished; the others start at once', async () => {
+    const log: string[] = [];
+    const attendance = heldPass('attendance_sync', log);
+    const waves = [
+      [
+        attendance.entry,
+        quickPass('staff_sync', log),
+        quickPass('lesson_signoff_sync', log, ['attendance_sync']),
+      ],
+    ];
+    const run = runFullSyncPassParallel(config, deps(), waves);
+    await flush();
+
+    expect(log).toContain('start staff_sync');
+    expect(log).not.toContain('start lesson_signoff_sync');
+
+    attendance.release();
+    const summary = await run;
+    expect(log.indexOf('start lesson_signoff_sync')).toBeGreaterThan(
+      log.indexOf('end attendance_sync'),
+    );
+    // Results keep the wave's listed order.
+    expect(summary.passes.map((p) => p.job)).toEqual([
+      'attendance_sync',
+      'staff_sync',
+      'lesson_signoff_sync',
+    ]);
+  });
+
+  // The 57014 timeouts: attendance failing must not also stop the sign-off emails.
+  it('starts after a FAILED dependency too, and reports both', async () => {
+    const log: string[] = [];
+    const attendance = heldPass('attendance_sync', log);
+    const run = runFullSyncPassParallel(config, deps(), [
+      [attendance.entry, quickPass('lesson_signoff_sync', log, ['attendance_sync'])],
+    ]);
+    await flush();
+    attendance.release(true);
+    const summary = await run;
+
+    expect(log).toContain('start lesson_signoff_sync');
+    expect(summary.passes.find((p) => p.job === 'attendance_sync')?.summary?.state).toBe('failed');
+    expect(summary.passes.find((p) => p.job === 'lesson_signoff_sync')?.summary?.state).toBe('ok');
+  });
+
+  it('waits for EVERY pass it names', async () => {
+    const log: string[] = [];
+    const attendance = heldPass('attendance_sync', log);
+    const groups = heldPass('member_group_sync', log);
+    const run = runFullSyncPassParallel(config, deps(), [
+      [
+        attendance.entry,
+        groups.entry,
+        quickPass('lesson_signoff_sync', log, ['attendance_sync', 'member_group_sync']),
+      ],
+    ]);
+    await flush();
+    attendance.release();
+    await flush();
+    expect(log).not.toContain('start lesson_signoff_sync');
+    groups.release();
+    await run;
+    expect(log.at(-1)).toBe('start lesson_signoff_sync');
+  });
+
+  // A typo or a reordering must fail loudly, not silently drop the wait.
+  it('refuses a wait on a pass that is not earlier in the wave', async () => {
+    const log: string[] = [];
+    await expect(
+      runFullSyncPassParallel(config, deps(), [
+        [
+          quickPass('lesson_signoff_sync', log, ['attendance_sync']),
+          quickPass('attendance_sync', log),
+        ],
+      ]),
+    ).rejects.toThrow('lesson_signoff_sync waits for attendance_sync');
+  });
+
+  // The real hourly list: what sign-off waits for is the point of this change.
+  it('the hourly list: sign-off waits for attendance and groups, filing for the check', () => {
+    const entries = FULL_SYNC_WAVES.flat();
+    const find = (job: string) => entries.find((e) => e.job === job);
+    expect(find('lesson_signoff_sync')?.after).toEqual(['attendance_sync', 'member_group_sync']);
+    expect(find('lesson_signoff_file')?.after).toEqual(['lesson_signoff_check']);
+    // Nothing else waits: the flat wave stays flat.
+    expect(entries.filter((e) => e.after !== undefined).map((e) => e.job)).toEqual([
+      'lesson_signoff_sync',
+      'lesson_signoff_file',
+    ]);
   });
 });
 

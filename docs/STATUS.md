@@ -2,7 +2,7 @@
 
 Last updated **26 Nov 2026**. Keep the date honest — a stale status file is worse
 than none, because it is believed. (The 26 Nov update covers the `sync_queue`
-entry under it and the lesson sign-off webhook entry (task 039) under "In progress" only. The 25 Nov update covers the lesson sign-off
+entry under it and the lesson sign-off webhook and sign-off timing entries under "In progress" only. The 25 Nov update covers the lesson sign-off
 entries under "In progress" only, phase 3 included. The 28 Oct update covers the client note only:
 dropping its date, `0066`, copying it into `teacher_note`, `0067`, and one row per note,
 `0068`. The 19 Oct update covers the client-note entry only; the
@@ -908,6 +908,28 @@ submission, an unchecked key, an unvalidated id, the key or a host left in the l
   lesson is timed to its Drive folder.
 - The webhook files only after the hourly `lesson_signoff_file` pass has run once on that
   database (it creates the lock's row).
+
+### Lesson sign-off emails in the same run as the attendance — code complete (26 Nov 2026)
+
+**Found:** sync run #298 (manual, 26 Nov, green) emailed nothing although 10 lessons were
+due. `lesson_signoff_sync` ran 11:53:30–11:53:35 UTC and found 0; `attendance_sync`
+ran 11:53:31–12:52:03, catching up 26,659 items after a day of failed runs, and stored
+the 25–26 Nov lessons after the sign-off pass had looked. Every pass in the parallel wave
+started at once, by design, on the idea that the next hourly run catches up. But runs
+take about an hour and never overlap, so "next run" was hours away (03:49, 10:21, 17:23
+that day).
+
+**Changed:** a wave entry may name passes it waits for (`after`, earlier in the same
+wave). `lesson_signoff_sync` waits for `attendance_sync` and `member_group_sync`;
+`lesson_signoff_file` waits for `lesson_signoff_check`. Every other pass still starts at
+once, and a waiting pass starts after a failed dependency too. No migration.
+
+**Verified:** 5 new tests in `tests/sync-full-pass.test.ts`; 6 mutations each turned them
+red (waits ignored, skipped after a failed dependency, only the first dependency awaited,
+an unknown name silently ignored, sign-off not waiting for groups, filing not waiting for
+the check).
+
+**Not done:** not deployed. The 10 waiting lessons are emailed by the next run either way.
 
 ### The two transaction reports — code complete, waiting on one migration (17 Sep 2026)
 

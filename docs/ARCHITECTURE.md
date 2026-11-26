@@ -474,8 +474,18 @@ rows".
 ### The lesson sign-off pass reads the database, not WellnessLiving
 
 `lesson_signoff_sync` (task 038) is the one pass that makes **no WL call**. It runs in
-the same hourly wave as everything else, so it sees the attendance, sessions and
-client groups the _previous_ run stored:
+the same hourly wave as everything else, but **starts only once `attendance_sync` and
+`member_group_sync` have finished** (`after` in `FULL_SYNC_WAVES`, `src/sync/pass.ts`),
+whether they succeeded or failed. So it sees the attendance and client groups that same
+run stored. Sessions need no wait: `attendance_sync` seeds from stored sessions, so any
+visit it marks attended already has its session row.
+
+**Why it waits, when the rest of the wave converges over runs:** a lesson missed here is
+an email hours late, not an hour. Runs take about an hour and never overlap, so on
+26 Nov 2026 they started at 03:49, 10:21 and 17:23. In run #298 the pass looked in its
+first 5 seconds and found 0, while `attendance_sync` stored the day's lessons over the
+next 58 minutes. Waiting delays nothing else: only this pass and `lesson_signoff_file`
+wait, and both take seconds.
 
 ```
 seed     member_group "SDC Clients" → its members
@@ -489,7 +499,7 @@ handler  snapshot student, date, teacher, course code, FI   → upsert lesson_si
          email failed → row stays pending, item requeued in 15 min
 ```
 
-A lesson attended this hour is emailed next hour. Until every `SIGNOFF_*` /
+A lesson is emailed in the run that stores its attendance. Until every `SIGNOFF_*` /
 `JOTFORM_FORM_*` setting and `SMTP_HOST` is set, the pass returns `skipped` without
 opening a run and names what is missing.
 
@@ -538,8 +548,9 @@ handler  one Drive listing: "<submission id>.pdf" in the drop folder, OR a file
 
 Only **signed** lessons are filed. A test, an edited link, a mismatch or a duplicate
 never signs a lesson, so its PDF stays in the drop folder, where the month-end list
-(phase 2) already names its submission. A lesson signed this hour is filed next hour
-— the check that signs it runs in the same wave. `skipped` until all seven
+(phase 2) already names its submission. `lesson_signoff_file` starts after
+`lesson_signoff_check` (`after`), so a form signed before a run is filed in that run.
+`skipped` until all seven
 `GOOGLE_*` settings are set, on top of phase 1's.
 
 Task 039 adds a **push path in front of those two passes**, so a signature is filed
