@@ -50,12 +50,12 @@ public/     the WellnessLiving mirror the sync writes, plus the control plane.
 
 Every table carries:
 
-| Column | Meaning |
-|---|---|
-| `id` | a `uuid` PRIMARY KEY, defaulted (0034, 0035) |
-| `created_at` | when the row first appeared here |
-| `updated_at` | when it last **changed** here — maintained by trigger |
-| `synced_at` | when it was last **read back** from the source, changed or not |
+| Column       | Meaning                                                        |
+| ------------ | -------------------------------------------------------------- |
+| `id`         | a `uuid` PRIMARY KEY, defaulted (0034, 0035)                   |
+| `created_at` | when the row first appeared here                               |
+| `updated_at` | when it last **changed** here — maintained by trigger          |
+| `synced_at`  | when it was last **read back** from the source, changed or not |
 
 `updated_at` needs the trigger. A `default now()` fires only at INSERT, so a
 column defended by a default alone reports the creation time forever and every
@@ -108,7 +108,7 @@ and two places holding the same fact is how they come to disagree.
 
 ### `client` and `wl_teacher` are views, not tables
 
-The ticket asked for both separate tables *and* a single row carrying both ids.
+The ticket asked for both separate tables _and_ a single row carrying both ids.
 Those pull opposite ways; the row won, because that is the requirement with a
 reason attached. The views give the names without storing anything twice.
 
@@ -129,16 +129,16 @@ data, confirmed by the studio 24 Aug 2026 and re-confirmed 17 Sep 2026.
 
 **This paragraph replaces an earlier one that said the opposite.** Until `0014` a
 teacher was "a person with a non-null `k_staff`", and the table below recorded why
-the login type was *rejected* — a reading that is now three migrations stale and
+the login type was _rejected_ — a reading that is now three migrations stale and
 was still sitting here in Sep 2026, contradicting the view it describes. It is kept
 rather than deleted because the measurements are real and the disagreement is the
 interesting part:
 
-| Approach | Against `/v1/staff/list` |
-|---|---|
-| `text_login_type = 'Staff Client Profile'` | 47 clients carry it; only 20 are staff. Over-counts by 27, under-counts by 3 |
-| Teaching flags alone | 6 of the 20 staff have no flags and 0 services — finance, admin, operations. They are still staff |
-| Present in `/v1/staff/list` | the authoritative list of *staff*, which is not the same question |
+| Approach                                   | Against `/v1/staff/list`                                                                          |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `text_login_type = 'Staff Client Profile'` | 47 clients carry it; only 20 are staff. Over-counts by 27, under-counts by 3                      |
+| Teaching flags alone                       | 6 of the 20 staff have no flags and 0 services — finance, admin, operations. They are still staff |
+| Present in `/v1/staff/list`                | the authoritative list of _staff_, which is not the same question                                 |
 
 Measured against live dev data 24 Aug 2026, the login-type rule and the flag rule
 **agree on 15 of 20 people and disagree on five**: Finance Team, Admin
@@ -173,7 +173,7 @@ still references `public.session`. So do the triggers - the projection ones stay
 on `public.person`, `public.session`, `public.session_staff` and
 `public.attendance` and write into `app`. Views bind to an OID rather than a
 name, so nothing that selects from a moved table needed restating. An earlier
-proposal paired the schema split with *"zero foreign keys across the boundary"*,
+proposal paired the schema split with _"zero foreign keys across the boundary"_,
 on the grounds that WellnessLiving might one day be replaced. That is a
 hypothetical paid for with a guarantee needed every day, and the two decisions
 are independent.
@@ -213,7 +213,7 @@ identity (one row per human, the only table a WL key may appear on)
    └── teacher_id ──▶ teacher   (no WL field)
 ```
 
-**This is not the design rejected above.** That one was two *unlinked* tables, and
+**This is not the design rejected above.** That one was two _unlinked_ tables, and
 it double-counted the 20 humans who are both staff and clients. Here the hub is the
 one row per human and a role is a pointer from it, so the count cannot split. The
 rejected design had no hub, which was the whole problem with it.
@@ -285,12 +285,12 @@ WL-shaped rows resolve through `organization.wl_k_business`, a column that is
 provenance of one owned row. Their organization is whatever their owned row
 says; a column here would be a second answer, and the two would drift.
 
-| Table | Organization comes from |
-|---|---|
-| `student`, `teacher`, `cohort`, `class_session`, `class_session_teacher`, `attendance_record`, `creation` | `organization_id`, `NOT NULL` |
-| `identity` | **nothing** — see below |
-| the three `*_link` tables | their owned row |
-| every WL-shaped table | `k_business` → `organization.wl_k_business` |
+| Table                                                                                                     | Organization comes from                     |
+| --------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `student`, `teacher`, `cohort`, `class_session`, `class_session_teacher`, `attendance_record`, `creation` | `organization_id`, `NOT NULL`               |
+| `identity`                                                                                                | **nothing** — see below                     |
+| the three `*_link` tables                                                                                 | their owned row                             |
+| every WL-shaped table                                                                                     | `k_business` → `organization.wl_k_business` |
 
 **`identity` gets no `organization_id`.** It is the mapping row — the one table
 a WL key may appear on — and it is the canonical human. The same human may later
@@ -300,7 +300,7 @@ live together on the membership, where both can repeat.
 
 **Membership points at `identity`, never `person`.** A naming collision worth
 stating, because the wrong reading produces the wrong table: `person` is the WL
-*mirror* and its `uid` is `NOT NULL`, so a human WellnessLiving has never heard
+_mirror_ and its `uid` is `NOT NULL`, so a human WellnessLiving has never heard
 of cannot have a row there at all. Hanging membership off `person` would mean
 only people WL knows about can belong to an organization — the exact coupling
 this migration removes.
@@ -388,7 +388,7 @@ the portal calls "Activated" — because a cancelled client a purchase still poi
 at has to resolve. `is_active` says which of them WL currently activates.
 
 It is a **boolean, and derived from a set, not read from a field**. The client-list
-report row carries a client *type* label (`text_client_type` → `text_login_type`)
+report row carries a client _type_ label (`text_client_type` → `text_login_type`)
 but **no status column**. And the report's `o_member_status` filter distinguishes
 exactly one value: measured 26 Aug 2026, `[3]` returns the 517 activated, while
 `[1]` and `[2]` are ignored and return all 1,285. So "activated" is the only status
@@ -396,7 +396,7 @@ the API can actually tell us — `is_active` is set by whether a uid appears in 
 `[3]` result, and everyone else is false.
 
 **Type is not status.** "Inactive Client" and "SDC Client" both appear among the
-activated 517 *and* among the deactivated remainder, so deriving activation from the
+activated 517 _and_ among the deactivated remainder, so deriving activation from the
 type label would misclassify thousands. Null means the person reached the table as a
 purchase-only stub and the client-list report has not yet covered them.
 
@@ -407,7 +407,7 @@ WL creates a client of type "Prospect" (`k_login_type` 1234074) and `uid` is
 filled in, which is why it is a nullable column rather than a second table.
 
 **It cannot be populated from the API today.** `/v1/lead/info` returns the form
-*definition* only, and no endpoint lists leads. The form is business-configurable
+_definition_ only, and no endpoint lists leads. The form is business-configurable
 — observed 4 fields keyed 299334/299335/299332/299336 — so `k_field_map` records
 which key supplied which value.
 
@@ -415,12 +415,12 @@ which key supplied which value.
 
 Four columns on `person`, and three of them exist because one was not enough.
 
-| Column | Answers |
-|---|---|
-| `ghl_contact_id` | which contact, once resolved |
-| `ghl_match_state` | `matched` / `ambiguous` / `unmatched` / `failed` |
-| `ghl_match_attempted_at` | when we last looked |
-| `ghl_unresolved_since` | since when this client has had no usable link |
+| Column                   | Answers                                          |
+| ------------------------ | ------------------------------------------------ |
+| `ghl_contact_id`         | which contact, once resolved                     |
+| `ghl_match_state`        | `matched` / `ambiguous` / `unmatched` / `failed` |
+| `ghl_match_attempted_at` | when we last looked                              |
+| `ghl_unresolved_since`   | since when this client has had no usable link    |
 
 `ghl_contact_id` is **deliberately not unique**. A family on one phone number
 resolves several clients to the same contact: the phone search returns one
@@ -475,11 +475,11 @@ the one WellnessLiving holds.
 
 Three measured reasons, all of which point the same way:
 
-| | |
-|---|---|
-| `ghl_contact_id` is deliberately non-unique | **307 distinct contacts across 317 matched clients.** A family on one phone shares a contact, so the fields belong to the contact. On `person` the same fact would be stored in N rows, and a partial run can leave them disagreeing — the failure `is_staff` was rejected for |
-| Typed tables key on the source system's id | `uid`, `k_purchase`, `k_service`, `k_login_type` are all `text`, and they are what an upsert names. Every base table also carries a `uuid` `id` as its PRIMARY KEY since `0035`, but that is plumbing — the natural key survives as `<table>_natkey_unique` and stays the conflict target |
-| A surrogate key would hide a re-key | With the natural key as the conflict target, a re-issued GoHighLevel id shows up as a new row and the old one ages visibly. Upserting on a `uuid` would keep pointing at a contact that no longer exists — which is why `0035` moved the primary key and left the conflict target alone |
+|                                             |                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ghl_contact_id` is deliberately non-unique | **307 distinct contacts across 317 matched clients.** A family on one phone shares a contact, so the fields belong to the contact. On `person` the same fact would be stored in N rows, and a partial run can leave them disagreeing — the failure `is_staff` was rejected for            |
+| Typed tables key on the source system's id  | `uid`, `k_purchase`, `k_service`, `k_login_type` are all `text`, and they are what an upsert names. Every base table also carries a `uuid` `id` as its PRIMARY KEY since `0035`, but that is plumbing — the natural key survives as `<table>_natkey_unique` and stays the conflict target |
+| A surrogate key would hide a re-key         | With the natural key as the conflict target, a re-issued GoHighLevel id shows up as a new row and the old one ages visibly. Upserting on a `uuid` would keep pointing at a contact that no longer exists — which is why `0035` moved the primary key and left the conflict target alone   |
 
 **The agreed field list is data, not schema — and that is what unblocked M06.**
 The ticket sat open because "the agreed fields" was being modelled as columns, so
@@ -618,11 +618,11 @@ back** — re-run `0066` after it.
 side table the portal merges. One notes table, one read path. The two `0065`
 functions are dropped — kept, every note would show twice.
 
-| WL note belongs to | Becomes | Author |
-|---|---|---|
-| a **student** (`identity.student_id`) | a **public** note to that student | none — WL does not say |
-| a **teacher** (`identity.teacher_id`) | that teacher's **private** note, no student | that teacher |
-| anyone else, or several identities, or an empty note | nothing | — |
+| WL note belongs to                                   | Becomes                                     | Author                 |
+| ---------------------------------------------------- | ------------------------------------------- | ---------------------- |
+| a **student** (`identity.student_id`)                | a **public** note to that student           | none — WL does not say |
+| a **teacher** (`identity.teacher_id`)                | that teacher's **private** note, no student | that teacher           |
+| anyone else, or several identities, or an empty note | nothing                                     | —                      |
 
 Measured on dev, 28 Oct 2026 (before `0068` split the rows): 339 clients with a
 note = 334 students and 5 teachers, every one with exactly one identity — all 339
@@ -676,7 +676,7 @@ an unchanged note touches no `teacher_note`.
 
 `created_at` of a WL note is when the trigger first copied it — not when it was
 written, which WL does not say; the portal shows WL notes with no date (`0066`). A
-person who *becomes* a student or teacher after their note was copied gets no note
+person who _becomes_ a student or teacher after their note was copied gets no note
 until the note text changes or `0067`'s backfill is re-run. Proven in
 `supabase/checks/wl_client_note_portal_read.sql`.
 
@@ -713,7 +713,7 @@ records what arrived, but **nothing may SUM it** — and this is not a style rul
 it was misstating revenue by five figures.
 
 WL reports `m_refund` on `/purchase/list/element`, which is called **per item**.
-Every item of a refunded purchase therefore comes back carrying the *same*
+Every item of a refunded purchase therefore comes back carrying the _same_
 refund, and storing it per item made a sum multiply it by the item count:
 
 ```
@@ -726,10 +726,10 @@ refunding item and all 52 carry an identical amount on every one** — not a sin
 case of two items differing. The test that settles it is "refund exceeds the
 purchase total", which should be nearly impossible:
 
-| | Purchases | Excess |
-|---|---|---|
-| Summing over items | 38 | $17,303.50 |
-| **One per purchase** | **3** | **$63.50** |
+|                      | Purchases | Excess     |
+| -------------------- | --------- | ---------- |
+| Summing over items   | 38        | $17,303.50 |
+| **One per purchase** | **3**     | **$63.50** |
 
 A 273× reduction in the anomaly.
 
@@ -752,16 +752,16 @@ without looking wrong.
 portal's "All Clients" report calls Activated (measured 27 Aug 2026). Read
 `active_client` for them.
 
-**Do not filter on `text_login_type`.** Nine types appear *both* active and
+**Do not filter on `text_login_type`.** Nine types appear _both_ active and
 inactive:
 
-| Type | Active | Not |
-|---|---|---|
-| Cancelled Client | **55** | 658 |
-| Inactive Client | **60** | 27 |
-| SDC Client | 200 | 7 |
-| Staff Client Profile | 25 | 22 |
-| Prospect | 13 | 17 |
+| Type                 | Active | Not |
+| -------------------- | ------ | --- |
+| Cancelled Client     | **55** | 658 |
+| Inactive Client      | **60** | 27  |
+| SDC Client           | 200    | 7   |
+| Staff Client Profile | 25     | 22  |
+| Prospect             | 13     | 17  |
 
 "Cancelled Client" holding 55 **active** clients is the whole point: the type is
 what the studio filed them under, not whether WL activates them today.
@@ -791,7 +791,14 @@ fields only. It comes from the element endpoint — see
 Observed verbatim from `/v1/purchase/receipt`:
 
 ```json
-{"m_discount":"0.00","m_sum":"280.00","m_tax":"0.00","m_tip":"0.00","m_total":"280.00","text_currency":"usd"}
+{
+  "m_discount": "0.00",
+  "m_sum": "280.00",
+  "m_tax": "0.00",
+  "m_tip": "0.00",
+  "m_total": "280.00",
+  "text_currency": "usd"
+}
 ```
 
 Every one is a quoted **string**. Stored at fixed precision, never float.
@@ -842,12 +849,12 @@ purchase path.
 
 **What they add.**
 
-| Fact | Why it matters |
-|---|---|
-| `text_revenue_category` — e.g. "Monthly Subscriptions", "Account Payments" | The likeliest grouping a royalty is actually billed on. M04b is blocked on "which items count and how are they grouped"; this is WL's own answer to the second half |
-| A refund as its **own dated row** | `purchase.m_refund` carries no date, so a refund lands in the original purchase's month. Here it is a negative row with its own `dtu_date` |
-| `s_batch_number`, `text_order_id`, `text_processor_reference`, `o_decline_reason` | Reconciling the studio's processor statement. No other endpoint returns any of them |
-| `k_pay_transaction`, `o_actor` | The payment as an event, and who took it ("System" for a recurring charge) |
+| Fact                                                                              | Why it matters                                                                                                                                                      |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `text_revenue_category` — e.g. "Monthly Subscriptions", "Account Payments"        | The likeliest grouping a royalty is actually billed on. M04b is blocked on "which items count and how are they grouped"; this is WL's own answer to the second half |
+| A refund as its **own dated row**                                                 | `purchase.m_refund` carries no date, so a refund lands in the original purchase's month. Here it is a negative row with its own `dtu_date`                          |
+| `s_batch_number`, `text_order_id`, `text_processor_reference`, `o_decline_reason` | Reconciling the studio's processor statement. No other endpoint returns any of them                                                                                 |
+| `k_pay_transaction`, `o_actor`                                                    | The payment as an event, and who took it ("System" for a recurring charge)                                                                                          |
 
 **What they cover. This changed on 1 Oct 2026.** Until then the reports were
 read without `o_purchase_accrual_cash`, which WL treats as Cash mode, so every
@@ -879,13 +886,13 @@ every row, on the **Cash-mode** population of 17 Sep 2026 (see above). The
 conclusion stands, but the counts were not re-measured on the 34,255-row
 population:
 
-| Candidate | Distinct | Rows lost |
-|---|---|---|
-| 739 `k_purchase_item` | 8,778 | 2,135 |
-| 739 `k_purchase_item + k_id + id_table` | 10,656 | 257 |
-| 739 …`+ dtu_date + m_amount` | 10,882 | 31 |
-| 799 `k_pay_transaction` | 9,419 | 777 |
-| 799 `k_pay_transaction + i_row_order + dtu_date` | 9,547 | 649 |
+| Candidate                                        | Distinct | Rows lost |
+| ------------------------------------------------ | -------- | --------- |
+| 739 `k_purchase_item`                            | 8,778    | 2,135     |
+| 739 `k_purchase_item + k_id + id_table`          | 10,656   | 257       |
+| 739 …`+ dtu_date + m_amount`                     | 10,882   | 31        |
+| 799 `k_pay_transaction`                          | 9,419    | 777       |
+| 799 `k_pay_transaction + i_row_order + dtu_date` | 9,547    | 649       |
 
 And `k_pay_transaction` is **null on 10,838 of the 10,913** item-view rows — the
 column naming the transaction is absent from the report named after it.
@@ -919,10 +926,10 @@ Each report row carries a money value twice: a plain column (`m_net_sale`,
 the portal, its CSV export and its summary tiles all show the `o_*` value. So
 summing the raw column gives figures the portal never shows:
 
-| Column | Source | Differs from | Where, measured 1 Oct 2026 (Accrual and cash) |
-|---|---|---|---|
-| `pay_transaction_item.m_net_sale_portal` | `o_net_sale.m_amount` | `m_net_sale` | 110 of 34,255 full-history rows, all **Account Payments** (a payment onto an account): the portal shows what was paid, e.g. $1,346.15 against `m_net_sale` $1,863.90. Summed: **$5,234,690.28**, the portal's "Total Net Sales" to the cent; `m_net_sale` sums to $5,282,282.37 |
-| `pay_transaction.m_total_paid_portal` | `o_total_paid.m_amount` | `m_total_paid` | 16 of 33,064 rows (14 Sep 2020 – 1 Oct 2026), all **Account Adjustment / Account Credited**, Mar–Apr 2026: `m_total_paid` is null, this carries the credited amount. Summed for 2026: $1,056,429.05, the portal CSV's Total Paid; `m_total_paid` gives $1,044,780.65 ($11,648.40 short) |
+| Column                                   | Source                  | Differs from   | Where, measured 1 Oct 2026 (Accrual and cash)                                                                                                                                                                                                                                           |
+| ---------------------------------------- | ----------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pay_transaction_item.m_net_sale_portal` | `o_net_sale.m_amount`   | `m_net_sale`   | 110 of 34,255 full-history rows, all **Account Payments** (a payment onto an account): the portal shows what was paid, e.g. $1,346.15 against `m_net_sale` $1,863.90. Summed: **$5,234,690.28**, the portal's "Total Net Sales" to the cent; `m_net_sale` sums to $5,282,282.37         |
+| `pay_transaction.m_total_paid_portal`    | `o_total_paid.m_amount` | `m_total_paid` | 16 of 33,064 rows (14 Sep 2020 – 1 Oct 2026), all **Account Adjustment / Account Credited**, Mar–Apr 2026: `m_total_paid` is null, this carries the credited amount. Summed for 2026: $1,056,429.05, the portal CSV's Total Paid; `m_total_paid` gives $1,044,780.65 ($11,648.40 short) |
 
 **The raw column stays, because it is not wrong.** An account credit brings no
 money in, and `m_total_paid` says so. Which one a royalty is computed on is a
@@ -981,7 +988,7 @@ They differ only in which WL key names the series, so `session_kind` says which 
 WL sends both:
 
 ```json
-{"dt_date":"2026-09-07 04:00:00","dtl_date":"2026-09-07 00:00:00","text_timezone":"ET"}
+{ "dt_date": "2026-09-07 04:00:00", "dtl_date": "2026-09-07 00:00:00", "text_timezone": "ET" }
 ```
 
 Two independent reasons the local value is stored rather than derived:
@@ -992,7 +999,7 @@ Two independent reasons the local value is stored rather than derived:
 2. **A class is scheduled in local wall time.** "Tuesday 6pm" stays 6pm across a
    daylight-saving change while its UTC value shifts. The wall time is the fact.
 
-Purchases keep UTC only, because a purchase is an *instant* and an instant is
+Purchases keep UTC only, because a purchase is an _instant_ and an instant is
 fully described by UTC.
 
 ### What happened is `id_visit`, not `is_checkin` (0029)
@@ -1001,30 +1008,30 @@ fully described by UTC.
 about the outcome is derived from it.
 
 `is_attended` used to be written from `session.is_checkin`. The API documents
-`is_checkin` as *"ready to be checked in"* / *"can't be checked in"* — whether the
+`is_checkin` as _"ready to be checked in"_ / _"can't be checked in"_ — whether the
 check-in button is live, not whether anybody walked in. Measured 27 Aug 2026:
 
-| | |
-|---|---|
-| `session.is_checkin = true` | **0** of 4,423 |
-| `attendance.is_attended = true` | 4 of 4,431 |
-| `is_cancelled_client` / `is_cancelled_studio` | 0 / 0 |
-| `session_outcome` | 988 upcoming, 12 unknown, **0 countable** |
+|                                               |                                           |
+| --------------------------------------------- | ----------------------------------------- |
+| `session.is_checkin = true`                   | **0** of 4,423                            |
+| `attendance.is_attended = true`               | 4 of 4,431                                |
+| `is_cancelled_client` / `is_cancelled_studio` | 0 / 0                                     |
+| `session_outcome`                             | 988 upcoming, 12 unknown, **0 countable** |
 
 So the royalty attendance signal was not merely wrong, it was **empty**.
 
 `WlVisitSid`, from `/v1/schedule/page/element`:
 
-| Code | Meaning | `is_attended` | Other |
-|---|---|---|---|
-| 1 BOOK | reserved, not yet | **null** | |
-| 2 WAIT | wait list | **null** | |
-| 3 ATTEND | attended | true | **the only countable one** |
-| 4 PENALTY | cancelled too late | false | `is_cancelled_client` + `is_late_cancel` |
-| 5 TRUANCY | missed, no cancellation | false | `is_no_show` |
-| 6 CANCEL | cancelled in time | false | `is_cancelled_client` |
-| 7 PENDING | staff must decide | **null** | `visit_awaiting_staff` |
-| 8 REMOVE | hidden in WL | **null** | |
+| Code      | Meaning                 | `is_attended` | Other                                    |
+| --------- | ----------------------- | ------------- | ---------------------------------------- |
+| 1 BOOK    | reserved, not yet       | **null**      |                                          |
+| 2 WAIT    | wait list               | **null**      |                                          |
+| 3 ATTEND  | attended                | true          | **the only countable one**               |
+| 4 PENALTY | cancelled too late      | false         | `is_cancelled_client` + `is_late_cancel` |
+| 5 TRUANCY | missed, no cancellation | false         | `is_no_show`                             |
+| 6 CANCEL  | cancelled in time       | false         | `is_cancelled_client`                    |
+| 7 PENDING | staff must decide       | **null**      | `visit_awaiting_staff`                   |
+| 8 REMOVE  | hidden in WL            | **null**      |                                          |
 
 **`is_attended` is nullable on purpose.** `not null default false` claimed every
 visit was un-attended until proven otherwise — in the column royalty is paid
@@ -1059,8 +1066,8 @@ So today: "was it cancelled, and was it late" is answerable from `id_visit`; "at
 what moment" is not stored, and is no longer known to be unavailable.
 
 **The check-in MOMENT does exist, and it is not `is_checkin`** (0030).
-`attendance/list` returns `dt_register` — *"the date the client checked in for the
-visit, in UTC"* — on 55 of 55 sampled client records, and it was being discarded.
+`attendance/list` returns `dt_register` — _"the date the client checked in for the
+visit, in UTC"_ — on 55 of 55 sampled client records, and it was being discarded.
 Stored as `dt_checkin_utc`. It is **evidence beside the verdict, not a second
 verdict**: nothing derives from it and no view gates on it, because `id_visit` is
 the authority. Its nulls are the useful part — a studio that does not use check-in
@@ -1080,7 +1087,7 @@ The derivation itself cannot diverge: both import
 
 **Open decision — is a late cancellation royalty-bearing?** `is_late_cancel`'s
 comment (0004) says such a cancellation is "usually still billable", but billable
-to the *client* is not the same as royalty-bearing to the *teacher*.
+to the _client_ is not the same as royalty-bearing to the _teacher_.
 `is_countable` currently says no, and `is_late_cancel` is exposed on
 `session_outcome` so the decision can be made in a `WHERE` clause rather than
 assumed in the view.
@@ -1097,7 +1104,12 @@ still billable. One boolean would force that rule to be guessed at read time.
 `is_substitute` and `is_quick_substitute`:
 
 ```json
-{"k_staff":868220,"uid":"63746599","is_substitute":false,"s_position":"Multi-Instrumentalist Instructor"}
+{
+  "k_staff": 868220,
+  "uid": "63746599",
+  "is_substitute": false,
+  "s_position": "Multi-Instrumentalist Instructor"
+}
 ```
 
 A single `k_staff` column on `session` could not record a substitute — and the
@@ -1117,7 +1129,7 @@ session_staff                                   └── class_session_teacher
 
 **WellnessLiving compresses two levels into one table, and the portal needs
 both.** `0004` states it: `k_class` 268302 is "A Joyful Noise | 60 Minutes" every
-week forever, so it names the *class*, not the occurrence. But `k_class` is a
+week forever, so it names the _class_, not the occurrence. But `k_class` is a
 **column on `session`** — there is no class table. `cohort` is that missing level,
 which is also why `cohort_link` carries no foreign key: nothing is unique on
 `session.k_class` for it to reference. `session_link` does have one, because
@@ -1195,7 +1207,7 @@ it is recognised rather than rediscovered.
 **`is_attended` is nullable here too, and the first draft of `0043` got that
 wrong.** It was written `not null default false` — exactly what `attendance` used
 to be, and exactly what `0029` removed. That reasoning transfers word for word:
-the default asserts every visit was *not* attended until proven otherwise, which
+the default asserts every visit was _not_ attended until proven otherwise, which
 is a claim nobody can make about a session that has not happened yet, or one WL
 has left PENDING for staff to settle.
 
@@ -1230,7 +1242,7 @@ nothing". `cost_is_known` says whether a margin means anything.
 ## Reference lookups
 
 `promotion` and `shop_category` are the business-wide lookups other rows join to —
-what an offering or a storefront category is *called*. Both are keyed on the WL key
+what an offering or a storefront category is _called_. Both are keyed on the WL key
 (`k_promotion`, `k_shop_category`, kept as `text`), so a re-sync upserts in place and
 never duplicates.
 
@@ -1253,7 +1265,7 @@ silently drop every row. See [WL-API-NOTES.md](WL-API-NOTES.md).
 ## The service catalogue, and what "unresolved" means
 
 `service` began (0002) as an FK stub the purchase writer left — key plus a title
-*derived* from the purchase items that referenced it, because task 020 found no
+_derived_ from the purchase items that referenced it, because task 020 found no
 service endpoint (all `/v1/service*` paths 404). Probed live 24 Aug 2026 the real
 catalogue turned up under a different path family, `/v1/appointment/book/service/*`:
 
@@ -1272,7 +1284,7 @@ so upsert dedupes across locations.
 The bookable list is **not** the full catalogue: it returned 9 services at the one
 live location while staff records reference ~200, and appointments point at services
 the list omits. So a service that a transaction references but the catalogue never
-lists must still store — it just cannot be *resolved*. `service.is_resolved` records
+lists must still store — it just cannot be _resolved_. `service.is_resolved` records
 that difference:
 
 - The catalogue writer sends `is_resolved = true`.
@@ -1486,8 +1498,8 @@ from its catch, not measurements. A failed count now reads `UNKNOWN_REMAINING`
 drained, and reporting it would close the run `ok` and move the completion
 watermark past work nobody counted.
 
-
-**`done` rows are kept 20 days and then deleted (`0063`).** The table was never
+**`done` rows are kept 3 days and then deleted (`0063`, `0073`; 20 days until
+26 Nov 2026).** The table was never
 pruned and its size became the commonest cause of a failed pass: 532,415 rows on
 23 Sep 2026, 869,798 on 1 Oct, **1,506,074 `done`** on 13 Oct — by which point
 `count(*)` over it no longer completed (cancelled at 10,141 ms), counting the
@@ -1501,14 +1513,15 @@ fresh-done dedupe reads `state = 'done' and updated_at >= now() - 24h`
 (`DEFAULT_FRESH_DONE_WINDOW_MS`) to decide whether a target was already refreshed
 today. Prune inside that window and the dedupe goes blind: it stops seeing
 today's completions and re-queues the same work the same day, trading a size
-problem for a correctness one. Twenty days clears the floor twenty times over
-and still removes the overwhelming majority of the table. Past it a `done` row
+problem for a correctness one. Three days clears the floor with two days of
+margin. Past it a `done` row
 has **no reader at all** — the dedupe cannot see it, and the claim and
 `countEligible` both filter on `pending`.
 
-**Only `done` is ever deleted.** `pending` and `in_progress` are outstanding work;
-`failed` and `dead` are the record of what was given up on and why, which is the
-first thing an operator reads at 2am.
+**Only `done` is ever deleted by age.** `pending` and `in_progress` are
+outstanding work; `failed` and `dead` are the record of what was given up on and
+why, which is the first thing an operator reads at 2am. The one exception, since
+`0073`, is a `dead` row whose target has been `done` since (below).
 
 **Batched, never one statement.** A single DELETE over a million rows hits the
 same statement timeout the prune exists to prevent, and holds locks on a table
@@ -1518,6 +1531,43 @@ ordering the subquery would make the planner sort a million rows to delete five
 thousand. `pruneDoneItems` loops until a short batch says the window is clear,
 bounded by `maxBatches` so one run cannot spin unbounded.
 
+**Three days, hourly, with a cap (`0073`, 26 Nov 2026).** Twenty days was not a
+bound at this volume: at ~58,000 rows a day it **holds** ~1.16M rows, and on
+26 Nov `client_session_sync` failed with the same `57014` on `sync_queue` that
+`0063` was written for. Retention is now **3 days** (~175,000 rows), and the prune
+runs **hourly at :50** instead of daily, because the daily run had failed on 18,
+20 and 24 Nov and one missed run was a whole day of growth.
+
+- **Oldest first, off an index.** `0063`'s batch could only scan, stepping over
+  the dead tuples its own earlier batches left until autovacuum caught up — a
+  statement that gets slower within one run, the likeliest cause of those failed
+  prunes (likeliest, not proven: the step logs were not readable). `0073`'s
+  `sync_queue_done_updated_idx` lets it read the oldest `done` rows and stop.
+  `0063` rejected an `ORDER BY` because without that index it meant sorting a
+  million rows; with it, ordering is free.
+- **The 24-hour floor is now in SQL** as well as the CLI: `prune_sync_queue`
+  clamps its cutoff to `least(p_before, now() - 24h)`.
+- **A size cap of 300,000 rows is the safety net, not the rule.** After the age
+  rule, if `sync_queue_estimated_rows()` is still over the cap, the oldest `done`
+  rows go until it is not — never inside the floor. The estimate is `n_live_tup`,
+  read once; **never `count(*)`**, which is the statement that stopped completing.
+  If the last 24 hours alone exceed the cap the run is `failed` and alerts; it does
+  not delete into the floor to "fix" it.
+- **Resolved `dead` rows go after 2 days.** A dead row is final; the next sync
+  queues the target again as a new row (`enqueue_sync_items` skips only targets
+  with a `pending`/`in_progress` row). Once that row is `done` the dead one is
+  resolved but still read as a live problem by the sweep, whose parked total caps
+  at 1,000 — passed on 26 Nov (1,001). **Two days, not the seven first proposed:**
+  the proof is a later `done` row, and `done` rows only live 3 days — a dead row
+  waiting longer than that usually outlives its proof and is never removed. With
+  the wait under the window, and the step run **before** the age rule, every
+  resolution is caught by some hourly run (a test simulates it hour by hour). A
+  dead row with no later `done` row is never removed.
+- **Still never `pending` or `in_progress`**, including an item mid-retry — it
+  stays on its own row as `pending` with a higher `attempt_count`.
+- **A failed prune is reported.** `queue:prune` writes a `queue_prune` row to
+  `sync_run` (`ok`/`partial`/`failed`) and exits 1 on failure; the alert sweep
+  mails failed runs.
 
 **Absolute times, not durations.** `next_attempt_at` is a timestamp. A duration
 only means something relative to a process that is still alive; a timestamp is
@@ -1569,12 +1619,12 @@ re-parse is a query.
 "Keep everything" is only a decision once the price is known. Measured against
 live dev data, average payload per call:
 
-| Call | Average |
-|---|---|
-| `/v1/user` (profile) | 2.4 KB |
-| `/v1/profile/purchase/list` | 3.2 KB |
-| `/v1/profile/purchase/list/element` | 2.2 KB |
-| `/v1/purchase/receipt` | **7.7 KB** |
+| Call                                | Average    |
+| ----------------------------------- | ---------- |
+| `/v1/user` (profile)                | 2.4 KB     |
+| `/v1/profile/purchase/list`         | 3.2 KB     |
+| `/v1/profile/purchase/list/element` | 2.2 KB     |
+| `/v1/purchase/receipt`              | **7.7 KB** |
 
 At dev's shape — 5.5 purchases and 5.5 items per client — that is **~58 KB per
 client per full sync**. Receipts are 42 KB of the 58: the largest response, and
@@ -1617,11 +1667,11 @@ hundred. `target_kind` says which shape `target_key` holds.
 The first draft put a single `raw_wl_id` on each typed table, which assumes one row
 comes from one fetch. It does not:
 
-| Table | Fetch 1 | Fetch 2 |
-|---|---|---|
-| `purchase` | `purchase/list` → `k_purchase`, `dt_add`, `s_title` | `purchase/receipt` → **the money** |
-| `person` | `staff/list` → `k_staff`, flags | `user?uid=` → email, phone, dob |
-| `session` | `classes/list` → `k_class`, capacity | `schedule/class/view` → who taught, times |
+| Table      | Fetch 1                                             | Fetch 2                                   |
+| ---------- | --------------------------------------------------- | ----------------------------------------- |
+| `purchase` | `purchase/list` → `k_purchase`, `dt_add`, `s_title` | `purchase/receipt` → **the money**        |
+| `person`   | `staff/list` → `k_staff`, flags                     | `user?uid=` → email, phone, dob           |
+| `session`  | `classes/list` → `k_class`, capacity                | `schedule/class/view` → who taught, times |
 
 Whichever fetch the single column pointed at, the other half of the row had no
 provenance — and on `purchase` that half is the money.
@@ -1665,7 +1715,7 @@ unchanged: **the portal reads; nothing about it writes.**
 **`0054` moved the matching rule into a function, because two callers now need
 it.** `link_signed_in_identity()` resolved the address inline, and that was fine
 while verification was the only moment anyone asked. It is not: the OTP route has
-to ask the same question *before* sending a code, since Supabase Auth checks
+to ask the same question _before_ sending a code, since Supabase Auth checks
 `auth.users` — which this flow never wrote to, so `shouldCreateUser: false`
 refused every student and the sign-in was unreachable from the first commit. The
 rule is now `app.identity_for_email(text)`, called by both. It returns **NULL on
@@ -1723,15 +1773,15 @@ that student. From `0056` until `0063` the check said the other half too,
 The policies, all `to authenticated` and none naming a table (the 42P17 rule from
 `0055`, so only the definer helpers appear):
 
-| Command | Rule |
-|---|---|
-| SELECT (author) | `author_teacher_id = current_teacher_id()` — a teacher sees all their own, both kinds |
-| SELECT (student) | `visibility = 'public' and student_id = current_student_id() and deleted_at is null` — a student sees only public notes addressed to them |
-| SELECT (teacher, WL) | `visibility = 'public' and deleted_at is null and is_linked_note(id) and teaches_student(student_id)` — a teacher sees the WellnessLiving notes of students they teach (`0067`) |
-| INSERT / UPDATE | author only, and whenever a student is named `teaches_student(student_id)` as well (`0063`; before, for public notes only). UPDATE also requires `not is_linked_note(id)` — a WL note is read-only (`0067`) |
-| DELETE | none since `0058` — a delete is an `UPDATE` of `deleted_at` |
+| Command              | Rule                                                                                                                                                                                                        |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SELECT (author)      | `author_teacher_id = current_teacher_id()` — a teacher sees all their own, both kinds                                                                                                                       |
+| SELECT (student)     | `visibility = 'public' and student_id = current_student_id() and deleted_at is null` — a student sees only public notes addressed to them                                                                   |
+| SELECT (teacher, WL) | `visibility = 'public' and deleted_at is null and is_linked_note(id) and teaches_student(student_id)` — a teacher sees the WellnessLiving notes of students they teach (`0067`)                             |
+| INSERT / UPDATE      | author only, and whenever a student is named `teaches_student(student_id)` as well (`0063`; before, for public notes only). UPDATE also requires `not is_linked_note(id)` — a WL note is read-only (`0067`) |
+| DELETE               | none since `0058` — a delete is an `UPDATE` of `deleted_at`                                                                                                                                                 |
 
-**The roster check is a write-time rule, on purpose.** A teacher may only *name* a
+**The roster check is a write-time rule, on purpose.** A teacher may only _name_ a
 student `teaches_student()` says they taught, on either kind of note — enforced in
 the INSERT/UPDATE `with check`. The student's **read** matches on `student_id` and
 does not re-check the roster. The roster is attendance-derived and moves over time;
@@ -1833,7 +1883,7 @@ per (base course, teacher):
 - `public.service` — the 123 real sold courses. `service` carries no teacher of its
   own (`staff_service` is empty here), so a service's teachers are recovered through
   its sessions: `service.k_service → public.session.k_service →
-  public.session_staff.k_period → public.person.k_staff`. That join is ~46k sessions,
+public.session_staff.k_period → public.person.k_staff`. That join is ~46k sessions,
   too heavy to run per quiz submission, so it lives in SQL.
 - `app.cohort` — teachers via `class_session → class_session_teacher → teacher`, as
   before.

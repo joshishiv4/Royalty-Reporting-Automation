@@ -12,30 +12,30 @@ Reference: `2026-08-06_HRRAFEBAV_Sync-Architecture_v1.md` §2a · PRD module M01
 Ten keys per environment. `dev` and `prod` values are **all** different — assume nothing
 carries over.
 
-| Key                         | Kind                   | Rotatable | Owner / source                                 |
-| --------------------------- | ---------------------- | --------- | ---------------------------------------------- |
-| `WL_API_HOST`               | environment coordinate | no        | WellnessLiving (data host)                     |
+| Key                         | Kind                   | Rotatable | Owner / source                                  |
+| --------------------------- | ---------------------- | --------- | ----------------------------------------------- |
+| `WL_API_HOST`               | environment coordinate | no        | WellnessLiving (data host)                      |
 | `WL_AUTH_HOST`              | environment coordinate | no        | WellnessLiving (token host — NOT the data host) |
-| `WL_ID_REGION`              | environment coordinate | no        | WellnessLiving (docs use 2, production uses 1) |
-| `WL_K_BUSINESS`             | environment coordinate | no        | WellnessLiving business record                 |
-| `WL_CLIENT_ID`              | credential             | yes       | WL Integrations team                           |
-| `WL_CLIENT_SECRET`          | credential             | yes       | WL Integrations team                           |
-| `SUPABASE_URL`              | environment coordinate | no        | Supabase project settings → API                |
-| `SUPABASE_SERVICE_ROLE_KEY` | credential             | yes       | Supabase project settings → API keys           |
-| `GHL_API_TOKEN`             | credential             | yes       | GoHighLevel private integration                |
-| `GHL_LOCATION_ID`           | environment coordinate | no        | GoHighLevel location                           |
+| `WL_ID_REGION`              | environment coordinate | no        | WellnessLiving (docs use 2, production uses 1)  |
+| `WL_K_BUSINESS`             | environment coordinate | no        | WellnessLiving business record                  |
+| `WL_CLIENT_ID`              | credential             | yes       | WL Integrations team                            |
+| `WL_CLIENT_SECRET`          | credential             | yes       | WL Integrations team                            |
+| `SUPABASE_URL`              | environment coordinate | no        | Supabase project settings → API                 |
+| `SUPABASE_SERVICE_ROLE_KEY` | credential             | yes       | Supabase project settings → API keys            |
+| `GHL_API_TOKEN`             | credential             | yes       | GoHighLevel private integration                 |
+| `GHL_LOCATION_ID`           | environment coordinate | no        | GoHighLevel location                            |
 
 ### Route tokens (separate from the ten above)
 
 The deployed HTTP routes are guarded by their own bearer tokens, read straight from the
-process environment rather than the secrets bundle - they protect *our* endpoints and are not
+process environment rather than the secrets bundle - they protect _our_ endpoints and are not
 credentials for anyone else's API.
 
-| Variable             | Accepted on                              | Notes                                                        |
-| -------------------- | ---------------------------------------- | ------------------------------------------------------------ |
-| `HEALTHCHECK_TOKEN`  | the read-only routes only                | `/api/health`, `/api/sync-status`. Cannot start a sync.      |
-| `SYNC_TRIGGER_TOKEN` | every route                              | The manual trigger.                                          |
-| `CRON_SECRET`        | every route                              | Vercel Cron sends this as the bearer automatically.          |
+| Variable             | Accepted on               | Notes                                                   |
+| -------------------- | ------------------------- | ------------------------------------------------------- |
+| `HEALTHCHECK_TOKEN`  | the read-only routes only | `/api/health`, `/api/sync-status`. Cannot start a sync. |
+| `SYNC_TRIGGER_TOKEN` | every route               | The manual trigger.                                     |
+| `CRON_SECRET`        | every route               | Vercel Cron sends this as the bearer automatically.     |
 
 Each route accepts **any** of the tokens listed for it, compared in constant time and with
 every candidate compared even after a match, so the timing does not reveal which one matched
@@ -56,14 +56,14 @@ The dead-letter notifier reads its own variables straight from the process envir
 from the secrets bundle. All six are optional. `SMTP_HOST` is the switch: leave it unset and
 the digest still builds and is returned in the sync response, but no mail is sent.
 
-| Variable        | Kind       | Rotatable | Owner / source                                  |
-| --------------- | ---------- | --------- | ----------------------------------------------- |
-| `SMTP_HOST`     | coordinate | no        | the mail provider (`smtp.gmail.com` today)      |
-| `SMTP_PORT`     | coordinate | no        | 587 for STARTTLS, 465 for implicit TLS          |
-| `SMTP_USER`     | coordinate | no        | the mailbox that authenticates                  |
-| `SMTP_PASSWORD` | credential | yes       | Google App Password — see §4e                   |
+| Variable        | Kind       | Rotatable | Owner / source                                                |
+| --------------- | ---------- | --------- | ------------------------------------------------------------- |
+| `SMTP_HOST`     | coordinate | no        | the mail provider (`smtp.gmail.com` today)                    |
+| `SMTP_PORT`     | coordinate | no        | 587 for STARTTLS, 465 for implicit TLS                        |
+| `SMTP_USER`     | coordinate | no        | the mailbox that authenticates                                |
+| `SMTP_PASSWORD` | credential | yes       | Google App Password — see §4e                                 |
 | `SMTP_FROM`     | coordinate | no        | must equal `SMTP_USER` on Gmail; it rewrites any other sender |
-| `SMTP_TO`       | coordinate | no        | recipient; defaults in `schema.ts`, no env needed |
+| `SMTP_TO`       | coordinate | no        | recipient; defaults in `schema.ts`, no env needed             |
 
 > `SMTP_PASSWORD` is a credential but is **not** in `CREDENTIAL_KEYS`, because that list is
 > typed against the secrets bundle and this value does not come from there. It is not
@@ -93,17 +93,17 @@ until **all** of `SIGNOFF_TO`, `SIGNOFF_START_DATE`, `JOTFORM_FORM_HOST`, `JOTFO
 `SMTP_HOST` are set; until then its summary is `skipped` and names the missing ones. It sends
 through the SMTP settings above.
 
-| Variable             | Kind       | Rotatable | Owner / source |
-| -------------------- | ---------- | --------- | -------------- |
-| `SIGNOFF_TO`         | coordinate | no        | the one address every sign-off link is emailed to (the studio admin, for now) |
-| `SIGNOFF_START_DATE` | coordinate | no        | `YYYY-MM-DD`, local lesson date; earlier lessons never get a sign-off. 2026-11-24 at go-live |
-| `SIGNOFF_CLASSES`    | coordinate | no        | comma list; default `Music For Everyone,DJ For Everyone,Music Production For Everyone` (agreed 25 Nov 2026) |
-| `SIGNOFF_GROUP`      | coordinate | no        | the WL client group that needs sign-offs; default `SDC Clients` |
-| `JOTFORM_FORM_HOST`  | coordinate | no        | `form.jotform.com`; a HIPAA or EU Jotform account serves forms from a different host |
-| `JOTFORM_FORM_ID`    | coordinate | no        | the number in the master form's URL |
+| Variable             | Kind       | Rotatable | Owner / source                                                                                                                                                                               |
+| -------------------- | ---------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SIGNOFF_TO`         | coordinate | no        | the one address every sign-off link is emailed to (the studio admin, for now)                                                                                                                |
+| `SIGNOFF_START_DATE` | coordinate | no        | `YYYY-MM-DD`, local lesson date; earlier lessons never get a sign-off. 2026-11-24 at go-live                                                                                                 |
+| `SIGNOFF_CLASSES`    | coordinate | no        | comma list; default `Music For Everyone,DJ For Everyone,Music Production For Everyone` (agreed 25 Nov 2026)                                                                                  |
+| `SIGNOFF_GROUP`      | coordinate | no        | the WL client group that needs sign-offs; default `SDC Clients`                                                                                                                              |
+| `JOTFORM_FORM_HOST`  | coordinate | no        | `form.jotform.com`; a HIPAA or EU Jotform account serves forms from a different host                                                                                                         |
+| `JOTFORM_FORM_ID`    | coordinate | no        | the number in the master form's URL                                                                                                                                                          |
 | `JOTFORM_API_KEY`    | credential | yes       | Jotform → Settings → API. Phase 2 reads submissions with it (read-only use; a Read Access key is enough). Redacted from logs. Without it, signature detection and reminders report `skipped` |
-| `JOTFORM_API_HOST`   | coordinate | no        | `api.jotform.com`; `eu-api.jotform.com` / `hipaa-api.jotform.com` for accounts on those servers |
-| `SIGNOFF_TIMEZONE`   | coordinate | no        | the studio's IANA timezone for month-end reminders; default `America/New_York` (empty means the default) |
+| `JOTFORM_API_HOST`   | coordinate | no        | `api.jotform.com`; `eu-api.jotform.com` / `hipaa-api.jotform.com` for accounts on those servers                                                                                              |
+| `SIGNOFF_TIMEZONE`   | coordinate | no        | the studio's IANA timezone for month-end reminders; default `America/New_York` (empty means the default)                                                                                     |
 
 **The master form's field unique names are code, not config**: `student`, `date`,
 `teacherName`, `courseCode`, `fi`, and a **hidden** `lessonId` (`JOTFORM_FIELDS` in
@@ -135,15 +135,15 @@ Drive integration drops it in, into `<MONTH> / <MONTH> - UNMERGED / <FI> - <MONT
 `First-Last-MM-DD-YYYY-HHMMAM.pdf`. It is `skipped` until phase 1's settings **and** all seven
 below are set.
 
-| Variable                       | Kind       | Rotatable | Owner / source |
-| ------------------------------ | ---------- | --------- | -------------- |
-| `GOOGLE_OAUTH_HOST`            | coordinate | no        | `oauth2.googleapis.com` |
-| `GOOGLE_DRIVE_API_HOST`        | coordinate | no        | `www.googleapis.com` |
-| `GOOGLE_CLIENT_ID`             | credential | yes       | Google Cloud → the OAuth client below. Redacted from logs |
-| `GOOGLE_CLIENT_SECRET`         | credential | yes       | the same client. Redacted |
+| Variable                       | Kind       | Rotatable | Owner / source                                                                                          |
+| ------------------------------ | ---------- | --------- | ------------------------------------------------------------------------------------------------------- |
+| `GOOGLE_OAUTH_HOST`            | coordinate | no        | `oauth2.googleapis.com`                                                                                 |
+| `GOOGLE_DRIVE_API_HOST`        | coordinate | no        | `www.googleapis.com`                                                                                    |
+| `GOOGLE_CLIENT_ID`             | credential | yes       | Google Cloud → the OAuth client below. Redacted from logs                                               |
+| `GOOGLE_CLIENT_SECRET`         | credential | yes       | the same client. Redacted                                                                               |
 | `GOOGLE_REFRESH_TOKEN`         | credential | yes       | made once, signed in as the folder owner (steps below). **Full Drive access to that account.** Redacted |
-| `GOOGLE_DRIVE_INBOX_FOLDER_ID` | coordinate | no        | the folder the Jotform integration sends to — the part of its URL after `/folders/` |
-| `GOOGLE_DRIVE_ROOT_FOLDER_ID`  | coordinate | no        | the folder that holds the `<MONTH YEAR>` folders |
+| `GOOGLE_DRIVE_INBOX_FOLDER_ID` | coordinate | no        | the folder the Jotform integration sends to — the part of its URL after `/folders/`                     |
+| `GOOGLE_DRIVE_ROOT_FOLDER_ID`  | coordinate | no        | the folder that holds the `<MONTH YEAR>` folders                                                        |
 
 **Jotform side, once per form:** Settings → Integrations → Google Drive → "Send submission
 PDFs", to the inbox folder, **no subfolder per submission**, using the PDF document without
@@ -460,14 +460,14 @@ intentionally not committed — CI is the enforcement point.
 The schedule lives in **one place, GitHub Actions**, and that it is one place is a
 plan limit rather than a preference.
 
-| Where | What | Why there |
-| --- | --- | --- |
-| [`.github/workflows/sync.yml`](../.github/workflows/sync.yml) | Hourly, the whole sync | A runner has no 60-second cap |
-| [`.github/workflows/sync-monthly.yml`](../.github/workflows/sync-monthly.yml) | Monthly re-read | Same cap, and this is the pass that needs the time most |
-| [`.github/workflows/alerts.yml`](../.github/workflows/alerts.yml) | Daily 06:00, the watchdog sweep | Moved off Vercel — see the warning below |
-| [`.github/workflows/sync-range.yml`](../.github/workflows/sync-range.yml) | An arbitrary range, by hand | No cadence — it runs when somebody asks |
-| [`.github/workflows/sync-run.yml`](../.github/workflows/sync-run.yml) | Not a schedule | The environment the four above share, written once |
-| [`vercel.json`](../vercel.json) | **No cron at all** | It held the watchdog until 21 Sep 2026 — see below |
+| Where                                                                         | What                            | Why there                                               |
+| ----------------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------- |
+| [`.github/workflows/sync.yml`](../.github/workflows/sync.yml)                 | Hourly, the whole sync          | A runner has no 60-second cap                           |
+| [`.github/workflows/sync-monthly.yml`](../.github/workflows/sync-monthly.yml) | Monthly re-read                 | Same cap, and this is the pass that needs the time most |
+| [`.github/workflows/alerts.yml`](../.github/workflows/alerts.yml)             | Daily 06:00, the watchdog sweep | Moved off Vercel — see the warning below                |
+| [`.github/workflows/sync-range.yml`](../.github/workflows/sync-range.yml)     | An arbitrary range, by hand     | No cadence — it runs when somebody asks                 |
+| [`.github/workflows/sync-run.yml`](../.github/workflows/sync-run.yml)         | Not a schedule                  | The environment the four above share, written once      |
+| [`vercel.json`](../vercel.json)                                               | **No cron at all**              | It held the watchdog until 21 Sep 2026 — see below      |
 
 **A `schedule:` only fires from the default branch.** A cron added on a feature
 branch does not run, and GitHub reports nothing about it: the workflow simply does
@@ -483,7 +483,7 @@ editing one file.
 **Why the sync left Vercel on 18 Sep 2026, and what the 60 seconds cost.** The
 deployment is on the Hobby plan: two cron entries, fired once a day, and a hard
 **60-second** function cap. Every pass is written around that cap — it budgets
-itself to 50s, stops *starting* work, and leaves the rest queued. That is correct,
+itself to 50s, stops _starting_ work, and leaves the rest queued. That is correct,
 and it is also why draining the `client_visits` queue that day took **six
 invocations** at roughly 400 items each, each ending in a 504.
 
@@ -543,15 +543,15 @@ because it is not code.
 for all seven, still callable by hand, and still what to reach for when one group
 needs re-running on its own. Only the routine driver changed.
 
-| Job | What it covers |
-| --- | --- |
-| `schedule-window` | The class/appointment schedule, −7 / +30 days |
-| `catalogue` | Locations, shop categories, promotions, service categories, services |
-| `clients` | Every client WL lists, plus the GoHighLevel match |
-| `teachers` | Staff, their teaching flags and services |
-| `attendance-close` | Who actually turned up, for sessions that have ended |
-| `purchases` | Purchases, receipts, per-item detail |
-| `transactions` | WL's two transaction reports — every payment and every paid item |
+| Job                | What it covers                                                       |
+| ------------------ | -------------------------------------------------------------------- |
+| `schedule-window`  | The class/appointment schedule, −7 / +30 days                        |
+| `catalogue`        | Locations, shop categories, promotions, service categories, services |
+| `clients`          | Every client WL lists, plus the GoHighLevel match                    |
+| `teachers`         | Staff, their teaching flags and services                             |
+| `attendance-close` | Who actually turned up, for sessions that have ended                 |
+| `purchases`        | Purchases, receipts, per-item detail                                 |
+| `transactions`     | WL's two transaction reports — every payment and every paid item     |
 
 **The workflow needs the sync's own environment as repository secrets** — the WL
 credentials, the Supabase service role key, the GoHighLevel token and the SMTP
@@ -598,7 +598,7 @@ broken secret into a silent outage. See "What it still cannot catch" below.
 **Why the alert sweep is its own cron and not part of a sync.** The sync routes
 already mail a digest of what died during their own run, which covers failures.
 It cannot cover the failure this one exists for: if the thing that stops running
-*is* the sync, an alert hosted inside the sync never executes — the one check
+_is_ the sync, an alert hosted inside the sync never executes — the one check
 designed to notice that nothing happened is the check that does not happen. Its
 own function on its own schedule is what breaks that circle. A condition it
 reports is still true the next time it looks, so a missed sweep is not a gap.
@@ -649,24 +649,24 @@ longer, and the `max` column is where those show up.
 
 Grouped by the job that owns each pass, in the order that job runs them.
 
-| Job | Pass | Reads | median | p90 | observed max |
-|---|---|---|---|---|---|
-| `schedule-window` | `schedule_sync` | class schedule, −7 / +30 days | 2.8s | 3.1s | 8.3s |
-| `catalogue` | `location_sync` | locations | 2.5s | 2.8s | 7.3s |
-| `catalogue` | `shop_category_sync` | shop categories | 2.5s | 2.9s | 6.9s |
-| `catalogue` | `promotion_sync` | promotions, per location | 2.8s | 3.1s | 16.9s |
-| `catalogue` | `service_category_sync` | bookable service categories | 2.8s | 3.1s | 8.7s |
-| `catalogue` | `service_sync` | bookable service catalogue — **last, on purpose** | 2.8s | 3.1s | 8.3s |
-| `clients` | `login_type_sync` | membership/login types — **first, on purpose** | 2.5s | 2.9s | 8.7s |
-| `clients` | `client_list_sync` | every activated client | 2.5s | 2.8s | 41.2s |
-| `clients` | `profile_sync` | contact detail, per person | 3.4s | 3.8s | 6.0m |
-| `clients` | `ghl_match_sync` | GoHighLevel contact matching | 2.0s | 2.2s | 7.3m |
-| `teachers` | `staff_sync` | staff → `person` | 2.5s | 2.8s | 7.8s |
-| `attendance-close` | `client_session_sync` | appointments | 3.4s | 3.8s | **80.3m** |
-| `attendance-close` | `attendance_sync` | attendance, **every** session | **31.1s** | 33.6s | 58.7m |
-| `purchases` | `purchase_sync` | purchases, per person | 3.4s | 3.8s | 7.3m |
-| `purchases` | `receipt_sync` | the money on each purchase | 2.0s | 2.4s | **90.4m** |
-| `purchases` | `purchase_element_sync` | item detail, recipient, membership state | **17.3s** | 18.9s | 17.4m |
+| Job                | Pass                    | Reads                                             | median    | p90   | observed max |
+| ------------------ | ----------------------- | ------------------------------------------------- | --------- | ----- | ------------ |
+| `schedule-window`  | `schedule_sync`         | class schedule, −7 / +30 days                     | 2.8s      | 3.1s  | 8.3s         |
+| `catalogue`        | `location_sync`         | locations                                         | 2.5s      | 2.8s  | 7.3s         |
+| `catalogue`        | `shop_category_sync`    | shop categories                                   | 2.5s      | 2.9s  | 6.9s         |
+| `catalogue`        | `promotion_sync`        | promotions, per location                          | 2.8s      | 3.1s  | 16.9s        |
+| `catalogue`        | `service_category_sync` | bookable service categories                       | 2.8s      | 3.1s  | 8.7s         |
+| `catalogue`        | `service_sync`          | bookable service catalogue — **last, on purpose** | 2.8s      | 3.1s  | 8.3s         |
+| `clients`          | `login_type_sync`       | membership/login types — **first, on purpose**    | 2.5s      | 2.9s  | 8.7s         |
+| `clients`          | `client_list_sync`      | every activated client                            | 2.5s      | 2.8s  | 41.2s        |
+| `clients`          | `profile_sync`          | contact detail, per person                        | 3.4s      | 3.8s  | 6.0m         |
+| `clients`          | `ghl_match_sync`        | GoHighLevel contact matching                      | 2.0s      | 2.2s  | 7.3m         |
+| `teachers`         | `staff_sync`            | staff → `person`                                  | 2.5s      | 2.8s  | 7.8s         |
+| `attendance-close` | `client_session_sync`   | appointments                                      | 3.4s      | 3.8s  | **80.3m**    |
+| `attendance-close` | `attendance_sync`       | attendance, **every** session                     | **31.1s** | 33.6s | 58.7m        |
+| `purchases`        | `purchase_sync`         | purchases, per person                             | 3.4s      | 3.8s  | 7.3m         |
+| `purchases`        | `receipt_sync`          | the money on each purchase                        | 2.0s      | 2.4s  | **90.4m**    |
+| `purchases`        | `purchase_element_sync` | item detail, recipient, membership state          | **17.3s** | 18.9s | 17.4m        |
 
 `login_type_sync` runs before the client list because the teacher view joins on
 `is_teacher_type` — without it nobody is a teacher, however well everything else
@@ -680,15 +680,15 @@ route. One month chunk measured at 9.3s.
 `FUNCTION_BUDGET_MS` stops a run **starting** new passes at 50s, under Vercel's
 60s ceiling. So the number that matters per job is the sum of its medians:
 
-| Job | Median sum | Fits one invocation? |
-|---|---|---|
-| `schedule-window` | ~3s | Yes |
-| `catalogue` | ~13s | Yes |
-| `clients` | ~10s | Yes |
-| `teachers` | ~3s | Yes |
-| `attendance-close` | ~35s | Yes, with little room |
-| `purchases` | ~23s | Yes |
-| `/api/wellness-sync-all` | ~85s | **No — always `partial`** |
+| Job                      | Median sum | Fits one invocation?      |
+| ------------------------ | ---------- | ------------------------- |
+| `schedule-window`        | ~3s        | Yes                       |
+| `catalogue`              | ~13s       | Yes                       |
+| `clients`                | ~10s       | Yes                       |
+| `teachers`               | ~3s        | Yes                       |
+| `attendance-close`       | ~35s       | Yes, with little room     |
+| `purchases`              | ~23s       | Yes                       |
+| `/api/wellness-sync-all` | ~85s       | **No — always `partial`** |
 
 That table is the point of splitting the schedule into named jobs. The full sweep
 at 04:00 sums to roughly 85 seconds against a 50-second budget, so it reports
@@ -989,8 +989,24 @@ Check it first. If a plain count will not finish, that is your answer:
 node scripts/queue-status.mjs
 ```
 
-The daily `queue-prune` workflow holds the line at **20 days**. To run it by hand
-— dry run first, which is the default and prints what it would delete:
+The `queue-prune` workflow runs **hourly at :50** (since 26 Nov 2026; it was
+daily at 05:30) and, in order:
+
+1. deletes `dead` rows over **2 days** old whose target has a later `done` row
+   (resolved; an unresolved dead row is never touched);
+2. deletes `done` rows over **3 days** old (was 20 — which held ~1.16M rows);
+3. if the table is still over **300,000** rows (`sync_queue_estimated_rows()`,
+   never `count(*)`), deletes the oldest `done` rows until it is not, **never
+   inside the last 24 hours**.
+
+It writes a `queue_prune` row to `sync_run` each run. `failed` there — or a red
+`queue-prune` run in Actions — means it threw, or the table is over the cap with
+only the last day's rows left; the morning sweep mails it. `partial` means a step
+stopped at `--max-batches` and the next hour carries on. **Needs `0073` applied**
+(with the sync idle — it builds two indexes).
+
+To run it by hand — dry run first, which is the default and prints what the age
+rule would delete:
 
 ```bash
 APP_ENV=prod npm start -- queue:prune
@@ -1002,9 +1018,14 @@ Then, to actually delete:
 APP_ENV=prod npm start -- queue:prune --apply
 ```
 
-`--days=N` overrides the window, `--batch=N` the rows per statement, and
-`--max-batches=N` bounds one run. `done: false` in the output means the backlog
-did not clear in this run — expected while it is still large; run it again.
+`--days=N` overrides the window, `--cap=N` the row cap, `--batch=N` the rows per
+statement, and `--max-batches=N` bounds each step of one run. `state: partial` in
+the output means the backlog did not clear in this run — expected while it is
+still large; run it again. Exit 1 means `failed`: read `error` in the output.
+
+**If it fails with "over the cap"**, a single day's volume is over 300,000 rows.
+Nothing is deleted to fix that, on purpose. Find what queued so much (a backfill,
+a re-seed) and raise `--cap` in `queue-prune.yml` only if the volume is expected.
 
 **Never take `--days` below 2.** `enqueue()`'s dedupe reads the last 24 hours of
 `done` rows to decide a target was already refreshed today; prune inside that
@@ -1012,9 +1033,9 @@ window and it re-queues the same work the same day. The command refuses anything
 at or under 1 day, but it cannot stop you editing the cron.
 
 **Run a large clear while the sync is idle.** Competing with a live pass for the
-same table is how a cleanup becomes an incident. The schedule is 05:30 UTC for
-that reason: `sync` runs hourly on the hour, so the half-hour leaves it a clear
-run, and the sweep at 06:00 still sees a settled system.
+same table is how a cleanup becomes an incident. The schedule is :50 for that
+reason: `sync` runs hourly on the hour, so ten minutes before leaves it a clear
+run, and hourly batches are small once the backlog is gone.
 
 **If deleting rows does not make it fast again**, the problem is bloat rather than
 row count: the indexes stay bloated after a DELETE. `REINDEX TABLE
@@ -1036,22 +1057,22 @@ needs this section more than any other.
 
 ### Traps that will bite
 
-| Trap | What happens | Where |
-|---|---|---|
-| WL answers **HTTP 200 for errors** | The failure is inside the body. Every call must assert `status === "ok"` — a structural test fails the build if any module outside the client calls `fetch` | [WL-API-NOTES.md](WL-API-NOTES.md) |
-| `dt_date` needs a time component | `2026-08-19` is rejected; `2026-08-19 00:00:00` works. Silent | [WL-API-NOTES.md](WL-API-NOTES.md) |
-| …except where it must **not** have one | The class-schedule endpoint wants bare dates. The two are not interchangeable | `src/sync/pass.ts` |
-| WL keys are **text**, never integers | A leading zero is lost as an integer, and the record is then unfindable | [DATA-MODEL.md](DATA-MODEL.md) |
-| Money is `numeric(12,2)`, never float | WL sends `"280.00"` as a string. Float drift in a royalty figure is not recoverable | [DATA-MODEL.md](DATA-MODEL.md) |
-| List endpoints return **keyed objects**, not arrays | Iterate with `Object.values()`. Two endpoints — promotions and shop categories — return real arrays instead | [WL-API-NOTES.md](WL-API-NOTES.md) |
-| Hosts never appear in source, logs or records | Enforced by `tests/no-hardcoded-config.test.ts` | [CLAUDE.md](../CLAUDE.md) |
+| Trap                                                | What happens                                                                                                                                                | Where                              |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| WL answers **HTTP 200 for errors**                  | The failure is inside the body. Every call must assert `status === "ok"` — a structural test fails the build if any module outside the client calls `fetch` | [WL-API-NOTES.md](WL-API-NOTES.md) |
+| `dt_date` needs a time component                    | `2026-08-19` is rejected; `2026-08-19 00:00:00` works. Silent                                                                                               | [WL-API-NOTES.md](WL-API-NOTES.md) |
+| …except where it must **not** have one              | The class-schedule endpoint wants bare dates. The two are not interchangeable                                                                               | `src/sync/pass.ts`                 |
+| WL keys are **text**, never integers                | A leading zero is lost as an integer, and the record is then unfindable                                                                                     | [DATA-MODEL.md](DATA-MODEL.md)     |
+| Money is `numeric(12,2)`, never float               | WL sends `"280.00"` as a string. Float drift in a royalty figure is not recoverable                                                                         | [DATA-MODEL.md](DATA-MODEL.md)     |
+| List endpoints return **keyed objects**, not arrays | Iterate with `Object.values()`. Two endpoints — promotions and shop categories — return real arrays instead                                                 | [WL-API-NOTES.md](WL-API-NOTES.md) |
+| Hosts never appear in source, logs or records       | Enforced by `tests/no-hardcoded-config.test.ts`                                                                                                             | [CLAUDE.md](../CLAUDE.md)          |
 
 ### Open with WellnessLiving
 
-| Question | Status | What it blocks |
-|---|---|---|
+| Question                           | Status                                                                                                                    | What it blocks                                                                                                  |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | A way to enumerate **all clients** | **Open.** No list endpoint; search requires a term. People are discovered through staff records, purchases and attendance | Coverage is everyone who has transacted, **not** the full client base. Any client count is a floor, not a total |
-| **Staff pay amounts** | **Open.** WL returns which pay rate applies, never the amount, and no documented endpoint resolves it | Revenue per class is available. **Profit per class is not.** Any margin figure is unavailable, not zero |
+| **Staff pay amounts**              | **Open.** WL returns which pay rate applies, never the amount, and no documented endpoint resolves it                     | Revenue per class is available. **Profit per class is not.** Any margin figure is unavailable, not zero         |
 
 Before recording a new WL blocker, check the parameter names first. Two of the
 four originally recorded turned out to be our own mistakes — `dt_date` versus
@@ -1059,20 +1080,20 @@ four originally recorded turned out to be our own mistakes — `dt_date` versus
 
 ### Open with the client
 
-| Question | Status |
-|---|---|
+| Question                                        | Status                                                                                                                                                                            |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Which GoHighLevel custom fields may be reported | **Open.** `ghl_custom_field.is_reported` defaults to false, so nothing reaches a client record until somebody says it should. Confirming the list is an `UPDATE`, not a migration |
-| Raw payload retention | **Open.** Every response is kept indefinitely. No retention period has been agreed |
+| Raw payload retention                           | **Open.** Every response is kept indefinitely. No retention period has been agreed                                                                                                |
 
 ### Open on our side
 
-| Question | Status |
-|---|---|
-| One cron per day against an ~85s pass | **Closed**, migration 0035 / named jobs. The schedule is now seven jobs that each fit one 50s invocation, with `/api/wellness-sync-all` kept as the safety net. `attendance-close` (~35s of median) is the one with least headroom and will need splitting next — see section 7 |
-| No external uptime monitor | **Open.** `/api/alerts` notices a job that stopped running, but nothing notices the deployment itself being paused, deleted or never given these crons — in that case the alert sweep does not run either and nobody is told. Needs a monitor outside the platform polling `/api/health`; it is configuration, not code, so it cannot live in this repository |
-| No external uptime monitor | **Open.** Every alert in this system runs inside the system. If the deployment is paused or the crons never registered, nothing runs and nothing is sent. An external monitor pinging `/api/health` is the only thing that catches that |
-| `sync_job_state` page cursor | Built, unused. Waits on a paginated WL endpoint |
-| Royalty calculation itself | Not started. The inputs are being collected; the calculation is the next piece of work |
+| Question                              | Status                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One cron per day against an ~85s pass | **Closed**, migration 0035 / named jobs. The schedule is now seven jobs that each fit one 50s invocation, with `/api/wellness-sync-all` kept as the safety net. `attendance-close` (~35s of median) is the one with least headroom and will need splitting next — see section 7                                                                               |
+| No external uptime monitor            | **Open.** `/api/alerts` notices a job that stopped running, but nothing notices the deployment itself being paused, deleted or never given these crons — in that case the alert sweep does not run either and nobody is told. Needs a monitor outside the platform polling `/api/health`; it is configuration, not code, so it cannot live in this repository |
+| No external uptime monitor            | **Open.** Every alert in this system runs inside the system. If the deployment is paused or the crons never registered, nothing runs and nothing is sent. An external monitor pinging `/api/health` is the only thing that catches that                                                                                                                       |
+| `sync_job_state` page cursor          | Built, unused. Waits on a paginated WL endpoint                                                                                                                                                                                                                                                                                                               |
+| Royalty calculation itself            | Not started. The inputs are being collected; the calculation is the next piece of work                                                                                                                                                                                                                                                                        |
 
 ### Numbers that are provisional
 
@@ -1105,12 +1126,12 @@ join app.student s on s.id = i.student_id
 where lower(trim(s.email)) = lower(trim('THE ADDRESS'));
 ```
 
-| Rows | What it means | What to do |
-|---|---|---|
-| **1**, `auth_user_id` null | Normal. They have never signed in | The fault is delivery, not identity — check §4f, then the sending provider's log |
-| **1**, `auth_user_id` set | They are already linked | If it is not their account, this is 10c |
-| **0** | We hold no student with that address | Ask which address the studio has for them. Do **not** add it to make the sign-in work — see 10b |
-| **2 or more** | Ambiguous, and refused on purpose | 10b |
+| Rows                       | What it means                        | What to do                                                                                      |
+| -------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| **1**, `auth_user_id` null | Normal. They have never signed in    | The fault is delivery, not identity — check §4f, then the sending provider's log                |
+| **1**, `auth_user_id` set  | They are already linked              | If it is not their account, this is 10c                                                         |
+| **0**                      | We hold no student with that address | Ask which address the studio has for them. Do **not** add it to make the sign-in work — see 10b |
+| **2 or more**              | Ambiguous, and refused on purpose    | 10b                                                                                             |
 
 **Then check that Supabase Auth has an account at all.** This is the fault that
 wore the delivery disguise for a whole day, 8 Oct 2026: `auth.users` was empty,
@@ -1123,11 +1144,11 @@ from auth.users
 where lower(email) = lower(trim('THE ADDRESS'));
 ```
 
-| | What it means | What to do |
-|---|---|---|
-| **1 row** | Normal. The portal provisioned them on their first request for a code | The fault is delivery — §4f, then the sending provider's log |
-| **0 rows**, and the student query above returned exactly 1 | Provisioning did not happen | Confirm `0054` is applied (`select app.identity_for_email('THE ADDRESS')` should return a uuid, not an error), then look for `[auth] provisioning refused` in the portal's server log |
-| **0 rows**, and the student query returned 0 or 2+ | Correct. The roll refused the address before any account could be made | 10b |
+|                                                            | What it means                                                          | What to do                                                                                                                                                                            |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 row**                                                  | Normal. The portal provisioned them on their first request for a code  | The fault is delivery — §4f, then the sending provider's log                                                                                                                          |
+| **0 rows**, and the student query above returned exactly 1 | Provisioning did not happen                                            | Confirm `0054` is applied (`select app.identity_for_email('THE ADDRESS')` should return a uuid, not an error), then look for `[auth] provisioning refused` in the portal's server log |
+| **0 rows**, and the student query returned 0 or 2+         | Correct. The roll refused the address before any account could be made | 10b                                                                                                                                                                                   |
 
 An account here is **not** a sign-in: it is created with `email_confirm: true` and
 no password, against a student row the studio already had, and it is reachable
@@ -1154,11 +1175,11 @@ afterwards because the dashboard would look perfectly normal.
 The portal calls `app.link_signed_in_identity()` once, immediately after Supabase Auth
 verifies the code. It raises rather than guessing. The errors, all `28000`:
 
-| Error | Meaning |
-|---|---|
-| `no_email_claim` | The JWT carried no email. An auth provider other than email OTP, or a misconfigured template |
-| `no_single_identity_for_email` | Zero or several students hold that address — 10a, 10b |
-| `identity_already_linked` | Two first sign-ins raced, and this one lost. Harmless: the winner is linked. Ask them to sign in again |
+| Error                          | Meaning                                                                                                |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `no_email_claim`               | The JWT carried no email. An auth provider other than email OTP, or a misconfigured template           |
+| `no_single_identity_for_email` | Zero or several students hold that address — 10a, 10b                                                  |
+| `identity_already_linked`      | Two first sign-ins raced, and this one lost. Harmless: the winner is linked. Ask them to sign in again |
 
 To **unlink** a human — they were linked to the wrong identity, or an auth account is being
 re-issued:
