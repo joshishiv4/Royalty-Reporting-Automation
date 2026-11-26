@@ -102,6 +102,7 @@ correctly does not start.
 | Lesson sign-off phase 2, signatures: new Jotform submissions → `jotform_submission`, each matched to its lesson by the hidden `lessonId`, visible fields re-checked, verdicts `signed / mismatch / unknown-lesson / no-signature / duplicate`                                                                                                                                                                                                                                                                                                                        | [`src/sync/lesson-signoff-check.ts`](../src/sync/lesson-signoff-check.ts)   |
 | Lesson sign-off phase 2, reminders: the +3 d / +7 d / month-end − 3 d schedule in studio time, one reminder per due step, and the month-end unsigned list                                                                                                                                                                                                                                                                                                                                                                                                            | [`src/sync/lesson-signoff-remind.ts`](../src/sync/lesson-signoff-remind.ts) |
 | Lesson sign-off phase 3, Drive filing: a **signed** lesson's PDF (made by Jotform's Drive integration, `<submission id>.pdf` in one drop folder) moved into `<MONTH> / <MONTH> - UNMERGED / <FI> - <MONTH>` and renamed `First-Last-MM-DD-YYYY-HHMMAM.pdf`; folders found before made, once per run; crash recovery by the file's `lessonSignoffId` tag; the 24-hour missing-PDF alert                                                                                                                                                                               | [`src/sync/lesson-signoff-file.ts`](../src/sync/lesson-signoff-file.ts)     |
+| Lesson sign-off, task 039 webhook path: ONE submission, the moment Jotform announces it — read back from the Jotform API by id, stored and judged by the phase 2 functions, then filed by `processFiling` under the `lesson_signoff_file` job lock, polling up to 45 s for a late PDF before leaving it to the hourly pass | [`src/sync/lesson-signoff-webhook.ts`](../src/sync/lesson-signoff-webhook.ts) |
 | Linking a person to their GoHighLevel contact (phone first, email second, names never)                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | [`src/ghl/matcher.ts`](../src/ghl/matcher.ts)                               |
 | The class schedule (schedule/class/list → session + session_staff, keyed on class **and** date)                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | [`src/sync/sessions.ts`](../src/sync/sessions.ts)                           |
 | Who booked and who turned up (login/attendance/list → attendance, per occurrence)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | [`src/sync/attendance.ts`](../src/sync/attendance.ts)                       |
@@ -166,7 +167,7 @@ envelope inside" trap to guard against.
 
 | Question                                                                                                                                          | File                                                |
 | ------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| Listing a form's submissions — the one call; key in the `APIKEY` header, never the URL; success is the body's `responseCode`, not the HTTP status | [`src/jotform/client.ts`](../src/jotform/client.ts) |
+| Listing a form's submissions (hourly) and reading one by id (the task 039 webhook) — read-only; key in the `APIKEY` header, never the URL; success is the body's `responseCode`, not the HTTP status | [`src/jotform/client.ts`](../src/jotform/client.ts) |
 
 Read-only by shape, like the GHL client above: the request method is a `#private`
 GET, so no caller can point it at a write. Jotform, like WL, can answer HTTP 200
@@ -210,6 +211,7 @@ themselves. `tests/sync-pass.test.ts` fails if the default comes back.
 | Vercel FULL sync route — every pass, the daily cron | [`api/wellness-sync-all.ts`](../api/wellness-sync-all.ts) |
 | Vercel HISTORICAL class-schedule route — monthly-chunk backfill and the monthly re-read cadence | [`api/wellness-sync-historical.ts`](../api/wellness-sync-historical.ts) |
 | Vercel ALERT SWEEP route — standing conditions, on its own cron so it cannot share the sync's fate | [`api/alerts.ts`](../api/alerts.ts) |
+| Vercel JOTFORM WEBHOOK route (task 039) — `?key=` in constant time, `submissionID` from Jotform's multipart body, answers at once and checks + files under `waitUntil`; a Web-standard `POST(request)` handler because Vercel's (req, res) helpers do not parse multipart | [`api/jotform-webhook.ts`](../api/jotform-webhook.ts) |
 | Reading and setting the visit sync's date window — GET what the next window will be and why, POST a ONE-SHOT manual `{start,end}`, DELETE to clear | [`api/sync-window.ts`](../api/sync-window.ts) |
 
 The CLI and the routes are thin: both resolve config, build a client, and call the
@@ -270,7 +272,7 @@ behaviour of doing nothing unless asked.
 | The probe result shape                                      | [`src/health/types.ts`](../src/health/types.ts)       |
 | Supabase reachability and key acceptance                    | [`src/supabase/health.ts`](../src/supabase/health.ts) |
 | Supabase writes/reads (PostgREST over fetch)                | [`src/supabase/client.ts`](../src/supabase/client.ts) |
-| Constant-time bearer check for routes                       | [`src/http/bearer.ts`](../src/http/bearer.ts)         |
+| Constant-time bearer check for routes, and `secretMatches` for a key that arrives outside a header (the Jotform webhook) | [`src/http/bearer.ts`](../src/http/bearer.ts)         |
 | Reading a JSON body whatever shape the platform hands it in | [`src/http/body.ts`](../src/http/body.ts)             |
 | Route request/response shapes                               | [`src/http/types.ts`](../src/http/types.ts)           |
 | Provider selection                                          | [`src/secrets/index.ts`](../src/secrets/index.ts)     |
@@ -539,6 +541,28 @@ never signs a lesson, so its PDF stays in the drop folder, where the month-end l
 (phase 2) already names its submission. A lesson signed this hour is filed next hour
 — the check that signs it runs in the same wave. `skipped` until all seven
 `GOOGLE_*` settings are set, on top of phase 1's.
+
+Task 039 adds a **push path in front of those two passes**, so a signature is filed
+within about a minute instead of at the next hourly run. Jotform's webhook calls
+`api/jotform-webhook.ts` on each submission:
+
+```
+POST /api/jotform-webhook?key=…   (multipart, Jotform; key in constant time)
+route    submissionID → 200 AT ONCE (Jotform's webhook gives up after 5 s);
+           the rest runs under Vercel's waitUntil
+work     GET /submission/{id} from the Jotform API - the body is not trusted
+         storeOneSubmission  → the same unchecked jotform_submission row
+         processSubmission   → the same verdict (signed / mismatch / …)
+         signed and unfiled? → take the lesson_signoff_file job lock,
+           processFiling once, release; PDF not there yet → wait 5 s, again,
+           for up to 45 s; past that the hourly lesson_signoff_file files it
+```
+
+The hourly passes are unchanged and stay the backstop: a lost webhook, a PDF later
+than 45 s, or the lock being busy all cost at most an hour. The webhook files under
+the **same job lock** as the hourly filing pass, held for one attempt at a time and
+never across the wait, so the two cannot both create a new `<FI> - <MONTH>` folder or
+move one PDF twice. Two webhooks are serialised the same way.
 
 ## What a sync run costs
 

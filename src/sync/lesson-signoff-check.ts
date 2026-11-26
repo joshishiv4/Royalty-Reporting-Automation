@@ -18,10 +18,12 @@ import { formatLessonDate, JOTFORM_FIELDS } from './lesson-signoff.js';
  * is accepted only if student, date, teacher, course code and FI equal what was
  * sent; otherwise it is recorded as 'mismatch' and the lesson stays unsigned.
  *
- * POLLED, NOT PUSHED. Phase 1's trigger is the hourly sync, and so is this: one
- * GET per hour, newest first, stopping at the first page holding a submission
- * already stored. Jotform's webhook can be added later without changing the
- * matching - it would only deliver the same submission sooner.
+ * PUSHED, WITH A POLL BEHIND IT. Jotform's webhook (task 039,
+ * lesson-signoff-webhook.ts) stores and checks one submission the moment it
+ * arrives, through storeOneSubmission and the same processSubmission. The hourly
+ * poll stays as the backstop: one GET per hour, newest first, stopping at the
+ * first page holding a submission already stored - so a missed webhook costs an
+ * hour, never a signature.
  */
 
 /** Rows per page when reading submissions. One page an hour is the normal case. */
@@ -206,15 +208,7 @@ export async function storeNewSubmissions(
     if (fresh.length > 0) {
       await db.upsert(
         'jotform_submission',
-        fresh.map((p) => ({
-          submission_id: p.submissionId,
-          k_business: kBusiness,
-          form_id: p.formId,
-          jotform_created_at: p.jotformCreatedAt,
-          lesson_id_received: p.lessonId,
-          answers: p.answers,
-          has_signature: p.hasSignature,
-        })),
+        fresh.map((p) => submissionRow(p, kBusiness)),
         { onConflict: 'submission_id' },
       );
       stored += fresh.length;
@@ -222,6 +216,50 @@ export async function storeNewSubmissions(
     if (seen.size > 0 || subs.length < PAGE_SIZE) break;
   }
   return stored;
+}
+
+/** A parsed submission as a jotform_submission row, unchecked (no outcome). */
+function submissionRow(p: ParsedSubmission, kBusiness: string): Record<string, unknown> {
+  return {
+    submission_id: p.submissionId,
+    k_business: kBusiness,
+    form_id: p.formId,
+    jotform_created_at: p.jotformCreatedAt,
+    lesson_id_received: p.lessonId,
+    answers: p.answers,
+    has_signature: p.hasSignature,
+  };
+}
+
+export type StoreOneResult = 'stored' | 'known' | 'deleted' | 'other-form';
+
+/**
+ * Stores ONE submission unchecked, as storeNewSubmissions stores each of a page
+ * (task 039, the webhook path). The same row, so processSubmission cannot tell
+ * which path stored it.
+ *
+ * A submission already stored is left alone - the hourly pass may have stored
+ * and even checked it first, and its verdict must not be disturbed. One for
+ * another form is refused: the route answers for the configured form only.
+ */
+export async function storeOneSubmission(
+  db: SupabaseClient,
+  sub: JotformSubmission,
+  formId: string,
+  kBusiness: string,
+): Promise<StoreOneResult> {
+  const p = parseSubmission(sub, formId);
+  if (p.formId !== formId) return 'other-form';
+  if (p.status === 'DELETED') return 'deleted';
+  const known = await db.select<{ submission_id: string }>(
+    'jotform_submission',
+    `submission_id=eq.${p.submissionId}&select=submission_id&limit=1`,
+  );
+  if (known.length > 0) return 'known';
+  await db.upsert('jotform_submission', [submissionRow(p, kBusiness)], {
+    onConflict: 'submission_id',
+  });
+  return 'stored';
 }
 
 /** Stored submissions not yet checked - the queue seed. */

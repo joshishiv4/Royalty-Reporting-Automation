@@ -1,8 +1,9 @@
 /**
  * A small, read-only Jotform REST client (task 038, phase 2).
  *
- * THE ONE THING IT DOES is list a form's submissions. No create, edit or delete
- * surface - the sign-off flow only ever reads what parents submitted. The host is
+ * IT ONLY READS: a form's submissions (the hourly check) and one submission by id
+ * (the webhook, task 039). No create, edit or delete surface - the sign-off flow
+ * only ever reads what parents submitted. The host is
  * configuration (JOTFORM_API_HOST) and never appears in an error message; the key
  * travels in the `APIKEY` header, never in the URL, so it cannot reach a log line
  * through a printed URL.
@@ -85,11 +86,28 @@ export class JotformClient {
     return content.filter(isSubmission);
   }
 
+  /**
+   * One submission by id (task 039, the webhook path).
+   *
+   * The webhook route re-reads the submission here instead of trusting the body
+   * it was POSTed: whoever can reach the route can only make it look again at
+   * what Jotform itself holds.
+   */
+  async getSubmission(submissionId: string): Promise<JotformSubmission> {
+    const path = `/submission/${encodeURIComponent(submissionId)}`;
+    const content = await this.#get(path, new URLSearchParams());
+    if (!isSubmission(content)) {
+      throw new JotformRequestError('Jotform submission: content is not a submission', path, 200);
+    }
+    return content;
+  }
+
   // #private: unreachable from outside, so no caller can point it elsewhere.
   async #get(path: string, query: URLSearchParams): Promise<unknown> {
     let response: Response;
     try {
-      response = await this.doFetch(`https://${this.config.apiHost}${path}?${query.toString()}`, {
+      const qs = query.toString();
+      response = await this.doFetch(`https://${this.config.apiHost}${path}${qs ? `?${qs}` : ''}`, {
         method: 'GET',
         headers: { APIKEY: this.config.apiKey, Accept: 'application/json' },
         signal: AbortSignal.timeout(this.timeoutMs),
