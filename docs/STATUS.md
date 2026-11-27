@@ -1,8 +1,8 @@
 # Status and plan
 
-Last updated **26 Nov 2026**. Keep the date honest — a stale status file is worse
-than none, because it is believed. (The 26 Nov update covers the `sync_queue`
-entry under it and the lesson sign-off webhook and sign-off timing entries under "In progress" only. The 25 Nov update covers the lesson sign-off
+Last updated **27 Nov 2026**. Keep the date honest — a stale status file is worse
+than none, because it is believed. (The 27 Nov update covers the two `sync_queue`
+entries under the plan only. The 26 Nov update covers the lesson sign-off webhook and sign-off timing entries under "In progress" only. The 25 Nov update covers the lesson sign-off
 entries under "In progress" only, phase 3 included. The 28 Oct update covers the client note only:
 dropping its date, `0066`, copying it into `teacher_note`, `0067`, and one row per note,
 `0068`. The 19 Oct update covers the client-note entry only; the
@@ -33,7 +33,83 @@ it is documented in [RUNBOOK.md](RUNBOOK.md); what it collects is documented in
 number — the thing the project is named for — has not been written. See "Not
 started" below.
 
-### `sync_queue` bounded, 26 Nov 2026 - tested, `0073` not yet applied
+### `sync_queue` is bloated, 27 Nov 2026 - written, `VACUUM FULL` not run, `0074` not applied
+
+**The sync still fails, with the table already small.** The hourly sync of 26 Nov
+23:39 UTC (Actions run 45912241531) failed in `attendance_sync`:
+
+```
+SupabaseError: 57014: canceling statement due to statement timeout
+  [table=enqueue_sync_items]
+```
+
+Its seed had about 22,000 sessions to queue (22,042 were last done on 25 Nov
+22:00-24:00, just leaving the 24-hour window). Thirty chunks of 500 went in during a 128 s seed;
+the 31st was cancelled. A seed failure ends the pass before it claims anything,
+so **15,000 `session_attendance` items are pending and none were processed.**
+`attendance_sync` has failed in most runs since at least 15 Nov (24 of the last
+40; 11 `ok`, 5 `partial`).
+
+**Measured 27 Nov, read-only, through PostgREST** - after `0073`'s prune:
+
+| query                                  | rows    | time                     |
+| -------------------------------------- | ------- | ------------------------ |
+| `sync_queue_estimated_rows()`          | 172,121 | —                        |
+| `state = 'done'`                       | 157,121 | 1,419 ms                 |
+| `state = 'pending'`                    | 15,000  | 345 ms                   |
+| `state = 'dead'`                       | 0       | 1,082 ms                 |
+| `work_type = 'session_attendance'`     | 112,302 | 5,341 ms                 |
+| `session_attendance`, `state = 'done'` | 97,302  | 7,064 ms                 |
+| count of the whole table               | —       | **cancelled, ~9,000 ms** |
+
+A table of 172,000 rows that cannot be counted in nine seconds is not too many
+rows - it is a table still occupying the space of the 1.5M it used to hold.
+`DELETE` and plain `VACUUM` make space reusable; they do not return it, and the
+indexes keep their size. **This answers the question task 035 left open on 13 Oct:
+it is bloat.** Answered by these timings, **not** by `n_dead_tup` or the relation
+size - PostgREST cannot read them. `supabase/checks/sync_queue_bloat.sql` does.
+
+**Written (task 035):**
+
+- `0074` - per-table autovacuum on `sync_queue`, `2000 + 0.02 × rows` for vacuum
+  and analyze, so the bloat does not return. See DATA-MODEL, "Bounded is not
+  fast". The numbers are arithmetic, not measured.
+- `enqueue()` sends **200 rows a statement, not 500**, and **re-sends a chunk
+  that hits a transient error up to 3 times** (2 s, then 4 s apart). Safe because
+  `enqueue_sync_items` is one atomic statement with `ON CONFLICT DO NOTHING`.
+- `supabase/checks/sync_queue_bloat.sql` - read-only; sizes, dead rows, settings.
+
+**Verified:** `npm run verify` passes (84 files, 1,047 tests). **Not run against
+a database:** `0074` and the check script are untested SQL - there was no SQL
+console to run them from. Mutation-checked: each of these turns the
+"enqueue survives a slow statement" tests in `tests/sync-queue.test.ts` red - the
+chunk back at 500; no retry; retrying every error; retrying a 4xx; one try too
+many; a pause that does not grow; no pause; skipping the failed chunk instead of
+re-sending it.
+
+**Not done - operational, in this order (RUNBOOK §8h):**
+
+1. Run `sync_queue_bloat.sql` in the SQL editor and keep the output.
+2. With no `sync` run in progress: `vacuum (full, analyze) public.sync_queue;`.
+3. Apply `0074` (any time - it takes no blocking lock).
+4. Deploy the `enqueue()` change, re-run the check, and watch 24 h of green
+   hourly `sync` runs. A day later `dead_rows` should be in the low thousands.
+
+**Not decided - both need the user:**
+
+- **A failed seed could still drain what is already queued**, then report the pass
+  as failed. Today 15,000 queued items wait for the next run. It changes
+  `runPass` for every pass, not only attendance.
+- **`attendance_sync` re-queues all 48,716 sessions every 24 hours.** That is most
+  of the queue's ~58,000 rows a day and why the pass takes about an hour
+  (3,152-4,563 s on the runs that had work and finished). Narrowing the seed to a date window needs a
+  rule nobody has recorded: how far back attendance can still change in WL.
+
+**Also seen, not investigated:** over 15-26 Nov the hourly `sync` started only
+every four to ten hours (from `sync_run` start times), so one failed run costs
+most of a day of freshness. Why the schedule is that sparse is not known.
+
+### `sync_queue` bounded, 26 Nov 2026 - `0073` applied, prune working
 
 The hourly sync failed in `client_session_sync` with `57014: canceling statement
 due to statement timeout [table=sync_queue]` (Actions run 45712245583). The table
@@ -70,9 +146,12 @@ every item it claimed (`claimed` = `done`, 0 dead) when a `sync_queue` statement
 timed out — a queue statement (claim, reclaim or the enqueue reads), not item
 processing. The log does not name which; it is the table size either way.
 
-**Not done:** `0073` not applied (apply with the sync idle); then the first hourly
-runs clear the backlog, 500k rows a step per run. Re-measure after, and watch 24 h
-of green hourly `sync` runs.
+**`0073` is applied and the backlog is cleared** (found 27 Nov: the prune runs
+call functions only `0073` creates). The 26 Nov 11:40 UTC run (45812645354)
+removed 500,000 `done` rows by age, then 413,690 by the cap from an estimate of
+713,690, leaving ~300,000; the 27 Nov 03:18 run removed 50,527 and reported
+172,648. Dead rows: 0. **The row count is fixed. The sync is not** - see the
+27 Nov entry above.
 
 ### Each WL note is its own row, 28 Oct 2026 - written, `0068` not yet applied
 

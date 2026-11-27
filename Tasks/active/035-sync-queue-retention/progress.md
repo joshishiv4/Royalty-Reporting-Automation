@@ -35,10 +35,48 @@ changes the acceptance measurement, not the prune itself.
 - [x] Mutation-check — 8 mutations, all red (see STATUS 26 Nov)
 - [x] Read the 18/20/24 Nov prune logs — `57014` in the prune batch itself, 9–15 s in
 - [~] Statement in `client_session_sync` — narrowed to a queue statement after the drain; log does not name it
-- [ ] Apply `0073` with the sync idle; watch the first hourly prunes clear the backlog
-- [ ] Re-measure; 24 h of green hourly `sync` runs
+- [x] Apply `0073` with the sync idle; watch the first hourly prunes clear the backlog — found applied 27 Nov; 713,690 → ~172,000
+- [ ] Re-measure; 24 h of green hourly `sync` runs — re-measured 27 Nov, **still slow: bloat** (below)
+
+## Reopened 2026-11-27: bounded, still slow — bloat
+
+- [x] Measure the live table read-only (counts, timings, `attendance_sync` run history)
+- [x] `0074`: per-table autovacuum, `2000 + 0.02 × rows` for vacuum and analyze
+- [x] `supabase/checks/sync_queue_bloat.sql` — sizes, dead rows, settings (answers the first box of this file)
+- [x] `enqueue()`: 200 rows a statement (100 at first; changed at the user's request), re-send a transient failure up to 3 times
+- [x] Tests in `tests/sync-queue.test.ts`; 8 mutations, all red
+- [x] Docs: ARCHITECTURE, DATA-MODEL, STATUS (27 Nov), RUNBOOK §8h
+- [x] `npm run verify`
+- [ ] Run `sync_queue_bloat.sql`, keep the output (user, SQL editor)
+- [ ] `vacuum (full, analyze) public.sync_queue;` with the sync idle (user)
+- [ ] Apply `0074`; deploy the `enqueue()` change
+- [ ] Re-run the check; `attendance_sync` reaches `ok`; 24 h of green hourly `sync` runs
+- [ ] A day later: `dead_rows` in the low thousands
+- [ ] Decide: should a failed seed still drain what is queued? (changes `runPass` for every pass)
+- [ ] Decide: should `attendance_sync` stop re-queueing all 48,716 sessions daily? (needs a rule for how far back WL attendance changes)
 
 ## Log
+
+### 2026-11-27
+
+- Hourly sync of 26 Nov 23:39 UTC (run 45912241531) failed in `attendance_sync`:
+  `57014 ... [table=enqueue_sync_items]`. 30 chunks of 500 inserted in a 128 s
+  seed, the 31st cancelled; 15,000 items pending, none processed (a seed failure
+  ends the pass before it claims).
+- `0073` is applied: the prune runs call its functions. 26 Nov 11:40 run removed
+  500,000 by age + 413,690 by cap; 27 Nov 03:18 run reported 172,648 rows.
+- Measured through PostgREST: 172,121 estimated rows; whole-table count
+  cancelled at ~9 s; 97,302 `session_attendance` done rows in 7,064 ms. That is
+  the open bloat question from 13 Oct, answered by timings. Not yet read:
+  `n_dead_tup`, relation size — the new check script does.
+- `attendance_sync` failed 24 of its last 40 runs (since 15 Nov). Its seed reads
+  all 48,716 sessions and re-queues each once its `done` row leaves the 24 h
+  window.
+- User approved: `0074`, the `enqueue()` retry and smaller chunk, docs. Not
+  approved yet: draining after a failed seed; narrowing the attendance seed.
+- Mutations that each turned `tests/sync-queue.test.ts` red: chunk 500 (1 failed);
+  no retry (3); retry every error (2); retry a 4xx (1); one try too many (1);
+  pause does not grow (1); no pause (2); skip the failed chunk (3).
 
 ### 2026-11-26
 
