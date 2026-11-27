@@ -1028,7 +1028,9 @@ million rows ordinary statements start crossing the timeout. The symptom moves
 around — the fresh-done dedupe read (30 Sep, killed 16 of 18 passes), the
 post-drain count (9 Oct), `enqueue_sync_items` itself (13 Oct, `attendance_sync`,
 3,500 items left unqueued) — so treat the table size as the cause whichever
-statement is named.
+statement is named. **Size means two things: rows, and the space dead rows left
+behind.** If the count below is small and statements are still slow, skip to "it
+is bloat" at the end of this section.
 
 Check it first. If a plain count will not finish, that is your answer:
 
@@ -1049,8 +1051,8 @@ daily at 05:30) and, in order:
 It writes a `queue_prune` row to `sync_run` each run. `failed` there — or a red
 `queue-prune` run in Actions — means it threw, or the table is over the cap with
 only the last day's rows left; the morning sweep mails it. `partial` means a step
-stopped at `--max-batches` and the next hour carries on. **Needs `0073` applied**
-(with the sync idle — it builds two indexes).
+stopped at `--max-batches` and the next hour carries on. **Needs `0073`**, which
+is applied (since 26 Nov 2026).
 
 To run it by hand — dry run first, which is the default and prints what the age
 rule would delete:
@@ -1084,16 +1086,42 @@ same table is how a cleanup becomes an incident. The schedule is :50 for that
 reason: `sync` runs hourly on the hour, so ten minutes before leaves it a clear
 run, and hourly batches are small once the backlog is gone.
 
-**If deleting rows does not make it fast again**, the problem is bloat rather than
-row count: the indexes stay bloated after a DELETE. `REINDEX TABLE
-public.sync_queue` — or `VACUUM (FULL, ANALYZE) public.sync_queue`, which takes
-an exclusive lock and must not run while the sync does. Confirm first from a SQL
-console:
+**If the row count is fine and it is still slow, it is bloat.** This happened:
+on 27 Nov 2026 the table was down to ~172,000 rows and a whole-table count was
+still cancelled at ~9 s, and `attendance_sync` had failed the night before inside
+`enqueue_sync_items`. Deleting rows makes their space reusable; it does not give
+it back, and every index keeps its old size. The prune cannot fix this and
+running it again will not help.
 
-```sql
-select n_live_tup, n_dead_tup, last_autovacuum
-  from pg_stat_user_tables where relname = 'sync_queue';
-```
+1. **Confirm it.** Run [`supabase/checks/sync_queue_bloat.sql`](../supabase/checks/sync_queue_bloat.sql)
+   in the SQL editor and keep the output. `heap_bytes_per_live_row` in the
+   thousands (a queue row is a few hundred bytes) is the answer. PostgREST cannot
+   read any of this, which is why it was only ever inferred.
+2. **Make sure no `sync` run is in progress** in GitHub Actions, and that the
+   next one is not about to start (hourly on the hour; `queue-prune` at :50).
+3. **Reclaim the space:**
+
+   ```sql
+   vacuum (full, analyze) public.sync_queue;
+   ```
+
+   It rewrites the table and all its indexes under an **exclusive lock** — every
+   read and write of `sync_queue` waits until it finishes. A pass that starts
+   meanwhile will time out, not corrupt anything: the queue is the cursor.
+4. **Apply `0074`** if it is not already (the check prints `none - 0074 not
+   applied` when it is missing). It sets autovacuum on this table to start at
+   `2000 + 0.02 × rows` dead rows instead of the stock `50 + 0.2 × rows`, so the
+   bloat does not build back. It takes no blocking lock and can run at any time.
+5. **Run the check again**, then once more a day later. Total size should have
+   fallen to roughly live rows × a few hundred bytes plus indexes, and
+   `dead_rows` should sit in the low thousands. Tens of thousands a day later
+   means `0074`'s settings are not holding — they were chosen by arithmetic, not
+   measured.
+
+`enqueue()` also defends itself since 27 Nov: 200 rows a statement instead of
+500, and a chunk that hits a statement timeout is sent again up to 3 times. That
+keeps one slow statement from failing a pass; it does not make a bloated table
+fast.
 
 ---
 

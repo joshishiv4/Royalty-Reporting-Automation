@@ -4,6 +4,9 @@ import { WlRequestError } from '../src/wl/client.js';
 import {
   claimBatch,
   enqueue,
+  ENQUEUE_CHUNK,
+  ENQUEUE_CHUNK_ATTEMPTS,
+  ENQUEUE_RETRY_PAUSE_MS,
   outcomeFromError,
   outcomeFromWlError,
   SUPABASE_TRANSIENT_REQUEUE_MS,
@@ -593,5 +596,137 @@ describe('enqueue cannot be broken by a racing run', () => {
 
     expect(h.inserts).toEqual([]);
     expect(added).toBe(0);
+  });
+});
+
+/**
+ * One slow statement must not cost a whole pass.
+ *
+ * Measured 26 Nov 2026 (Actions run 45912241531): attendance_sync's seed sent
+ * chunks of 500 to `enqueue_sync_items`, thirty went in at seconds apiece, and
+ * the 31st hit the statement timeout - `57014 ... [table=enqueue_sync_items]`.
+ * The seed runs before anything is claimed, so the pass failed with 15,000 items
+ * queued and none processed.
+ *
+ * Two guarantees: a statement is small enough to have headroom, and a chunk that
+ * hits a transient error is sent again - safe because the function is one atomic
+ * statement with ON CONFLICT DO NOTHING (0032).
+ */
+describe('enqueue survives a slow statement', () => {
+  const STATEMENT_TIMEOUT = () =>
+    new SupabaseError(
+      'enqueue_sync_items',
+      500,
+      '57014: canceling statement due to statement timeout',
+    );
+
+  const targets = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      work_type: 'session_attendance',
+      target_key: `period-${String(i)}`,
+      k_business: '111111',
+    }));
+
+  /** A db whose rpc runs `script` per call, recording what each call carried. */
+  function harness(script: (call: number, rows: unknown[]) => number) {
+    const sent: unknown[][] = [];
+    const pauses: number[] = [];
+    const db = {
+      select: vi.fn(() => Promise.resolve([])),
+      rpc: vi.fn((_fn: string, args: { items: unknown[] }) => {
+        sent.push(args.items);
+        // A throw inside the executor rejects the promise, as a failed call does.
+        return new Promise<number>((resolve) => {
+          resolve(script(sent.length, args.items));
+        });
+      }),
+    } as unknown as SupabaseClient;
+    const sleep = (ms: number) => {
+      pauses.push(ms);
+      return Promise.resolve();
+    };
+    return { db, sent, pauses, sleep };
+  }
+
+  it('sends no statement larger than ENQUEUE_CHUNK, and loses no row doing it', async () => {
+    const h = harness((_call, rows) => rows.length);
+    const added = await enqueue(h.db, targets(ENQUEUE_CHUNK * 2 + 1), NOW, { sleep: h.sleep });
+
+    expect(h.sent.map((rows) => rows.length)).toEqual([ENQUEUE_CHUNK, ENQUEUE_CHUNK, 1]);
+    expect(added).toBe(ENQUEUE_CHUNK * 2 + 1);
+  });
+
+  it('keeps a statement well under the 500 rows that timed out', () => {
+    // The number is the guarantee: 500 rows took seconds against a ~9 s timeout.
+    expect(ENQUEUE_CHUNK).toBeLessThanOrEqual(200);
+  });
+
+  it('sends a chunk again when the statement times out, and carries on', async () => {
+    // Second statement is cancelled once; every other one succeeds.
+    let failed = false;
+    const h = harness((call, rows) => {
+      if (call === 2 && !failed) {
+        failed = true;
+        throw STATEMENT_TIMEOUT();
+      }
+      return rows.length;
+    });
+    const all = targets(ENQUEUE_CHUNK * 3);
+    const added = await enqueue(h.db, all, NOW, { sleep: h.sleep });
+
+    // Four statements for three chunks: the second was sent twice, IDENTICALLY.
+    expect(h.sent).toHaveLength(4);
+    expect(h.sent[2]).toEqual(h.sent[1]);
+    // And the chunk after it still went: the seed did not stop at the failure.
+    expect(h.sent[3]).toHaveLength(ENQUEUE_CHUNK);
+    expect(added).toBe(all.length);
+    expect(h.pauses).toEqual([ENQUEUE_RETRY_PAUSE_MS]);
+  });
+
+  it('retries a network failure too - the statement may or may not have landed', async () => {
+    let failed = false;
+    const h = harness(() => {
+      if (!failed) {
+        failed = true;
+        throw new SupabaseError('enqueue_sync_items', null, 'timed out after 30000ms');
+      }
+      // The first try DID commit, so the retry inserts nothing: ON CONFLICT DO
+      // NOTHING is what makes sending it twice harmless.
+      return 0;
+    });
+    const added = await enqueue(h.db, targets(2), NOW, { sleep: h.sleep });
+
+    expect(h.sent).toHaveLength(2);
+    expect(added).toBe(0);
+  });
+
+  it('gives up after ENQUEUE_CHUNK_ATTEMPTS tries, with the original error', async () => {
+    const h = harness(() => {
+      throw STATEMENT_TIMEOUT();
+    });
+
+    await expect(enqueue(h.db, targets(1), NOW, { sleep: h.sleep })).rejects.toThrow(/57014/);
+    expect(h.sent).toHaveLength(ENQUEUE_CHUNK_ATTEMPTS);
+    // Waits between tries only, and longer each time.
+    expect(h.pauses).toEqual([ENQUEUE_RETRY_PAUSE_MS, ENQUEUE_RETRY_PAUSE_MS * 2]);
+  });
+
+  it('does not retry a 4xx - a constraint or a bad column is a bug, not a blip', async () => {
+    const h = harness(() => {
+      throw new SupabaseError('enqueue_sync_items', 400, '42703: column "x" does not exist');
+    });
+
+    await expect(enqueue(h.db, targets(1), NOW, { sleep: h.sleep })).rejects.toThrow(/42703/);
+    expect(h.sent).toHaveLength(1);
+    expect(h.pauses).toEqual([]);
+  });
+
+  it('does not retry an error that is not the database at all', async () => {
+    const h = harness(() => {
+      throw new TypeError('not a SupabaseError');
+    });
+
+    await expect(enqueue(h.db, targets(1), NOW, { sleep: h.sleep })).rejects.toThrow(TypeError);
+    expect(h.sent).toHaveLength(1);
   });
 });
