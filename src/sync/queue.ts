@@ -266,7 +266,53 @@ export interface EnqueueOptions {
    * Date.now(). Injectable so tests do not depend on wall time.
    */
   readonly now?: () => number;
+  /** The pause between tries of one chunk. Injectable so tests do not wait. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
+
+/**
+ * How many rows one `enqueue_sync_items` statement carries.
+ *
+ * 200, DOWN FROM 500, AND THE REASON IS MEASURED. On 26 Nov 2026 (the 23:39 UTC
+ * hourly run; STATUS.md names it) attendance_sync's seed had ~22,000 sessions to
+ * queue.
+ * Thirty chunks of 500 went in during a 128-second seed - seconds apiece, against
+ * a statement timeout that cancels at about nine - and the 31st was cancelled:
+ * `57014: canceling statement due to statement timeout
+ * [table=enqueue_sync_items]`. The table held only ~172,000 rows by then; the
+ * cost was bloat, not row count (migration 0074).
+ *
+ * At the same per-row cost a 200-row statement takes under two seconds, about a
+ * fifth of the timeout. 100 was written first and would double that margin; 200
+ * was chosen on 27 Nov to halve the round trips - 110 for that seed, not 220 -
+ * while keeping the statement well clear of the size that failed. Either way
+ * the extra round trips over 500 (44 for that seed) cost seconds, on a pass that
+ * then spends an hour calling WellnessLiving.
+ */
+export const ENQUEUE_CHUNK = 200;
+
+/**
+ * How many times one chunk is tried before the seed gives up.
+ *
+ * A RETRY IS SAFE HERE, WHICH IS WHY THERE IS ONE. `enqueue_sync_items` is a
+ * single statement with a bare ON CONFLICT DO NOTHING (0032). Cancelled, it
+ * inserted nothing. Committed with the answer lost on the way back, its rows are
+ * active and the second try skips every one of them. Either way a chunk can be
+ * sent again without queueing anything twice.
+ *
+ * WHY IT MATTERS. The seed runs before the pass claims anything, so one chunk
+ * that timed out failed the whole pass with everything already queued left
+ * untouched until the next run - 15,000 items on 26 Nov, when the hourly sync
+ * was in practice starting only every four to ten hours.
+ *
+ * Only a transient error is retried (`SupabaseError.isTransient`: a statement
+ * timeout comes back as HTTP 500, a network failure as no status). A 4xx is a
+ * bug, and trying a bug three times is three failures.
+ */
+export const ENQUEUE_CHUNK_ATTEMPTS = 3;
+
+/** The pause before the second try; the third waits twice as long. */
+export const ENQUEUE_RETRY_PAUSE_MS = 2_000;
 
 export async function enqueue(
   db: SupabaseClient,
@@ -369,19 +415,31 @@ export async function enqueue(
   // next_attempt_at comes from the caller's clock, not the DB default: the claim
   // filters on that same clock, so relying on the server's now() makes a fresh
   // item look not-yet-eligible whenever the two differ by a hair.
-  const CHUNK = 500;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   let inserted = 0;
-  for (let start = 0; start < fresh.length; start += CHUNK) {
-    inserted += await db.rpc<number>('enqueue_sync_items', {
-      items: fresh.slice(start, start + CHUNK).map((i) => ({
-        ...i,
-        ...(nextAttemptAt === undefined ? {} : { next_attempt_at: nextAttemptAt }),
-      })),
-    });
+  for (let start = 0; start < fresh.length; start += ENQUEUE_CHUNK) {
+    const chunk = fresh.slice(start, start + ENQUEUE_CHUNK).map((i) => ({
+      ...i,
+      ...(nextAttemptAt === undefined ? {} : { next_attempt_at: nextAttemptAt }),
+    }));
+    // The SAME chunk again, never a re-read: see ENQUEUE_CHUNK_ATTEMPTS on why
+    // sending it twice cannot queue anything twice.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        inserted += await db.rpc<number>('enqueue_sync_items', { items: chunk });
+        break;
+      } catch (error) {
+        const transient = error instanceof SupabaseError && error.isTransient;
+        if (!transient || attempt >= ENQUEUE_CHUNK_ATTEMPTS) throw error;
+        await sleep(ENQUEUE_RETRY_PAUSE_MS * attempt);
+      }
+    }
   }
   // What was actually added, not what we hoped to add: the difference is the
   // races the dedupe read missed, and reporting the optimistic number would hide
-  // exactly the thing worth noticing.
+  // exactly the thing worth noticing. One case reads low: a chunk that committed
+  // but whose answer was lost is retried, and the retry reports 0 for rows the
+  // first try did insert.
   return inserted;
 }
 

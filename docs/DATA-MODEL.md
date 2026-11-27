@@ -1569,6 +1569,40 @@ runs **hourly at :50** instead of daily, because the daily run had failed on 18,
   `sync_run` (`ok`/`partial`/`failed`) and exits 1 on failure; the alert sweep
   mails failed runs.
 
+**Bounded is not fast: the table was bloated (`0074`, 27 Nov 2026).** The prune
+worked - 713,690 rows to ~172,000 in a day - and the sync still failed:
+`attendance_sync`, 26 Nov 23:39 UTC, `57014` inside `enqueue_sync_items`, the same
+statement as 13 Oct at a ninth of the rows. Measured the next day at 172,121
+estimated rows: a whole-table count **cancelled at ~9 s**, 97,302
+`session_attendance` done rows counted in 7,064 ms, and a 500-row insert taking
+seconds (30 chunks in a 128 s seed before the 31st was cancelled). Row count
+cannot explain that. A table that still occupies the space of the 1.5M rows it
+once held can: `DELETE` and plain `VACUUM` make space reusable, they do not
+return it, and every index keeps its size. This is the question left open on
+13 Oct, answered by timings rather than by `n_dead_tup` - PostgREST cannot read
+that; `supabase/checks/sync_queue_bloat.sql` can.
+
+- **The space already lost comes back only with `VACUUM FULL`**, by hand, with the
+  sync idle (RUNBOOK §8h). It cannot be a migration: `VACUUM` does not run inside
+  a transaction.
+- **`0074` sets autovacuum per table to `2000 + 0.02 × rows`**, for vacuum and for
+  analyze. The stock rule is `50 + 0.2 × rows`, sized for rows that mostly stay
+  put. A queue row is rewritten twice and then deleted (pending → in_progress →
+  done → pruned), so one item leaves about three dead versions - ~175,000 a day
+  at ~58,000 items. At 1.16M rows the stock rule waited for 232,000 of them, more
+  than a day's worth. **Arithmetic, not a measurement**: what confirms it is
+  `dead_rows` staying in the low thousands a day after the `VACUUM FULL`.
+- **Not `fillfactor`.** It leaves room for heap-only updates, and this table can
+  never have one - `state` is in the predicate of every partial index, so every
+  state change writes every index. A lower fillfactor would only make it bigger.
+- **`enqueue()` sends 200 rows a statement, down from 500, and re-sends a chunk
+  that hits a transient error up to 3 times.** The seed runs before a pass claims
+  anything, so one cancelled statement cost the whole pass - 15,000 items queued,
+  none processed. Re-sending is safe for the reason `0032` exists: the function
+  is one atomic statement with a bare `ON CONFLICT DO NOTHING`, so a cancelled
+  chunk inserted nothing and a committed one is skipped whole the second time.
+  Only `SupabaseError.isTransient` is retried; a 4xx is a bug.
+
 **Absolute times, not durations.** `next_attempt_at` is a timestamp. A duration
 only means something relative to a process that is still alive; a timestamp is
 still correct after a crash, a redeploy, or a fortnight in the queue.
