@@ -961,7 +961,7 @@ First-Last-11-24-2026-1000AM.pdf`, tagged. Three fake-lessonId test submissions 
 - **Phase 4, the month-end merge** (`FIRST LAST - FI.pdf`), not started; needs the
   grace-period answer (task 038, open question 2) before 30 Nov.
 
-### Lesson sign-off, Jotform webhook — code complete, not deployed (task 039, 26 Nov 2026)
+### Lesson sign-off, Jotform webhook — live, tested end to end (task 039, 26 Nov 2026)
 
 New Vercel route `api/jotform-webhook.ts`: Jotform calls it on every submission, it answers
 at once (Jotform's webhook times out after 5 s) and, under Vercel's `waitUntil`, reads the
@@ -976,17 +976,20 @@ the suite red (filing without the lock, the lock not released on a throw, overru
 budget, re-filing a filed lesson, overwriting a known submission, storing another form's
 submission, an unchecked key, an unvalidated id, the key or a host left in the log line).
 
-**Not done / blocked:**
+**Tested end to end, 26 Nov 2026**, on Vercel production (`main`), the test form and the
+developer's Drive: a real lesson link from the hourly sync (a 25 Nov lesson, FI ISS) was
+signed. Vercel logged `POST /api/jotform-webhook` 200 and a `jotform_webhook` line; the
+submission was judged `signed` at 13:39:16.82 UTC and the PDF was filed (`filed_at`) at
+13:39:18.92 — **2 seconds**, no sync run. This confirms what the docs did not say: the
+body carries `submissionID`, the `?key=` query string survives, and `GET /submission/{id}`
+works on the Free plan.
 
-- **Not measured against Jotform.** Its docs give only the 5 s timeout. Assumed until the
-  first real call: the body is multipart with `submissionID`; the `?key=` query string is
-  kept on the URL; `GET /submission/{id}` works on the Free plan. The route also reads
-  urlencoded and JSON bodies.
-- Deploy: Vercel needs `JOTFORM_WEBHOOK_KEY` and the phase 1-3 settings (RUNBOOK, "Jotform
-  webhook"); then the URL goes on the test form's Webhooks integration, and one signed test
-  lesson is timed to its Drive folder.
+**Still to know:**
+
+- The body's exact content type was not captured (the route reads multipart, urlencoded and
+  JSON alike).
 - The webhook files only after the hourly `lesson_signoff_file` pass has run once on that
-  database (it creates the lock's row).
+  database (it creates the lock's row). On this database it has.
 
 ### Lesson sign-off emails in the same run as the attendance — code complete (26 Nov 2026)
 

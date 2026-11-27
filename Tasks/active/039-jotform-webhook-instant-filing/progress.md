@@ -10,11 +10,11 @@
 - [x] 6. `.env.example` (`JOTFORM_WEBHOOK_KEY`), `vercel.json` entry, `@vercel/functions` 3.11.1 pinned.
 - [x] 7. Docs: ARCHITECTURE, RUNBOOK (setup + §4i rotation), STATUS, WL-API-NOTES.
 - [x] 8. `npm run verify` green (1,035 tests); 11 mutations red.
-- [ ] 9. End to end: deploy, set Vercel env + webhook URL on the test form, sign one lesson, time it to the Drive folder; record the real payload in `resources/webhook-sample.txt` (personal fields removed).
+- [x] 9. End to end: deploy, set Vercel env + webhook URL on the test form, sign one lesson, time it to the Drive folder; record the real payload in `resources/webhook-sample.txt` (personal fields removed). Done 26 Nov: filed 2 s after signing; payload sample not captured (no personal data kept).
 
 ## Last step
 
-Code and docs done, uncommitted on `dev`. Step 9 needs the user: Vercel env vars, deploy, and the webhook URL on the form.
+Live and tested end to end on 26 Nov 2026. Ready to close once the user confirms.
 
 ## Blockers
 
@@ -45,3 +45,7 @@ None in code. Step 9 needs Vercel access and the Jotform form settings.
   is the same answer as a wrong key, as every other route here does, so the route reveals
   nothing about its setup. 503 is kept for missing sign-off settings. The success log goes
   through the project's logger, not `console.info`, which lint forbids.
+- End-to-end test on Vercel production: a real lesson link from the hourly sync was
+  signed; judged `signed` at 13:39:16.82 UTC, PDF filed at 13:39:18.92 UTC (2 s), no sync
+  run. Confirms `submissionID` in the body, `?key=` kept on the URL, and
+  `GET /submission/{id}` on the Free plan.
